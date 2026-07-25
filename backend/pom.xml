@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.dmitrykislov</groupId>
+    <artifactId>miner-controller-backend</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <name>miner-controller-backend</name>
+    <description>Sungrow SG10RS inverter poller with SSE streaming</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- frontend build/test toggles: -DskipUi skips the UI build; -DskipTests skips all tests -->
+        <skipUi>false</skipUi>
+        <skipTests>false</skipTests>
+        <frontend.dir>${project.basedir}/../frontend</frontend.dir>
+    </properties>
+
+    <dependencies>
+        <!-- Reactive web: serves SSE (Server-Sent Events) cleanly via Flux -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <!-- @ConfigurationProperties binding + metadata -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- @WebFluxTest slice (Boot 4 splits test slices into per-module jars) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webflux-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- WireMock: simulate the miner GraphQL API + inverter/house margin in tests -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <version>3.9.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Also wipe the bundled UI on `mvn clean` so no stale JS/CSS bundles linger. -->
+            <plugin>
+                <artifactId>maven-clean-plugin</artifactId>
+                <configuration>
+                    <filesets>
+                        <fileset><directory>${project.basedir}/src/main/resources/static</directory></fileset>
+                    </filesets>
+                </configuration>
+            </plugin>
+
+            <!-- Build + test the React UI as part of the Maven lifecycle, using the
+                 system Node/npm. The built UI lands in src/main/resources/static and is
+                 bundled into the jar. `mvn clean install` runs the UI tests too. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <!-- install deps, then build UI into static — BEFORE process-resources
+                         copies resources into target/classes (so the jar gets the fresh UI) -->
+                    <execution>
+                        <id>ui-install</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <workingDirectory>${frontend.dir}</workingDirectory>
+                            <executable>npm</executable>
+                            <arguments><argument>install</argument><argument>--no-audit</argument><argument>--no-fund</argument></arguments>
+                            <skip>${skipUi}</skip>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>ui-build</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <workingDirectory>${frontend.dir}</workingDirectory>
+                            <executable>npm</executable>
+                            <arguments><argument>run</argument><argument>build</argument></arguments>
+                            <skip>${skipUi}</skip>
+                        </configuration>
+                    </execution>
+                    <!-- run the UI (Vitest) tests in the test phase, alongside the backend tests -->
+                    <execution>
+                        <id>ui-test</id>
+                        <phase>test</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <workingDirectory>${frontend.dir}</workingDirectory>
+                            <executable>npm</executable>
+                            <arguments><argument>run</argument><argument>test</argument></arguments>
+                            <skip>${skipTests}</skip>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

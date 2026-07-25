@@ -1,0 +1,79 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: ${APP_NAME:miner-controller}
+  task:
+    scheduling:
+      pool:
+        # >1 so the inverter poll and plug poll never block each other
+        size: ${SCHEDULING_POOL_SIZE:3}
+  web:
+    resources:
+      # UI (built React app) is bundled here and served at "/"
+      static-locations: ${STATIC_LOCATIONS:classpath:/static/}
+
+# All environment-specific values (hosts/IPs, accounts, passwords, MACs) are driven
+# entirely by environment variables with NO hardcoded fallback — set them in .env
+# (see .env.example). Only generic, non-identifying protocol defaults (ports,
+# intervals, timeouts) carry a sensible default.
+house:
+  # --- Sungrow SG10RS / WiNet-S dongle: local WebSocket API (wss on 443) ---
+  inverter:
+    host: ${INVERTER_HOST:}
+    port: ${INVERTER_PORT:443}
+    ws-path: ${INVERTER_WS_PATH:/ws/home/overview}
+    username: ${INVERTER_USERNAME:}
+    password: ${INVERTER_PASSWORD:}
+    poll-interval-ms: ${INVERTER_POLL_INTERVAL_MS:10000}
+    request-timeout-ms: ${INVERTER_REQUEST_TIMEOUT_MS:8000}
+  # --- Powersensor gateway: local UDP pub/sub API (measured house consumption) ---
+  power-sensor:
+    enabled: ${POWERSENSOR_ENABLED:true}
+    host: ${POWERSENSOR_HOST:}
+    port: ${POWERSENSOR_PORT:49476}
+    subscribe-lifetime-seconds: ${POWERSENSOR_SUBSCRIBE_LIFETIME_SECONDS:180}
+    resubscribe-interval-seconds: ${POWERSENSOR_RESUBSCRIBE_INTERVAL_SECONDS:90}
+    stale-after-seconds: ${POWERSENSOR_STALE_AFTER_SECONDS:30}
+    # Optional: MAC of the mains clamp. Blank = auto-detect (clamp reports no voltage).
+    clamp-mac: ${POWERSENSOR_CLAMP_MAC:}
+    # Fallback consumption (kW) used only when no live meter reading is available.
+    assumed-load-kw: ${HOUSE_ASSUMED_LOAD_KW:0.5}
+  # --- TP-Link Tapo P110 smart plug (switch + status) ---
+  plug:
+    enabled: ${PLUG_ENABLED:true}
+    host: ${PLUG_HOST:}
+    # TP-Link/Tapo ACCOUNT credentials (the plug has no device-local password).
+    email: ${PLUG_EMAIL:}
+    password: ${PLUG_PASSWORD:}
+    name: ${PLUG_NAME:}
+    poll-interval-ms: ${PLUG_POLL_INTERVAL_MS:10000}
+    request-timeout-ms: ${PLUG_REQUEST_TIMEOUT_MS:8000}
+    # Transport: "cloud" (TP-Link cloud relay) or "local" (on-LAN KLAP).
+    mode: ${PLUG_MODE:cloud}
+    # MAC used to match the plug in the cloud device list (blank = first P110).
+    mac: ${PLUG_MAC:}
+    cloud-base-url: ${PLUG_CLOUD_BASE_URL:https://wap.tplinkcloud.com}
+  # --- Braiins OS+ miner (Antminer S19k Pro): local GraphQL API on port 80 ---
+  miner:
+    enabled: ${MINER_ENABLED:true}
+    host: ${MINER_HOST:}
+    poll-interval-ms: ${MINER_POLL_INTERVAL_MS:10000}
+    request-timeout-ms: ${MINER_REQUEST_TIMEOUT_MS:8000}
+    # Optional bearer token if the miner's API requires auth (blank = none).
+    auth-token: ${MINER_AUTH_TOKEN:}
+    # Hard power-target limits (W) — the miner can't run below min; never exceed max.
+    min-power-w: ${MINER_MIN_POWER_W:800}
+    max-power-w: ${MINER_MAX_POWER_W:3600}
+  # --- Solar-margin autopilot: auto start/stop + step miner power to soak surplus ---
+  autopilot:
+    enabled: ${AUTOPILOT_ENABLED:false}          # off by default (controls real hardware)
+    interval-ms: ${AUTOPILOT_INTERVAL_MS:30000}  # evaluate the margin every 30s
+    start-margin-w: ${AUTOPILOT_START_MARGIN_W:1000}
+    low-margin-w: ${AUTOPILOT_LOW_MARGIN_W:100}
+    step-w: ${AUTOPILOT_STEP_W:1000}
+
+logging:
+  level:
+    io.dmitrykislov.miner: ${LOG_LEVEL:INFO}
