@@ -1,5 +1,7 @@
 package io.dmitrykislov.miner.powersensor;
 
+import io.dmitrykislov.miner.util.Rounding;
+
 import java.time.Instant;
 
 /**
@@ -23,16 +25,7 @@ public record HousePower(
         Instant timestamp) {
 
     public static HousePower measured(double watts, Double voltage, String mac, Instant ts) {
-        return new HousePower(round(watts), round(watts / 1000.0, 3), voltage, mac, true, ts);
-    }
-
-    public static HousePower unavailable(Instant ts) {
-        return new HousePower(0.0, 0.0, null, null, false, ts);
-    }
-
-    private static double round(double v) { return round(v, 1); }
-    private static double round(double v, int places) {
-        double f = Math.pow(10, places);
-        return Math.round(v * f) / f;
+        return new HousePower(Rounding.toPlaces(watts, 1), Rounding.toPlaces(watts / 1000.0, 3),
+                voltage, mac, true, ts);
     }
 }

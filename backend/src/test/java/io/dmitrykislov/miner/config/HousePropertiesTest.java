@@ -67,30 +67,23 @@ class HousePropertiesTest {
 
     @Test
     void powerSensorAppliesDefaults() {
-        var ps = new HouseProperties.PowerSensor(true, null, 0, 0, 0, 0, null, 0);
+        var ps = new HouseProperties.PowerSensor(true, null, 0, 0, 0, 0, null);
         assertThat(ps.subscribeLifetimeSeconds()).isEqualTo(180);
         assertThat(ps.resubscribeIntervalSeconds()).isEqualTo(90);
         assertThat(ps.staleAfterSeconds()).isEqualTo(30);
         assertThat(ps.clampMac()).isEmpty();
-        assertThat(ps.assumedLoadKw()).isEqualTo(0.5);
-    }
-
-    @Test
-    void negativeAssumedLoadFallsBackToBaseline() {
-        var ps = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "", -3.0);
-        assertThat(ps.assumedLoadKw()).isEqualTo(0.5);
     }
 
     @Test
     void isClampDetectsByNullVoltageWhenNoMacConfigured() {
-        var ps = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "", 0.5);
+        var ps = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "");
         assertThat(ps.isClamp("ecda3ba52594", null)).isTrue();     // clamp: no voltage
         assertThat(ps.isClamp("5443b27fc72c", 241.5)).isFalse();   // gateway: has voltage
     }
 
     @Test
     void isClampMatchesExplicitConfiguredMac() {
-        var ps = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "ECDA3BA52594", 0.5);
+        var ps = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "ECDA3BA52594");
         assertThat(ps.isClamp("ecda3ba52594", 999.0)).isTrue();    // case-insensitive, voltage ignored
         assertThat(ps.isClamp("5443b27fc72c", null)).isFalse();
     }

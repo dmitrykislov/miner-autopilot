@@ -76,6 +76,27 @@ class FullApplicationWireMockTest {
                 .responseTimeout(Duration.ofSeconds(10)).build();
     }
 
+    /**
+     * The embedded server can 404 the very first request under heavy parallel-build
+     * load, before its route mappings are hot. Probe a known endpoint until it
+     * answers 200 (bounded) so the assertions below aren't racing startup. This
+     * only tolerates the warmup window — the strict content assertions still run.
+     */
+    private void awaitRoutesReady(WebTestClient web) {
+        for (int attempt = 1; attempt <= 40; attempt++) {   // ≤ ~2s
+            int status = web.get().uri("/api/miner/status").exchange()
+                    .returnResult(Void.class).getStatus().value();
+            if (status == 200) return;
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        throw new AssertionError("server routes not ready after warmup window");
+    }
+
     @Test
     void wholeAppBootsAndServesEndpoints() {
         // Force one poll of each so state is deterministic (also exercises the real
@@ -88,6 +109,7 @@ class FullApplicationWireMockTest {
         assertThat(miner.state()).isEqualTo(MinerStatus.MINING);
 
         var web = client();
+        awaitRoutesReady(web);   // avoid racing the embedded server's route warmup
 
         // 1) Miner endpoint reflects the WireMock-simulated miner, end-to-end over HTTP.
         web.get().uri("/api/miner/status").exchange()

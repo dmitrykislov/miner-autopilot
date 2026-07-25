@@ -173,6 +173,17 @@ class MinerAutopilotWireMockTest {
         verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("updateAutotuning")));
     }
 
+    // ---- safety: margin unavailable (inverter/meter offline) → stop a running miner ----
+    @Test
+    void stopsRunningMinerWhenMarginUnavailable() {
+        stubMinerState(true, 1800);
+        // deliberately do NOT stub /sim/power → simMargin() returns empty (unknown margin)
+        primeAndTick();
+        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStop")));
+        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("updateAutotuning")));
+        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStart")));
+    }
+
     // ---- deadzone: running at 1800, margin 500 → no action ----
     @Test
     void holdsInDeadzone() {

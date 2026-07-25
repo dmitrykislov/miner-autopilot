@@ -25,22 +25,20 @@ public class InverterPoller {
 
     private final WiNetWebSocketClient client;
     private final InverterStreamService stream;
-    private final HouseLoadState houseLoad;
     private final HouseConsumptionState houseConsumption;
 
     private volatile DeviceInfo device;
 
     public InverterPoller(WiNetWebSocketClient client, InverterStreamService stream,
-                          HouseLoadState houseLoad, HouseConsumptionState houseConsumption) {
+                          HouseConsumptionState houseConsumption) {
         this.client = client;
         this.stream = stream;
-        this.houseLoad = houseLoad;
         this.houseConsumption = houseConsumption;
     }
 
-    /** Measured house consumption if the Powersensor is live, else assumed baseline. */
-    private double houseKw() {
-        return houseConsumption.measuredKw().orElseGet(houseLoad::get);
+    /** Measured house consumption if the Powersensor is live, else null (unavailable). */
+    private Double houseKw() {
+        return houseConsumption.measuredKw().orElse(null);
     }
 
     @Scheduled(fixedDelayString = "${house.inverter.poll-interval-ms:10000}",
@@ -51,8 +49,7 @@ public class InverterPoller {
             ensureSession();
             RealResponse real = client.fetchReal(device);
             DirectResponse direct = safeDirect(device);
-            boolean metered = houseConsumption.measuredKw().isPresent();
-            InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, houseKw(), metered, now);
+            InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, houseKw(), now);
             stream.publish(snapshot);
             log.debug("Published snapshot: state={} activePower={}",
                     snapshot.runningState(), snapshot.highlights().get("activePowerKw"));

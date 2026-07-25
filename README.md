@@ -95,9 +95,8 @@ All environment-specific values are driven by env vars — the source and `appli
 | `POWERSENSOR_PORT` | `49476` | |
 | `POWERSENSOR_SUBSCRIBE_LIFETIME_SECONDS` | `180` | |
 | `POWERSENSOR_RESUBSCRIBE_INTERVAL_SECONDS` | `90` | keep-alive re-subscribe |
-| `POWERSENSOR_STALE_AFTER_SECONDS` | `30` | reading older than this ⇒ fall back to assumed load |
+| `POWERSENSOR_STALE_AFTER_SECONDS` | `30` | reading older than this ⇒ house consumption (and the margin) is treated as unavailable |
 | `POWERSENSOR_CLAMP_MAC` | _(blank)_ | blank = auto-detect the mains clamp (reports no voltage) |
-| `HOUSE_ASSUMED_LOAD_KW` | `0.5` | fallback consumption when the meter is offline |
 | **Miner** | | Braiins OS+ |
 | `MINER_ENABLED` | `true` | |
 | `MINER_HOST` | — | miner LAN IP |
@@ -129,7 +128,6 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 | Endpoint | Description |
 |---|---|
 | `GET /api/inverter/stream` · `/latest` | Solar snapshot: state, power balance, 22 metrics, MPPT strings |
-| `GET /api/inverter/house-load` · `POST ?kw=` | Assumed house-load fallback (get/set) |
 | `GET /api/house/stream` · `/latest` | Measured whole-home power (Powersensor clamp), pushed live |
 | `GET /api/miner/stream` · `/status` | Miner status: state, hashrate, power draw, fans, pools, power target |
 | `POST /api/miner/start` · `/stop` | Start/stop BOSMiner |
@@ -140,7 +138,7 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 
 ## UI
 
-- **Live Power Flow** hero: Solar → Home → Grid with animated connectors, a compact side panel with a **self-sufficiency ring** and **net margin**, a live house-power **sparkline**, and a metered/assumed badge.
+- **Live Power Flow** hero: Solar → Home → Grid with animated connectors, a compact side panel with a **self-sufficiency ring** and **net margin**, a live house-power **sparkline**, and a metered/offline badge. When the Powersensor isn't reporting, house consumption and the margin show as **unavailable** (no assumed value).
 - **KPI row:** Today / Lifetime yield, grid frequency, inverter temperature.
 - **Miner card:** honest state — **Mining / Suspended / Stopped / Offline** with reason (e.g. "no active pool"), live hashrate, power draw, **fan RPM**, uptime, pool count, editable **power target** + Apply, and **Start/Stop**.
 - **Inverter detail sections:** Energy, Power, Grid & AC, DC/PV, Device Status, Per-phase — every reading with an info tooltip.
@@ -150,16 +148,17 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 
 ## Solar-margin autopilot
 
-Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default**) that soaks up surplus solar by driving the miner. Every `AUTOPILOT_INTERVAL_MS` (30 s) it reads the **margin** (solar − measured house consumption, W) and the miner state, then decides via a pure, fully-tested planner:
+Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default**) that soaks up surplus solar by driving the miner. Every `AUTOPILOT_INTERVAL_MS` (30 s) it reads the **margin** (solar − measured house consumption, W) and the miner state, then decides via a pure, fully-tested planner. Because the Powersensor meters the whole home, the margin already reflects the miner's own draw while it is mining:
 
 - **Off & margin ≥ 1000 W** → **start** the miner at the 800 W floor (leaving ~200 W headroom).
-- **On & margin ≥ 1000 W** → **step power up** +1000 W (capped at 3600 W).
-- **On & margin < 100 W** → **step power down** −1000 W, clamped to the 800 W floor; **stop** only when already at the floor.
+- **Mining & margin ≥ 1000 W** → **step power up** +1000 W (capped at 3600 W).
+- **Mining & margin < 100 W** → **step power down** −1000 W, clamped to the 800 W floor; **stop** only when already at the floor.
 - **Margin in [100, 1000)** → hold (deadzone).
 
 Safety/correctness properties:
-- Acts **only on a metered margin** — if the Powersensor is offline (consumption is the assumed baseline), the autopilot holds rather than guessing.
-- Respects the miner's hard **[min, max]** power limits.
+- **Stops the miner when the margin can't be computed** — if solar is unavailable (inverter offline, e.g. at night) or house consumption is unavailable (Powersensor meter offline), the true margin is unknown, so it's unsafe to keep mining on a guess. The safe fallback is to stop.
+- Acts only on **actually-mining** state, never `SUSPENDED` — a suspended miner (e.g. dead pools) draws ~0 W, so its draw is *not* in the margin; the autopilot skips it rather than ramping on phantom surplus.
+- Respects the miner's hard **[min, max]** power limits (also enforced in `MinerService` on every set).
 - Logs a startup **warning if the thresholds can oscillate** (deadzone `start − low` < step); with the defaults (1000/100/1000) it will — set `AUTOPILOT_START_MARGIN_W=1100` (or `AUTOPILOT_STEP_W=900`) for a stable deadzone ≥ one step.
 
 The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot` wires it to the live margin and `MinerService`. Enable with `AUTOPILOT_ENABLED=true`.

@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { ICONS, Sun, House, Grid, Info, ArrowUp, ArrowDown } from './icons.jsx'
+import React, { useEffect, useState } from 'react'
+import { ICONS, Sun, Info, ArrowUp, ArrowDown } from './icons.jsx'
 import { metaFor } from './metricMeta.js'
 import { fmt, flow, minerView } from './logic.js'
+import { useEventSource } from './hooks.js'
 
 // ---------------------------------------------------------------- primitives
 
@@ -86,11 +87,15 @@ function Flow({ active, dir, tone, value }) {
   )
 }
 
-export function EnergyFlow({ solar, house, spark, onHouseChange }) {
+export function EnergyFlow({ solar, house, spark }) {
   const solarKw = solar ?? 0
-  const houseKw = house.kw
   const metered = house.metered
-  const { net, exporting, coverage, gridFlow } = flow(solarKw, houseKw)
+  const houseKw = house.kw
+  // House (and therefore the margin) is only known while the Powersensor reports.
+  const known = metered && Number.isFinite(houseKw)
+  const { net, exporting, coverage, gridFlow } = known
+    ? flow(solarKw, houseKw)
+    : { net: null, exporting: false, coverage: null, gridFlow: null }
 
   return (
     <section className="hero card">
@@ -98,13 +103,15 @@ export function EnergyFlow({ solar, house, spark, onHouseChange }) {
         <div>
           <h2>Live Power Flow</h2>
           <span className="hero-caption">
-            {exporting
-              ? <>Solar covers the home — exporting <strong className="pos">{fmt(gridFlow)} kW</strong></>
-              : <>Grid is topping up <strong className="neg">{fmt(gridFlow)} kW</strong></>}
+            {!known
+              ? <>Waiting for the Powersensor meter — consumption &amp; margin unavailable</>
+              : exporting
+                ? <>Solar covers the home — exporting <strong className="pos">{fmt(gridFlow)} kW</strong></>
+                : <>Grid is topping up <strong className="neg">{fmt(gridFlow)} kW</strong></>}
           </span>
         </div>
         <span className={`meter-badge ${metered ? 'on' : 'off'}`}>
-          {metered ? '● consumption metered' : '○ consumption assumed'}
+          {metered ? '● consumption metered' : '○ meter offline'}
         </span>
       </div>
 
@@ -116,12 +123,12 @@ export function EnergyFlow({ solar, house, spark, onHouseChange }) {
           <span className="node-sub">generating</span>
         </FlowNode>
 
-        <Flow active={solarKw > 0.01} dir="right" tone="solar" value={Math.min(solarKw, houseKw || solarKw)} />
+        <Flow active={known && solarKw > 0.01} dir="right" tone="solar" value={Math.min(solarKw, houseKw || solarKw)} />
 
         <FlowNode icon="house" tone="house" label="Home"
           info={metered
             ? 'Whole-home consumption measured live by the Powersensor mains clamp. Updates the instant it changes.'
-            : 'Assumed household consumption — the Powersensor is not reporting, so this is an editable baseline, not a measurement.'}>
+            : 'The Powersensor mains clamp is not reporting, so whole-home consumption is currently unavailable.'}>
           {metered ? (
             <>
               <span key={house.ts} className="node-value live flash">{fmt(houseKw)}<em>kW</em></span>
@@ -133,25 +140,20 @@ export function EnergyFlow({ solar, house, spark, onHouseChange }) {
             </>
           ) : (
             <>
-              <div className="house-edit">
-                <input type="number" step="0.1" min="0" value={houseKw}
-                  onChange={(e) => onHouseChange(parseFloat(e.target.value) || 0)} />
-                <em>kW</em>
-              </div>
-              <input className="house-slider" type="range" min="0" max="12" step="0.1"
-                value={houseKw} onChange={(e) => onHouseChange(parseFloat(e.target.value))} />
-              <span className="node-sub assumed-sub">assumed · adjustable</span>
+              <span className="node-value">--<em>kW</em></span>
+              <span className="node-sub">waiting for meter…</span>
             </>
           )}
         </FlowNode>
 
-        <Flow active={gridFlow > 0.01} dir={exporting ? 'right' : 'left'}
+        <Flow active={known && gridFlow > 0.01} dir={exporting ? 'right' : 'left'}
           tone={exporting ? 'export' : 'import'} value={gridFlow} />
 
-        <FlowNode icon="grid" tone={exporting ? 'export' : 'import'} label="Grid"
-          info={exporting ? 'Surplus solar exported to the grid.' : 'Shortfall imported from the grid.'}>
+        <FlowNode icon="grid" tone={known ? (exporting ? 'export' : 'import') : ''} label="Grid"
+          info={!known ? 'Grid flow is unknown until the meter reports.'
+            : exporting ? 'Surplus solar exported to the grid.' : 'Shortfall imported from the grid.'}>
           <span className="node-value">{fmt(gridFlow)}<em>kW</em></span>
-          <span className="node-sub">{exporting ? 'exporting' : 'importing'}</span>
+          <span className="node-sub">{!known ? 'unavailable' : exporting ? 'exporting' : 'importing'}</span>
         </FlowNode>
         </div>
 
@@ -160,14 +162,14 @@ export function EnergyFlow({ solar, house, spark, onHouseChange }) {
             <CoverageRing pct={coverage} covering={exporting} />
             <div className="foot-text">
               <span className="foot-label">Self-sufficiency<InfoDot text="Share of the home's current draw being met by solar right now." /></span>
-              <span className="foot-sub">{exporting ? 'Fully covered + surplus' : `${fmt(coverage, 0)}% from solar`}</span>
+              <span className="foot-sub">{!known ? 'Meter offline' : exporting ? 'Fully covered + surplus' : `${fmt(coverage, 0)}% from solar`}</span>
             </div>
           </div>
-          <div className={`summary-margin ${exporting ? 'good' : 'bad'}`}>
+          <div className={`summary-margin ${!known ? '' : exporting ? 'good' : 'bad'}`}>
             <span className="sm-icon">{exporting ? <ArrowUp size={18} /> : <ArrowDown size={18} />}</span>
             <div className="foot-text">
               <span className="foot-label">Net margin<InfoDot text="Solar − Home. Positive = surplus exported; negative = drawn from the grid." /></span>
-              <span className="foot-big">{net >= 0 ? '+' : ''}{fmt(net)} <em>kW</em></span>
+              <span className="foot-big">{!known ? '--' : `${net >= 0 ? '+' : ''}${fmt(net)}`} <em>kW</em></span>
             </div>
           </div>
         </aside>
@@ -301,53 +303,32 @@ const SPARK_MAX = 40
 export default function App() {
   const [snapshot, setSnapshot] = useState(null)
   const [connected, setConnected] = useState(false)
-  const [manualKw, setManualKw] = useState(0.5)
   const [houseLive, setHouseLive] = useState(null)
   const [spark, setSpark] = useState([])
   const [miner, setMiner] = useState(null)
   const [minerPending, setMinerPending] = useState(false)
   const [now, setNow] = useState(Date.now())
-  const postTimer = useRef(null)
 
   useEffect(() => {
-    fetch('/api/inverter/house-load').then((r) => r.json())
-      .then((d) => { if (typeof d.houseLoadKw === 'number') setManualKw(d.houseLoadKw) }).catch(() => {})
     fetch('/api/house/latest').then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d && d.metered) setHouseLive({ ...d, at: Date.now() }) }).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    const es = new EventSource('/api/inverter/stream')
-    es.onopen = () => setConnected(true)
-    es.onerror = () => setConnected(false)
-    es.onmessage = (e) => { try { setSnapshot(JSON.parse(e.data)) } catch { /* ignore */ } }
-    return () => es.close()
-  }, [])
+  useEventSource('/api/inverter/stream', setSnapshot,
+    { onOpen: () => setConnected(true), onError: () => setConnected(false) })
 
-  useEffect(() => {
-    const es = new EventSource('/api/house/stream')
-    es.onmessage = (e) => {
-      try {
-        const r = JSON.parse(e.data)
-        if (r && r.metered) {
-          setHouseLive({ ...r, at: Date.now() })
-          setSpark((prev) => [...prev, r.powerKw].slice(-SPARK_MAX))
-        }
-      } catch { /* ignore */ }
+  useEventSource('/api/house/stream', (r) => {
+    if (r && r.metered) {
+      setHouseLive({ ...r, at: Date.now() })
+      setSpark((prev) => [...prev, r.powerKw].slice(-SPARK_MAX))
     }
-    return () => es.close()
-  }, [])
+  })
+
+  useEventSource('/api/miner/stream', setMiner)
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
-  }, [])
-
-  // Miner status SSE + control.
-  useEffect(() => {
-    const es = new EventSource('/api/miner/stream')
-    es.onmessage = (e) => { try { setMiner(JSON.parse(e.data)) } catch { /* ignore */ } }
-    return () => es.close()
   }, [])
 
   const minerCmd = (url) => {
@@ -363,19 +344,11 @@ export default function App() {
     minerCmd(`/api/miner/power?watts=${encodeURIComponent(watts)}&apply=true`)
   }
 
-  const changeHouse = (kw) => {
-    setManualKw(kw)
-    clearTimeout(postTimer.current)
-    postTimer.current = setTimeout(() => {
-      fetch(`/api/inverter/house-load?kw=${encodeURIComponent(kw)}`, { method: 'POST' }).catch(() => {})
-    }, 350)
-  }
-
   const meterFresh = houseLive && (now - houseLive.at) < STALE_MS
   const house = meterFresh
-    ? { kw: houseLive.powerKw, metered: true, powerW: houseLive.powerW, voltage: houseLive.mainsVoltageV,
+    ? { kw: houseLive.powerKw, metered: true, powerW: houseLive.powerW,
         ts: houseLive.timestamp, ageSec: Math.max(0, Math.round((now - houseLive.at) / 1000)) }
-    : { kw: manualKw, metered: false }
+    : { kw: null, metered: false }
 
   const online = snapshot?.online
   const solar = snapshot?.powerBalance?.solarPowerKw
@@ -410,7 +383,7 @@ export default function App() {
 
       {snapshot && (
         <>
-          <EnergyFlow solar={solar} house={house} spark={spark} onHouseChange={changeHouse} />
+          <EnergyFlow solar={solar} house={house} spark={spark} />
 
           <div className="kpis">
             <Kpi icon="calendar" label="Today" value={fmt(hl.dailyYieldKwh, 1)} unit="kWh"
@@ -456,7 +429,7 @@ export default function App() {
 
       <footer className="foot">
         Solar via Sungrow WiNet-S (polled) · house consumption via Powersensor mains clamp (streamed live) ·
-        margin falls back to an assumed baseline when the meter is offline.
+        margin = solar − measured house; unavailable while the meter is offline.
       </footer>
     </div>
   )

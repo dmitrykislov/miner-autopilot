@@ -1,6 +1,5 @@
 package io.dmitrykislov.miner.api;
 
-import io.dmitrykislov.miner.inverter.HouseLoadState;
 import io.dmitrykislov.miner.inverter.InverterStreamService;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import org.junit.jupiter.api.Test;
@@ -16,7 +15,6 @@ import reactor.test.StepVerifier;
 import java.time.Duration;
 import java.time.Instant;
 
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @WebFluxTest(InverterController.class)
@@ -27,9 +25,6 @@ class InverterControllerTest {
 
     @MockitoBean
     InverterStreamService stream;
-
-    @MockitoBean
-    HouseLoadState houseLoad;
 
     private InverterSnapshot sample() {
         return InverterSnapshot.offline("SG10RS", "A24A0965660",
@@ -47,32 +42,6 @@ class InverterControllerTest {
                 .jsonPath("$.deviceModel").isEqualTo("SG10RS")
                 .jsonPath("$.serialNumber").isEqualTo("A24A0965660")
                 .jsonPath("$.powerBalance.houseConsumptionKw").isEqualTo(0.5);
-    }
-
-    @Test
-    void houseLoadGetReturnsValueAndUnmeteredNote() {
-        when(houseLoad.get()).thenReturn(0.5);
-
-        web.get().uri("/api/inverter/house-load")
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody()
-                .jsonPath("$.houseLoadKw").isEqualTo(0.5)
-                .jsonPath("$.metered").isEqualTo(false)
-                .jsonPath("$.note").value(v -> ((String) v).toLowerCase().contains("no energy meter"));
-    }
-
-    @Test
-    void houseLoadPostUpdatesTheBaseline() {
-        when(houseLoad.get()).thenReturn(2.5);
-
-        web.post().uri("/api/inverter/house-load?kw=2.5")
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody()
-                .jsonPath("$.houseLoadKw").isEqualTo(2.5);
-
-        verify(houseLoad).set(eq(2.5));
     }
 
     @Test

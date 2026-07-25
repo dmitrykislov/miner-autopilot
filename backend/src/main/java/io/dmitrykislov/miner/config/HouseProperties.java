@@ -24,7 +24,7 @@ public record HouseProperties(
 
     public HouseProperties {
         if (inverter == null) inverter = new Inverter(null, 0, null, null, null, 0, 0);
-        if (powerSensor == null) powerSensor = new PowerSensor(true, null, 0, 0, 0, 0, null, 0);
+        if (powerSensor == null) powerSensor = new PowerSensor(true, null, 0, 0, 0, 0, null);
         if (plug == null) plug = new Plug(true, null, null, null, null, 0, 0, null, null, null);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
         if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0);
@@ -68,13 +68,11 @@ public record HouseProperties(
             // must be < the lifetime or the device stops streaming.
             int resubscribeIntervalSeconds,
             // A measured reading older than this (seconds) is treated as stale, so
-            // the margin falls back to the assumed baseline until fresh data returns.
+            // the margin becomes unavailable until fresh data returns.
             int staleAfterSeconds,
             // Optional explicit MAC of the mains clamp (whole-home). Blank = auto-detect
             // the clamp as the reporting device whose voltage is null.
-            String clampMac,
-            // Fallback assumed consumption (kW) when no live meter reading is available.
-            double assumedLoadKw) {
+            String clampMac) {
 
         public PowerSensor {
             if (host == null) host = ""; // no hardcoded IP — supplied via POWERSENSOR_HOST
@@ -83,7 +81,6 @@ public record HouseProperties(
             if (resubscribeIntervalSeconds == 0) resubscribeIntervalSeconds = 90;
             if (staleAfterSeconds == 0) staleAfterSeconds = 30;
             if (clampMac == null) clampMac = "";
-            if (assumedLoadKw <= 0) assumedLoadKw = 0.5;
         }
 
         /** True when {@code mac} is the whole-home clamp, per config or voltage heuristic. */

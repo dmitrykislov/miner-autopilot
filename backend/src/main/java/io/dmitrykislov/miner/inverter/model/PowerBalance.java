@@ -1,48 +1,43 @@
 package io.dmitrykislov.miner.inverter.model;
 
+import io.dmitrykislov.miner.util.Rounding;
+
 /**
  * The headline the user asked for: how current solar generation compares to
  * household consumption.
  *
- * <p>Important: the SG10RS has no energy meter, so {@link #houseConsumptionKw}
- * is NOT measured — it is an assumed/configured baseline (overridable from the
- * UI). {@link #solarPowerKw} IS measured (the inverter's AC active power).
+ * <p>{@link #solarPowerKw} is always measured (the inverter's AC active power).
+ * House consumption is measured by the Powersensor mains clamp; when no live
+ * reading is available the house figure — and therefore the margin — is
+ * <em>unavailable</em> (the nullable fields are {@code null} and
+ * {@link #consumptionMetered} is {@code false}). There is no assumed baseline.
  */
 public record PowerBalance(
         // Measured AC active power the inverter is producing right now, in kW.
         double solarPowerKw,
-        // Assumed household load in kW (configured baseline — NOT metered).
-        double houseConsumptionKw,
-        // Margin = solar - house. Positive ⇒ surplus exported to grid;
-        // negative ⇒ deficit drawn from the grid. Unit: kW.
-        double netSurplusKw,
-        // true when solar >= house (self-sufficient / exporting).
-        boolean coveringLoad,
-        // Share of house load met by solar, 0..100 (capped at 100). Unit: %.
-        double solarCoveragePct,
+        // Measured household load in kW; null when the Powersensor isn't reporting.
+        Double houseConsumptionKw,
+        // Margin = solar - house (kW). Positive ⇒ surplus exported; negative ⇒
+        // deficit imported. null when house consumption is unknown.
+        Double netSurplusKw,
+        // true when solar >= house (self-sufficient / exporting); null when unknown.
+        Boolean coveringLoad,
+        // Share of house load met by solar, 0..100 (capped). null when unknown.
+        Double solarCoveragePct,
         // true when houseConsumptionKw is a real measured reading (Powersensor
-        // clamp); false when it is the assumed baseline. Drives the UI badge.
+        // clamp); false when there is no live reading. Drives the UI badge.
         boolean consumptionMetered) {
 
-    /** Margin from an assumed (non-metered) house load. */
-    public static PowerBalance of(double solarKw, double houseKw) {
-        return of(solarKw, houseKw, false);
+    /** Margin from a live Powersensor reading. */
+    public static PowerBalance metered(double solarKw, double houseKw) {
+        double net = Rounding.toPlaces(solarKw - houseKw, 3);
+        double coverage = houseKw <= 0 ? 100.0 : Math.min(100.0, Rounding.toPlaces(solarKw / houseKw * 100.0, 3));
+        return new PowerBalance(Rounding.toPlaces(solarKw, 3), Rounding.toPlaces(houseKw, 3),
+                net, solarKw >= houseKw, coverage, true);
     }
 
-    /** Margin where {@code metered} says whether houseKw is a real meter reading. */
-    public static PowerBalance of(double solarKw, double houseKw, boolean metered) {
-        double net = round(solarKw - houseKw);
-        double coverage = houseKw <= 0 ? 100.0 : Math.min(100.0, round(solarKw / houseKw * 100.0));
-        return new PowerBalance(
-                round(solarKw),
-                round(houseKw),
-                net,
-                solarKw >= houseKw,
-                coverage,
-                metered);
-    }
-
-    private static double round(double v) {
-        return Math.round(v * 1000.0) / 1000.0;
+    /** No live meter reading — house consumption and the margin are unavailable. */
+    public static PowerBalance unmetered(double solarKw) {
+        return new PowerBalance(Rounding.toPlaces(solarKw, 3), null, null, null, null, false);
     }
 }

@@ -15,7 +15,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Base64;
 import java.util.UUID;
 
 /**
@@ -145,15 +144,5 @@ public class TapoCloudClient implements PlugTransport {
                 .build();
         HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
         return mapper.readTree(resp.body());
-    }
-
-    /** Decodes a base64 device alias/nickname (cloud returns names base64-encoded). */
-    static String decodeBase64(String s) {
-        if (s == null || s.isBlank()) return null;
-        try {
-            return new String(Base64.getDecoder().decode(s), StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            return null;
-        }
     }
 }

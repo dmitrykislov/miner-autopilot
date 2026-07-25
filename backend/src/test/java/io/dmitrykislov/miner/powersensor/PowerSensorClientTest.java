@@ -12,7 +12,7 @@ class PowerSensorClientTest {
 
     private final JsonMapper mapper = JsonMapper.builder().build();
     private final HouseProperties.PowerSensor cfg =
-            new HouseProperties.PowerSensor(true, "h", 49476, 180, 90, 30, "", 0.5);
+            new HouseProperties.PowerSensor(true, "h", 49476, 180, 90, 30, "");
 
     private JsonNode json(String s) { return mapper.readTree(s); }
 
@@ -54,7 +54,7 @@ class PowerSensorClientTest {
 
     @Test
     void honoursExplicitClampMac() {
-        var explicit = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "5443b27fc72c", 0.5);
+        var explicit = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "5443b27fc72c");
         var p = PowerSensorClient.parse(json("""
             {"type":"instant_power","power":1.6,"unit":"w","voltage":241.5,"mac":"5443b27fc72c"}
             """), explicit);

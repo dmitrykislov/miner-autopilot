@@ -38,8 +38,6 @@ house:
     stale-after-seconds: ${POWERSENSOR_STALE_AFTER_SECONDS:30}
     # Optional: MAC of the mains clamp. Blank = auto-detect (clamp reports no voltage).
     clamp-mac: ${POWERSENSOR_CLAMP_MAC:}
-    # Fallback consumption (kW) used only when no live meter reading is available.
-    assumed-load-kw: ${HOUSE_ASSUMED_LOAD_KW:0.5}
   # --- TP-Link Tapo P110 smart plug (switch + status) ---
   plug:
     enabled: ${PLUG_ENABLED:true}

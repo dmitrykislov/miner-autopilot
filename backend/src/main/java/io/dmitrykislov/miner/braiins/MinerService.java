@@ -1,6 +1,7 @@
 package io.dmitrykislov.miner.braiins;
 
 import io.dmitrykislov.miner.config.HouseProperties;
+import io.dmitrykislov.miner.util.Rounding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -69,7 +70,7 @@ public class MinerService {
                     JsonNode info = client.realtime();
                     JsonNode s = info.path("summary");
                     double mhs5s = s.path("realHashrate").path("mhs5S").asDouble(0);
-                    hashrateThs = round(mhs5s / 1_000_000.0, 2);           // MH/s → TH/s
+                    hashrateThs = Rounding.toPlaces(mhs5s / 1_000_000.0, 2); // MH/s → TH/s
                     if (s.path("power").hasNonNull("approxConsumptionW")) {
                         powerDrawW = s.path("power").path("approxConsumptionW").asInt();
                     }
@@ -130,10 +131,16 @@ public class MinerService {
     }
 
     public MinerStatus setPowerTarget(int watts, boolean apply) {
+        // Never send an out-of-range target to the hardware, whatever the caller asks.
+        int clamped = cfg.clampPower(watts);
+        if (clamped != watts) {
+            log.info("Clamped power target {}W to hardware limits [{},{}] → {}W",
+                    watts, cfg.minPowerW(), cfg.maxPowerW(), clamped);
+        }
         try {
-            client.setPowerTarget(watts, apply);
+            client.setPowerTarget(clamped, apply);
         } catch (Exception e) {
-            log.warn("Miner setPowerTarget({}) failed: {}", watts, e.toString());
+            log.warn("Miner setPowerTarget({}) failed: {}", clamped, e.toString());
             return publish(MinerStatus.offline(Instant.now(), e.getMessage()));
         }
         return refresh();
@@ -142,10 +149,5 @@ public class MinerService {
     private MinerStatus publish(MinerStatus s) {
         stream.publish(s);
         return s;
-    }
-
-    private static double round(double v, int places) {
-        double f = Math.pow(10, places);
-        return Math.round(v * f) / f;
     }
 }

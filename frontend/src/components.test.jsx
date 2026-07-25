@@ -80,22 +80,24 @@ describe('MinerCard', () => {
 })
 
 describe('EnergyFlow', () => {
-  const house = (over) => ({ kw: 0.5, metered: true, powerW: 500, voltage: 240, ts: 't', ageSec: 3, ...over })
+  const house = (over) => ({ kw: 0.5, metered: true, powerW: 500, ts: 't', ageSec: 3, ...over })
 
   it('metered home shows the measured value (read-only, no input)', () => {
-    const { container } = render(<EnergyFlow solar={3} house={house({ kw: 1.5 })} spark={[]} onHouseChange={noop} />)
+    const { container } = render(<EnergyFlow solar={3} house={house({ kw: 1.5 })} spark={[]} />)
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument() // no editable input when metered
     expect(container.textContent).toMatch(/exporting/i)              // solar 3 > house 1.5
   })
 
-  it('assumed home is editable and reports changes', () => {
-    const onHouseChange = vi.fn()
-    const { container } = render(
-      <EnergyFlow solar={0} house={house({ metered: false, kw: 0.5 })} spark={[]} onHouseChange={onHouseChange} />)
-    const input = screen.getByRole('spinbutton')
-    fireEvent.change(input, { target: { value: '2.5' } })
-    expect(onHouseChange).toHaveBeenCalledWith(2.5)
-    expect(container.textContent).toMatch(/topping up/i)             // solar 0 < house → importing
+  it('metered importing home shows the topping-up caption', () => {
+    const { container } = render(<EnergyFlow solar={0.2} house={house({ kw: 2.0 })} spark={[]} />)
+    expect(container.textContent).toMatch(/topping up/i)             // solar 0.2 < house 2.0 → importing
+  })
+
+  it('unmetered home shows waiting-for-meter, no input, and unavailable margin', () => {
+    const { container } = render(<EnergyFlow solar={3} house={{ kw: null, metered: false }} spark={[]} />)
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument() // no editable baseline any more
+    expect(container.textContent).toMatch(/waiting for/i)            // meter offline message
+    expect(container.textContent).toMatch(/unavailable/i)            // margin can't be computed
   })
 })
 

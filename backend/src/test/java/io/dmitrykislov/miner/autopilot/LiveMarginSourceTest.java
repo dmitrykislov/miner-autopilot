@@ -22,7 +22,7 @@ class LiveMarginSourceTest {
 
     private InverterSnapshot online(double solarKw, double houseKw) {
         return new InverterSnapshot(true, "SG10RS", "SN", "Running", Instant.now(),
-                Map.of(), PowerBalance.of(solarKw, houseKw, true), List.of(), List.of(), null);
+                Map.of(), PowerBalance.metered(solarKw, houseKw), List.of(), List.of(), null);
     }
 
     @Test void marginIsNetSurplusInWatts() {
@@ -48,9 +48,9 @@ class LiveMarginSourceTest {
     }
 
     @Test void emptyWhenConsumptionNotMetered() {
-        // online, but house load is the assumed baseline (not measured) → don't act on it
+        // online, but the Powersensor isn't reporting (unmetered) → margin unavailable
         var snap = new InverterSnapshot(true, "SG10RS", "SN", "Running", Instant.now(),
-                Map.of(), PowerBalance.of(3.0, 0.5, false), List.of(), List.of(), null);
+                Map.of(), PowerBalance.unmetered(3.0), List.of(), List.of(), null);
         when(stream.latest()).thenReturn(snap);
         assertThat(source.currentMarginWatts()).isEmpty();
     }

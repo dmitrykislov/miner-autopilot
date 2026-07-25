@@ -52,19 +52,38 @@ public class MinerAutopilot {
     public void tick() {
         if (!cfg.enabled()) return;
 
-        OptionalDouble margin = marginSource.currentMarginWatts();
-        if (margin.isEmpty()) {
-            log.debug("autopilot: margin unknown (inverter offline) — skipping");
-            return;
-        }
         MinerStatus st = minerStream.latest();
         if (st == null || !st.reachable()) {
             log.debug("autopilot: miner status unavailable — skipping");
             return;
         }
 
+        OptionalDouble margin = marginSource.currentMarginWatts();
+        if (margin.isEmpty()) {
+            // The margin is unknowable: either solar is unavailable (inverter
+            // offline → treat as no generation) or house consumption is unavailable
+            // (Powersensor meter offline → draw could be anything). Either way it is
+            // unsafe to keep mining on a guess, so stop the miner if it is running.
+            if (st.running()) {
+                log.info("autopilot: margin unknown (solar or house meter unavailable) — stopping miner for safety");
+                minerService.stop();
+            } else {
+                log.debug("autopilot: margin unknown and miner already off — nothing to do");
+            }
+            return;
+        }
+        // While SUSPENDED the service is up but draws ~0 W, so its draw is NOT
+        // reflected in the margin — the planner's "margin already includes the
+        // miner" assumption breaks and it would ramp on phantom surplus. Skip:
+        // autopilot can't resolve a suspension (e.g. dead pools) anyway.
+        if (MinerStatus.SUSPENDED.equals(st.state())) {
+            log.debug("autopilot: miner suspended (draw not reflected in margin) — skipping");
+            return;
+        }
+
+        boolean mining = MinerStatus.MINING.equals(st.state());
         int current = st.powerTargetW() != null ? st.powerTargetW() : minerCfg.minPowerW();
-        AutopilotDecision d = planner.decide(margin.getAsDouble(), st.running(), current);
+        AutopilotDecision d = planner.decide(margin.getAsDouble(), mining, current);
         log.info("autopilot: {}", d.reason());
         apply(d);
     }

@@ -4,6 +4,7 @@ import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.inverter.dto.DeviceListResponse;
 import io.dmitrykislov.miner.inverter.dto.DirectResponse;
 import io.dmitrykislov.miner.inverter.dto.RealResponse;
+import io.dmitrykislov.miner.inverter.dto.WiNetEnvelope;
 import io.dmitrykislov.miner.inverter.model.DeviceInfo;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -182,11 +183,12 @@ public class WiNetWebSocketClient {
         return resp;
     }
 
-    /** Throws {@link SessionExpiredException} when the dongle reports code 106. */
+    /** Throws {@link SessionExpiredException} when the dongle reports a session-expired code. */
     static void checkResultCode(JsonNode resp, String service) {
-        int code = resp.path("result_code").asInt(1);
-        if (code == 106) { // token stale / session expired
-            throw new SessionExpiredException("service '" + service + "' returned 106 (session expired)");
+        int code = resp.path("result_code").asInt(WiNetEnvelope.SUCCESS);
+        if (code == WiNetEnvelope.SESSION_EXPIRED) { // token stale / session expired
+            throw new SessionExpiredException(
+                    "service '" + service + "' returned " + WiNetEnvelope.SESSION_EXPIRED + " (session expired)");
         }
     }
 

@@ -37,7 +37,7 @@ class SnapshotMapperTest {
                 pt("I18N_CONFIG_KEY_1003334", "--", "V")  // unavailable -> not a highlight
         );
 
-        InverterSnapshot s = SnapshotMapper.map(DEV, real, null, 1.0, false, TS);
+        InverterSnapshot s = SnapshotMapper.map(DEV, real, null, 1.0, TS);
 
         assertThat(s.online()).isTrue();
         assertThat(s.deviceModel()).isEqualTo("SG10RS");
@@ -69,7 +69,7 @@ class SnapshotMapperTest {
                 new MpptEntry(null, "100.0", "V", "2.0", "A")   // null name -> default
         ), 3);
 
-        InverterSnapshot s = SnapshotMapper.map(DEV, null, direct, 0.5, false, TS);
+        InverterSnapshot s = SnapshotMapper.map(DEV, null, direct, 0.5, TS);
 
         assertThat(s.strings()).hasSize(3);
         assertThat(s.strings().get(0).powerKw()).isCloseTo(2.9, within(1e-9)); // 580*5/1000
@@ -80,7 +80,7 @@ class SnapshotMapperTest {
 
     @Test
     void handlesNullDatasetsGracefully() {
-        InverterSnapshot s = SnapshotMapper.map(DEV, null, null, 0.5, false, TS);
+        InverterSnapshot s = SnapshotMapper.map(DEV, null, null, 0.5, TS);
         assertThat(s.online()).isTrue();
         assertThat(s.metrics()).isEmpty();
         assertThat(s.strings()).isEmpty();
@@ -92,18 +92,26 @@ class SnapshotMapperTest {
     @Test
     void nonNumericActivePowerYieldsZeroSolar() {
         RealResponse real = real(pt("I18N_COMMON_TOTAL_ACTIVE_POWER", "--", "kW"));
-        InverterSnapshot s = SnapshotMapper.map(DEV, real, null, 2.0, false, TS);
+        InverterSnapshot s = SnapshotMapper.map(DEV, real, null, 2.0, TS);
         assertThat(s.powerBalance().solarPowerKw()).isEqualTo(0.0);
         assertThat(s.highlights()).doesNotContainKey("activePowerKw");
     }
 
     @Test
-    void meteredFlagPropagatesIntoPowerBalance() {
+    void meteredWhenHousePresentUnmeteredWhenNull() {
         RealResponse real = real(pt("I18N_COMMON_TOTAL_ACTIVE_POWER", "2.0", "kW"));
-        assertThat(SnapshotMapper.map(DEV, real, null, 1.5, true, TS)
-                .powerBalance().consumptionMetered()).isTrue();
-        assertThat(SnapshotMapper.map(DEV, real, null, 1.5, false, TS)
-                .powerBalance().consumptionMetered()).isFalse();
+
+        var metered = SnapshotMapper.map(DEV, real, null, 1.5, TS).powerBalance();
+        assertThat(metered.consumptionMetered()).isTrue();
+        assertThat(metered.houseConsumptionKw()).isEqualTo(1.5);
+        assertThat(metered.netSurplusKw()).isEqualTo(0.5);
+
+        // No live meter reading → house + margin unavailable (no assumed baseline).
+        var unmetered = SnapshotMapper.map(DEV, real, null, null, TS).powerBalance();
+        assertThat(unmetered.consumptionMetered()).isFalse();
+        assertThat(unmetered.houseConsumptionKw()).isNull();
+        assertThat(unmetered.netSurplusKw()).isNull();
+        assertThat(unmetered.solarPowerKw()).isEqualTo(2.0); // solar still measured
     }
 
     @Test

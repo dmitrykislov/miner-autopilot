@@ -118,4 +118,20 @@ class MinerServiceTest {
         verify(client).setPowerTarget(1400, true);
         verify(client, times(3)).status(); // each command refreshes
     }
+
+    @Test
+    void setPowerTargetClampsToHardwareLimits() throws Exception {
+        var client = mock(BraiinsMinerClient.class);
+        when(client.status()).thenReturn(node("{\"info\":{\"modelName\":\"S\"},\"uptime\":null,\"config\":{}}"));
+        var service = svc(client, new MinerStreamService(), true, "192.168.4.28"); // min 800 / max 3600
+
+        service.setPowerTarget(99999, true);   // above the ceiling → clamped to max
+        verify(client).setPowerTarget(3600, true);
+        service.setPowerTarget(100, true);     // below the floor → clamped to min
+        verify(client).setPowerTarget(800, true);
+        service.setPowerTarget(1400, true);    // in range → passed through unchanged
+        verify(client).setPowerTarget(1400, true);
+        verify(client, never()).setPowerTarget(eq(99999), anyBoolean());
+        verify(client, never()).setPowerTarget(eq(100), anyBoolean());
+    }
 }

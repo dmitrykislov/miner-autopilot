@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Holds the most recent measured whole-home consumption from the Powersensor
  * clamp, and answers whether it is still "fresh" enough to trust. When stale (or
- * never received), the solar-vs-house margin falls back to the assumed baseline.
+ * never received), the solar-vs-house margin is unavailable.
  */
 @Component
 public class HouseConsumptionState {
@@ -35,10 +35,6 @@ public class HouseConsumptionState {
         HousePower p = latest.get();
         return p != null && p.metered()
                 && Duration.between(p.timestamp(), now).compareTo(staleAfter) <= 0;
-    }
-
-    public boolean isMetered() {
-        return isFresh(Instant.now());
     }
 
     /** Measured consumption in kW if a fresh reading exists, otherwise empty. */

@@ -47,14 +47,18 @@ public final class MinerAutopilotPlanner {
     }
 
     /**
-     * @param marginW        current power margin (solar − house), watts
-     * @param running        whether the miner is currently on/consuming
-     * @param currentPowerW  the miner's current power target (watts); ignored when not running
+     * @param marginW        current power margin (solar − house), watts. Because the
+     *                       meter includes the miner, this already reflects the miner's
+     *                       draw when it is actually mining.
+     * @param mining         whether the miner is actively hashing (drawing power that
+     *                       the margin already accounts for); a suspended miner is NOT
+     *                       mining and must not be treated as such by the caller
+     * @param currentPowerW  the miner's current power target (watts); ignored when not mining
      */
-    public AutopilotDecision decide(double marginW, boolean running, int currentPowerW) {
+    public AutopilotDecision decide(double marginW, boolean mining, int currentPowerW) {
         long m = Math.round(marginW);
 
-        if (!running) {
+        if (!mining) {
             if (marginW >= startMarginW) {
                 return AutopilotDecision.of(Action.START, minPowerW,
                         "margin " + m + "W ≥ start " + startMarginW + "W → start miner at min " + minPowerW + "W");

@@ -31,8 +31,12 @@ public record InverterSnapshot(
         String error) {
 
     public static InverterSnapshot offline(String deviceModel, String serialNumber, Instant ts,
-                                           double houseLoadKw, String error) {
+                                           Double houseKw, String error) {
+        // Solar is unknown while offline (0), but house may still be metered.
+        PowerBalance balance = houseKw != null
+                ? PowerBalance.metered(0.0, houseKw)
+                : PowerBalance.unmetered(0.0);
         return new InverterSnapshot(false, deviceModel, serialNumber, "Offline", ts,
-                Map.of(), PowerBalance.of(0.0, houseLoadKw), List.of(), List.of(), error);
+                Map.of(), balance, List.of(), List.of(), error);
     }
 }

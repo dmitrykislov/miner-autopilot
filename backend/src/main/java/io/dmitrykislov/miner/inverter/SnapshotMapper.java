@@ -9,6 +9,7 @@ import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import io.dmitrykislov.miner.inverter.model.Metric;
 import io.dmitrykislov.miner.inverter.model.MpptString;
 import io.dmitrykislov.miner.inverter.model.PowerBalance;
+import io.dmitrykislov.miner.util.Rounding;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -41,7 +42,7 @@ public final class SnapshotMapper {
     );
 
     public static InverterSnapshot map(DeviceInfo dev, RealResponse real, DirectResponse direct,
-                                       double houseLoadKw, boolean metered, Instant now) {
+                                       Double houseKw, Instant now) {
         List<Metric> metrics = new ArrayList<>();
         Map<String, Object> highlights = new LinkedHashMap<>();
         String runningState = "Unknown";
@@ -75,14 +76,16 @@ public final class SnapshotMapper {
                 double a = parseOrZero(e.current());
                 strings.add(new MpptString(
                         e.name() != null ? e.name() : "MPPT",
-                        v, a, round(v * a / 1000.0, 3)));
+                        v, a, Rounding.toPlaces(v * a / 1000.0, 3)));
             }
         }
 
         // Solar-vs-house margin. Solar is always measured by the inverter; house
-        // load is measured when the Powersensor is live (metered=true), else the
-        // assumed baseline (metered=false). See PowerBalance for semantics.
-        PowerBalance balance = PowerBalance.of(solarPowerKw, houseLoadKw, metered);
+        // load is measured by the Powersensor when live (houseKw != null), else the
+        // margin is unavailable. See PowerBalance for semantics.
+        PowerBalance balance = houseKw != null
+                ? PowerBalance.metered(solarPowerKw, houseKw)
+                : PowerBalance.unmetered(solarPowerKw);
 
         return new InverterSnapshot(true, dev.model(), dev.serialNumber(),
                 runningState, now, highlights, balance, metrics, strings, null);
@@ -102,10 +105,5 @@ public final class SnapshotMapper {
     static double parseOrZero(String s) {
         Double d = parseNumber(s);
         return d == null ? 0.0 : d;
-    }
-
-    static double round(double v, int places) {
-        double f = Math.pow(10, places);
-        return Math.round(v * f) / f;
     }
 }

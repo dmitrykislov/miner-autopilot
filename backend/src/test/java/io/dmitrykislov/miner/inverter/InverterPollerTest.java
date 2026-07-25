@@ -21,7 +21,6 @@ class InverterPollerTest {
 
     private WiNetWebSocketClient client;
     private InverterStreamService stream;
-    private HouseLoadState houseLoad;
     private HouseConsumptionState houseConsumption;
     private InverterPoller poller;
 
@@ -31,11 +30,9 @@ class InverterPollerTest {
     void setup() {
         client = mock(WiNetWebSocketClient.class);
         stream = mock(InverterStreamService.class);
-        houseLoad = mock(HouseLoadState.class);
         houseConsumption = mock(HouseConsumptionState.class);
-        when(houseLoad.get()).thenReturn(1.0);
-        when(houseConsumption.measuredKw()).thenReturn(Optional.empty()); // no live meter -> baseline
-        poller = new InverterPoller(client, stream, houseLoad, houseConsumption);
+        when(houseConsumption.measuredKw()).thenReturn(Optional.of(1.0)); // live meter reading by default
+        poller = new InverterPoller(client, stream, houseConsumption);
     }
 
     private InverterSnapshot capturePublished() {
@@ -79,6 +76,25 @@ class InverterPollerTest {
         assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(1.5);
         assertThat(s.powerBalance().consumptionMetered()).isTrue();
         assertThat(s.powerBalance().netSurplusKw()).isEqualTo(2.5); // 4.0 - 1.5
+    }
+
+    @Test
+    void unmeteredWhenNoLiveMeterReading() throws Exception {
+        when(client.isConnected()).thenReturn(false);
+        when(client.fetchFirstDevice()).thenReturn(DEV);
+        when(client.fetchReal(DEV)).thenReturn(new RealResponse("real", List.of(
+                new RealPoint("I18N_COMMON_TOTAL_ACTIVE_POWER", "3.0", "kW"))));
+        when(client.fetchDirect(DEV)).thenReturn(new DirectResponse("direct", List.of(), 0));
+        when(houseConsumption.measuredKw()).thenReturn(Optional.empty()); // meter offline
+
+        poller.poll();
+
+        InverterSnapshot s = capturePublished();
+        assertThat(s.online()).isTrue();
+        assertThat(s.powerBalance().solarPowerKw()).isEqualTo(3.0);   // solar still measured
+        assertThat(s.powerBalance().consumptionMetered()).isFalse();
+        assertThat(s.powerBalance().houseConsumptionKw()).isNull();   // no assumed baseline
+        assertThat(s.powerBalance().netSurplusKw()).isNull();         // margin unavailable
     }
 
     @Test

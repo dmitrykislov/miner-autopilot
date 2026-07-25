@@ -21,7 +21,8 @@ public class MinerControllerApplication {
     }
 
     public static void main(String[] args) {
-        System.setProperty("jdk.internal.httpclient.disableHostnameVerification", "true");
+        // The TLS property is set in the static initialiser above (runs at class-load,
+        // before main), so it is deliberately not repeated here.
         SpringApplication.run(MinerControllerApplication.class, args);
     }
 }

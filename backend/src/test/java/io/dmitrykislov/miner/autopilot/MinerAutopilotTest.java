@@ -43,23 +43,61 @@ class MinerAutopilotTest {
                 running ? 600L : null, Instant.now(), null);
     }
 
+    /** Service up but paused (e.g. dead pools): running=true, state=SUSPENDED, ~0 W draw. */
+    private MinerStatus suspended(Integer powerTargetW) {
+        return new MinerStatus(true, true, MinerStatus.SUSPENDED, "dead pools", "S19k",
+                powerTargetW, true, 0, 1, null, null, List.of(), 600L, Instant.now(), null);
+    }
+
     // ---- guards ----
     @Test void disabledDoesNothing() {
-        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
         when(stream.latest()).thenReturn(status(true, false, 800));
         autopilot(false).tick();
         verifyNoInteractions(miner);
     }
 
-    @Test void unknownMarginDoesNothing() {
+    @Test void unreachableMinerDoesNothing() {
+        when(stream.latest()).thenReturn(status(false, false, null));
+        autopilot(true).tick();
+        verifyNoInteractions(miner);
+    }
+
+    @Test void nullMinerStatusDoesNothing() {
+        when(stream.latest()).thenReturn(null);
+        autopilot(true).tick();
+        verifyNoInteractions(miner);
+    }
+
+    // ---- safety: margin unavailable (solar OR house meter offline) → stop ----
+    @Test void unknownMarginStopsRunningMiner() {
+        when(stream.latest()).thenReturn(status(true, true, 1800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.empty());
+        autopilot(true).tick();
+        verify(miner).stop();
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+        verify(miner, never()).start();
+    }
+
+    @Test void unknownMarginStopsSuspendedMiner() {
+        // suspended still counts as "running" (service up) → stop for safety
+        when(stream.latest()).thenReturn(suspended(1800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.empty());
+        autopilot(true).tick();
+        verify(miner).stop();
+    }
+
+    @Test void unknownMarginLeavesStoppedMinerAlone() {
+        when(stream.latest()).thenReturn(status(true, false, null));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.empty());
         autopilot(true).tick();
         verifyNoInteractions(miner);
     }
 
-    @Test void unreachableMinerDoesNothing() {
+    // ---- suspended: never ramp on phantom surplus ----
+    @Test void suspendedWithSurplusDoesNotRamp() {
+        // A suspended miner draws ~0 W, so the surplus is NOT headroom to step into.
+        when(stream.latest()).thenReturn(suspended(1800));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
-        when(stream.latest()).thenReturn(status(false, false, null));
         autopilot(true).tick();
         verifyNoInteractions(miner);
     }
@@ -69,9 +107,9 @@ class MinerAutopilotTest {
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
         when(stream.latest()).thenReturn(status(true, false, 800));
         autopilot(true).tick();
-        InOrderVerify();
+        verifyStartLadderInOrder();
     }
-    private void InOrderVerify() {
+    private void verifyStartLadderInOrder() {
         var io = inOrder(miner);
         io.verify(miner).setPowerTarget(800, true);   // start at the min
         io.verify(miner).start();
