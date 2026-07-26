@@ -161,17 +161,20 @@ start_app() {                                      # start detached; rotate one 
   echo "  started (autopilot enabled = ${AUTOPILOT_ENABLED:-<default:false>}, JAVA_OPTS='${JAVA_OPTS:-}')"
 }
 
-healthy() {                                        # 0 if /api/system returns HTTP 200 within timeout
+healthy() {                                        # 0 if the app is serving within the timeout
   local p="$1" code
   for _ in $(seq 1 60); do
     if command -v curl >/dev/null 2>&1; then
-      code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$p/api/system" 2>/dev/null || true)"
+      # --max-time so a thrashing/half-up app can never hang the probe (and the deploy).
+      code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://localhost:$p/api/system" 2>/dev/null || true)"
     elif command -v wget >/dev/null 2>&1; then
-      code="$(wget -q -O /dev/null -S "http://localhost:$p/api/system" 2>&1 | awk '/HTTP\//{print $2; exit}' || true)"
+      code="$(wget -q -T 5 -t 1 -O /dev/null -S "http://localhost:$p/api/system" 2>&1 | awk '/HTTP\//{print $2; exit}' || true)"
     else
       (exec 3<>"/dev/tcp/localhost/$p") 2>/dev/null && { exec 3>&- 3<&-; code=200; } || code=000
     fi
-    [[ "$code" == "200" ]] && return 0
+    # 200 = serving; 401 = serving AND the access-control filter is active (auth enabled).
+    # Both mean the app is up; only a connection failure (000) means "not yet / down".
+    [[ "$code" == "200" || "$code" == "401" ]] && return 0
     grep -qiE "APPLICATION FAILED TO START|Error starting|Web server failed to start" miner-controller.log 2>/dev/null && return 1
     sleep 3
   done
@@ -190,8 +193,8 @@ echo "  installed $(ls -la "$JAR_NAME" | awk '{print $5, $NF}')"
 # --- start and verify; roll back to the previous jar if it won't come up ---------
 start_app
 if healthy "$APP_PORT"; then
-  echo "  ✓ healthy on :$APP_PORT"
-  echo "  /api/system → $(curl -s "http://localhost:$APP_PORT/api/system" 2>/dev/null || echo '(curl unavailable)')"
+  code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://localhost:$APP_PORT/api/system" 2>/dev/null || echo '?')"
+  echo "  ✓ healthy on :$APP_PORT (/api/system → HTTP $code${code:+; 401 = auth active})"
   grep -E "Started MinerControllerApplication" miner-controller.log | tail -1 || true
 else
   echo "  ✗ new jar did not become healthy — rolling back"; tail -20 miner-controller.log || true
