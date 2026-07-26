@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * the last value immediately via the seed in {@link #stream()}, avoiding
  * duplicate delivery of buffered items.
  *
- * <p>Shared base for the inverter/house/miner/plug stream services, which differ
+ * <p>Shared base for the inverter/house/miner stream services, which differ
  * only in the element type.
  */
 public class LatestBroadcaster<T> {

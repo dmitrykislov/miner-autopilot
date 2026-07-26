@@ -8,14 +8,12 @@ class HousePropertiesTest {
 
     @Test
     void nestedGroupsDefaultWhenAbsent() {
-        var p = new HouseProperties(null, null, null, null, null);
+        var p = new HouseProperties(null, null, null, null);
         // No hardcoded IPs/accounts — hosts default to empty and come from env.
         assertThat(p.inverter().host()).isEmpty();
         assertThat(p.inverter().port()).isEqualTo(443);        // generic protocol default kept
         assertThat(p.solarAnalytics().host()).isEqualTo("https://portal.solaranalytics.com.au/api/v3");
         assertThat(p.solarAnalytics().hasCredentials()).isFalse();
-        assertThat(p.plug().host()).isEmpty();
-        assertThat(p.plug().pollIntervalMs()).isEqualTo(10000);
         assertThat(p.miner().host()).isEmpty();
         assertThat(p.miner().pollIntervalMs()).isEqualTo(10000);
         assertThat(p.miner().hasAuth()).isFalse();
@@ -33,24 +31,6 @@ class HousePropertiesTest {
         assertThat(m.clampPower(5000)).isEqualTo(3600);
         assertThat(m.clampPower(1800)).isEqualTo(1800);
         assertThat(new HouseProperties.Miner(true, "h", 0, 0, "tok", 0, 0).hasAuth()).isTrue();
-    }
-
-    @Test
-    void plugDefaultsAndHelpers() {
-        var plug = new HouseProperties.Plug(true, null, null, null, null, 0, 0, null, null, null);
-        assertThat(plug.host()).isEmpty();                     // no hardcoded IP
-        assertThat(plug.hasCredentials()).isFalse();
-        assertThat(plug.requestTimeoutMs()).isEqualTo(8000);
-        assertThat(plug.mode()).isEqualTo("cloud");
-        assertThat(plug.isCloud()).isTrue();
-        assertThat(plug.cloudBaseUrl()).isEqualTo("https://wap.tplinkcloud.com");
-
-        var withCreds = new HouseProperties.Plug(true, "1.2.3.4", "me@x.com", "pw", "Heater", 5000, 4000,
-                "local", "74-FE-CE-F0-E1-20", "https://x");
-        assertThat(withCreds.hasCredentials()).isTrue();
-        assertThat(withCreds.baseUrl()).isEqualTo("http://1.2.3.4/app");
-        assertThat(withCreds.isCloud()).isFalse();
-        assertThat(withCreds.normalisedMac()).isEqualTo("74FECEF0E120");
     }
 
     @Test

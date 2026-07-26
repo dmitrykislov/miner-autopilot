@@ -14,7 +14,7 @@ class MinerServiceTest {
     private final JsonMapper mapper = JsonMapper.builder().build();
 
     private HouseProperties props(boolean enabled, String host) {
-        return new HouseProperties(null, null, null,
+        return new HouseProperties(null, null,
                 new HouseProperties.Miner(enabled, host, 10000, 8000, "", 0, 0), null);
     }
 

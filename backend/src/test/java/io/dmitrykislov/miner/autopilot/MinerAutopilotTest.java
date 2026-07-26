@@ -30,7 +30,7 @@ class MinerAutopilotTest {
     }
 
     private HouseProperties props(boolean autopilotEnabled) {
-        return new HouseProperties(null, null, null,
+        return new HouseProperties(null, null,
                 new HouseProperties.Miner(true, "h", 0, 0, "", 0, 0),      // min 800 / max 3600
                 new HouseProperties.Autopilot(autopilotEnabled, 30000, 1000, 100, 1000));
     }

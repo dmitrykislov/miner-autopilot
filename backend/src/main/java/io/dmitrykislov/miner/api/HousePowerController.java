@@ -12,7 +12,7 @@ import reactor.core.publisher.Flux;
 
 
 /**
- * Live measured whole-home power (from the Powersensor clamp):
+ * Live measured whole-home power (from Solar Analytics):
  * <ul>
  *   <li>{@code GET /api/house/stream} — SSE feed pushed the instant each reading arrives</li>
  *   <li>{@code GET /api/house/latest} — the most recent reading (one-shot)</li>

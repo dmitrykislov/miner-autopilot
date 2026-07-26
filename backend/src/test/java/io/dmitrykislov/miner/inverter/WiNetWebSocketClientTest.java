@@ -16,7 +16,7 @@ class WiNetWebSocketClientTest {
     private WiNetWebSocketClient newClient() {
         var props = new HouseProperties(
                 new HouseProperties.Inverter("192.168.4.25", 443, "/ws/home/overview", "admin", "pw", 5000, 8000),
-                null, null, null, null);
+                null, null, null);
         return new WiNetWebSocketClient(props);
     }
 

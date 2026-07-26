@@ -11,7 +11,7 @@ spring:
   task:
     scheduling:
       pool:
-        # >1 so the inverter poll and plug poll never block each other
+        # >1 so the inverter, consumption, miner, and autopilot tasks never block each other
         size: ${SCHEDULING_POOL_SIZE:3}
   web:
     resources:
@@ -43,21 +43,6 @@ house:
     poll-interval-ms: ${SOLARANALYTICS_POLL_INTERVAL_MS:15000}
     stale-after-seconds: ${SOLARANALYTICS_STALE_AFTER_SECONDS:60}
     request-timeout-ms: ${SOLARANALYTICS_REQUEST_TIMEOUT_MS:8000}
-  # --- TP-Link Tapo P110 smart plug (switch + status) ---
-  plug:
-    enabled: ${PLUG_ENABLED:true}
-    host: ${PLUG_HOST:}
-    # TP-Link/Tapo ACCOUNT credentials (the plug has no device-local password).
-    email: ${PLUG_EMAIL:}
-    password: ${PLUG_PASSWORD:}
-    name: ${PLUG_NAME:}
-    poll-interval-ms: ${PLUG_POLL_INTERVAL_MS:10000}
-    request-timeout-ms: ${PLUG_REQUEST_TIMEOUT_MS:8000}
-    # Transport: "cloud" (TP-Link cloud relay) or "local" (on-LAN KLAP).
-    mode: ${PLUG_MODE:cloud}
-    # MAC used to match the plug in the cloud device list (blank = first P110).
-    mac: ${PLUG_MAC:}
-    cloud-base-url: ${PLUG_CLOUD_BASE_URL:https://wap.tplinkcloud.com}
   # --- Braiins OS+ miner (Antminer S19k Pro): local GraphQL API on port 80 ---
   miner:
     enabled: ${MINER_ENABLED:true}

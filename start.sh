@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# start.sh — build & run the House Energy Monitor (Sungrow SG10RS + Powersensor
+# start.sh — build & run the House Energy Monitor (Sungrow SG10RS + Solar Analytics
 #            + Braiins miner) as ONE self-contained Spring Boot jar with the
 #            React UI bundled inside, configured entirely from .env.
 #

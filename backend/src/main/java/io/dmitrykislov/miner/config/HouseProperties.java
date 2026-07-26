@@ -10,22 +10,19 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
  * house
  *  ├─ inverter        → the Sungrow SG10RS / WiNet-S (solar generation)
  *  ├─ solar-analytics → Solar Analytics cloud API (measured whole-home consumption)
- *  ├─ plug            → the TP-Link Tapo P110 smart plug (switchable load + status)
- *  └─ miner         → the Braiins OS+ miner (Antminer S19k Pro) GraphQL API
+ *  └─ miner           → the Braiins OS+ miner (Antminer S19k Pro) GraphQL API
  * </pre>
  */
 @ConfigurationProperties(prefix = "house")
 public record HouseProperties(
         @NestedConfigurationProperty Inverter inverter,
         @NestedConfigurationProperty SolarAnalytics solarAnalytics,
-        @NestedConfigurationProperty Plug plug,
         @NestedConfigurationProperty Miner miner,
         @NestedConfigurationProperty Autopilot autopilot) {
 
     public HouseProperties {
         if (inverter == null) inverter = new Inverter(null, 0, null, null, null, 0, 0);
         if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0);
-        if (plug == null) plug = new Plug(true, null, null, null, null, 0, 0, null, null, null);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
         if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0);
     }
@@ -90,67 +87,6 @@ public record HouseProperties(
         /** Usable only when both account email and password are set. */
         public boolean hasCredentials() {
             return !user.isBlank() && !password.isBlank();
-        }
-    }
-
-    /**
-     * TP-Link Tapo P110 smart plug — local encrypted HTTP API (KLAP) on port 80.
-     * Authenticates with the TP-Link/Tapo <em>account</em> credentials (there is no
-     * device-local password); they are hashed locally during the KLAP handshake.
-     */
-    public record Plug(
-            // Master switch — when false the plug integration is inactive.
-            boolean enabled,
-            // Plug IP on the LAN.
-            String host,
-            // TP-Link/Tapo account email (KLAP username).
-            String email,
-            // TP-Link/Tapo account password.
-            String password,
-            // Friendly name shown in the UI (falls back to the device's own nickname).
-            String name,
-            // How often (ms) to poll the plug for on/off + energy status.
-            long pollIntervalMs,
-            // Per-request timeout (ms) for the HTTP calls.
-            long requestTimeoutMs,
-            // Transport: "cloud" (TP-Link cloud relay) or "local" (on-LAN KLAP).
-            // This P110 runs TPAP locally (unsupported), so cloud is the default.
-            String mode,
-            // Device MAC (no separators) used to match the plug in the cloud device
-            // list; blank = match the first P110 by model.
-            String mac,
-            // TP-Link cloud base URL for login/device-list.
-            String cloudBaseUrl) {
-
-        public Plug {
-            if (host == null) host = ""; // no hardcoded IP — supplied via PLUG_HOST
-            if (email == null) email = "";
-            if (password == null) password = "";
-            if (name == null) name = "";
-            if (pollIntervalMs == 0) pollIntervalMs = 10000;
-            if (requestTimeoutMs == 0) requestTimeoutMs = 8000;
-            if (mode == null || mode.isBlank()) mode = "cloud";
-            if (mac == null) mac = "";
-            if (cloudBaseUrl == null || cloudBaseUrl.isBlank()) cloudBaseUrl = "https://wap.tplinkcloud.com";
-        }
-
-        /** Base URL of the plug's local API (KLAP transport). */
-        public String baseUrl() {
-            return "http://" + host + "/app";
-        }
-
-        /** Normalised MAC (uppercase, no separators) for cloud matching. */
-        public String normalisedMac() {
-            return mac.replace("-", "").replace(":", "").toUpperCase();
-        }
-
-        public boolean isCloud() {
-            return "cloud".equalsIgnoreCase(mode);
-        }
-
-        /** Credentials are only usable if both email and password are set. */
-        public boolean hasCredentials() {
-            return !email.isBlank() && !password.isBlank();
         }
     }
 

@@ -5,7 +5,6 @@ A single, self-contained app that monitors a home solar setup and controls a Bit
 - **⛏ Miner** — **Braiins OS+** (Antminer S19k Pro) via its local GraphQL API — start/stop, set power target, live status & fans
 - **☀ Solar** — Sungrow **SG10RS** inverter via the WiNet-S local WebSocket API
 - **🏠 House consumption** — measured whole-home load from **Solar Analytics** (their CT monitoring) via their cloud API
-- **🔌 Smart plug** — TP-Link **Tapo P110** (present but disabled by default; see [Limitations](#limitations))
 
 The React UI and the Spring Boot backend build into **one runnable jar**. Everything is configured from `.env` — no hardcoded IPs, accounts, or secrets in the source.
 
@@ -42,7 +41,6 @@ miner-controller/
 │  ├─ inverter/            # Sungrow WiNet-S WebSocket client + poller + SSE
 │  ├─ solaranalytics/      # Solar Analytics client + consumption state + SSE
 │  ├─ braiins/             # Braiins GraphQL declarative client + service + SSE
-│  ├─ plug/                # Tapo P110 (KLAP + cloud transports) — disabled by default
 │  └─ api/                 # SSE + REST controllers
 └─ frontend/               # React + Vite UI
 ```
@@ -120,11 +118,8 @@ All environment-specific values are driven by env vars — the source and `appli
 | `AUTOPILOT_START_MARGIN_W` | `1000` | start / step-up when margin ≥ this |
 | `AUTOPILOT_LOW_MARGIN_W` | `100` | back off (step down / stop) when margin < this |
 | `AUTOPILOT_STEP_W` | `800` | power step (kept ≤ deadzone `start−low`=900 so it can't oscillate) |
-| **Plug** (disabled) | | Tapo P110 |
-| `PLUG_ENABLED` | `false` | see [Limitations](#limitations) |
-| `PLUG_HOST` / `PLUG_EMAIL` / `PLUG_PASSWORD` / `PLUG_MODE` / `PLUG_MAC` / `PLUG_CLOUD_BASE_URL` | — | |
 
-Config is bound to a single nested record, `HouseProperties` (`house.inverter`, `house.solar-analytics`, `house.plug`, `house.miner`, `house.autopilot`).
+Config is bound to a single nested record, `HouseProperties` (`house.inverter`, `house.solar-analytics`, `house.miner`, `house.autopilot`).
 
 `.env.example` mirrors `.env` key-for-key with the host/account/password values blanked; `cp .env.example .env` and fill in.
 
@@ -141,7 +136,6 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 | `GET /api/miner/stream` · `/status` | Miner status: state, hashrate, power draw, fans, pools, power target |
 | `POST /api/miner/start` · `/stop` | Start/stop BOSMiner |
 | `POST /api/miner/power?watts=&apply=` | Set autotuning power target (clamped to the hard [min,max]) |
-| `GET /api/plug/stream` · `/status` · `POST /on|off|toggle` | Tapo plug (when enabled) |
 | `GET /api/system` | App version, start time, and uptime (for the UI footer) |
 
 ---
@@ -170,10 +164,11 @@ Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default*
 
 Safety/correctness properties:
 - **The running power never exceeds the available surplus.** The surplus a running miner can draw from is `margin + its own draw` (the meter counts the miner). On a sudden solar drop — say the miner is at 3000 W with +330 W to spare and a cloud swings the margin to −1880 W — one fixed step (→2200 W) would still import; instead the planner drops straight to ~1020 W (under the 1120 W now available) in a single tick. It never leaves the miner pulling from the grid.
-- **Stops the miner when the margin can't be computed** — if solar is unavailable (inverter offline, e.g. at night) or house consumption is unavailable (Solar Analytics stale/offline), the true margin is unknown, so it's unsafe to keep mining on a guess. The safe fallback is to stop.
+- **Stops the miner when the margin can't be computed** — if solar is unavailable (inverter offline, e.g. at night), house consumption is unavailable (Solar Analytics stale/offline), **or the last inverter reading is stale** (poller stalled, so `latest()` is older than 4× the poll interval), the true margin is unknown. It's unsafe to keep mining on a guess, so the safe fallback is to stop. The margin is only used when it is online, metered, *and* fresh.
+- **Always uses live miner state** — each tick reads a fresh miner status (never a cached one), and every mutating op (start / step / stop) re-verifies the state immediately before acting, so a change between decision and action can't cause a wrong op.
 - Acts only on **actually-mining** state, never `SUSPENDED` — a suspended miner (e.g. dead pools) draws ~0 W, so its draw is *not* in the margin; the autopilot skips it rather than ramping on phantom surplus.
 - Respects the miner's hard **[min, max]** power limits (also enforced in `MinerService` on every set).
-- **Stable by default:** the deadzone (`start − low` = 900 W) is ≥ one step (800 W), so a step can't carry the margin across the whole band and flap. A startup **warning** fires if custom thresholds break this.
+- **Safe-by-construction config:** the planner validates its thresholds at boot and refuses to start if a setting would break the never-import guarantee — `start ≥ min` (starting can't import) and `step ≤ start` (a step-up can't import). It also **warns** if the deadzone (`start − low` = 900 W) is narrower than one step (800 W), which would let a single step flap the miner across the band.
 
 The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot` wires it to the live margin and `MinerService`. Enable with `AUTOPILOT_ENABLED=true`.
 
@@ -191,10 +186,11 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Tests
 
 ```bash
-cd backend && mvn test        # 139 tests
+mvn clean install     # 144 backend + 36 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (144)
 ```
 
-Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/edge cases), the live margin source, and an **end-to-end WireMock** test that simulates the miner GraphQL API + inverter/house margin and asserts the exact mutations the autopilot sends.
+Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/surplus-invariant/config-guard cases), the **live margin source** (including staleness), and an **end-to-end WireMock** test that boots the full Spring context and drives the real margin chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. The React UI has its own Vitest suite that runs during `mvn install`.
 
 ---
 
@@ -215,7 +211,6 @@ Bundled jar (backend + UI), idle at steady state (pollers every 10 s):
 ## Limitations
 
 - **Miner needs a live pool to actually mine.** With no reachable pool configured, BOSMiner starts but sits **Suspended** ("dead pools"). There is no API to force hashing without a pool. On an isolated IoT network the miner also can't resolve `stratum.braiins.com` (no DNS/internet), which keeps pools "dead".
-- **Tapo P110 is disabled** (`PLUG_ENABLED=false`). This unit runs TP-Link's newest **TPAP** encryption locally — unsupported by every open library — and the legacy cloud `passthrough` API no longer controls SMART Tapo devices. The full integration (local KLAP + cloud transports, controller, SSE, UI) is built and will work if the device ever exposes KLAP or TPAP support lands upstream.
 - Several devices are cloud/internet-isolated on the LAN (Eero), which is why cloud paths and pool/NTP connectivity fail — a network concern, not an app one.
 
 ---
@@ -224,4 +219,4 @@ Bundled jar (backend + UI), idle at steady state (pollers every 10 s):
 
 Released under the [MIT License](LICENSE) — © 2026 Dmitry Kislov. Do anything you like with it; just keep the copyright notice.
 
-**Not affiliated with, endorsed by, or sponsored by** Sungrow, Solar Analytics, Braiins, Bitmain, or TP-Link/Tapo. All product names, trademarks, and device protocols are the property of their respective owners; this project only interoperates with their local APIs and covers its own source code.
+**Not affiliated with, endorsed by, or sponsored by** Sungrow, Solar Analytics, Braiins, or Bitmain. All product names, trademarks, and device protocols are the property of their respective owners; this project only interoperates with their local APIs and covers its own source code.

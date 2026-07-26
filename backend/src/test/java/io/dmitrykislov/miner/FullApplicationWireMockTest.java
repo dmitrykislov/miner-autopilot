@@ -60,7 +60,6 @@ class FullApplicationWireMockTest {
         r.add("house.inverter.poll-interval-ms", () -> 1000);
         // Others off so the context boots clean and fast
         r.add("house.solar-analytics.enabled", () -> false);
-        r.add("house.plug.enabled", () -> false);
         r.add("house.autopilot.enabled", () -> false);
     }
 
@@ -128,7 +127,7 @@ class FullApplicationWireMockTest {
                 .expectBody()
                 .jsonPath("$.online").isEqualTo(false);
 
-        // 3) House endpoint responds even with the Powersensor disabled.
+        // 3) House endpoint responds even with Solar Analytics disabled.
         web.get().uri("/api/house/latest").exchange().expectStatus().isOk();
 
         // 4) SSE stream is live and emits the current miner status.

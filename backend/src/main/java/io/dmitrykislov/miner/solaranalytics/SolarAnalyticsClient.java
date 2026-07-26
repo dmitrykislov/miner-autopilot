@@ -27,8 +27,8 @@ import java.util.Base64;
  * <p>Authenticates with the account email + password over HTTP Basic — no app keys.
  * If no {@code site-id} is configured it auto-selects the first active site.
  *
- * <p>Replaces the former local Powersensor UDP client; the SG10RS inverter has no
- * energy meter, so Solar Analytics (their own CT hardware) is the consumption source.
+ * <p>The SG10RS inverter exposes no whole-home energy meter, so Solar Analytics
+ * (their own CT hardware) is the source of truth for house consumption.
  */
 @Component
 public class SolarAnalyticsClient {

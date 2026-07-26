@@ -12,7 +12,7 @@ import reactor.core.publisher.Flux;
  *   <li>{@code GET /api/inverter/stream} — live SSE feed of {@link InverterSnapshot}s</li>
  *   <li>{@code GET /api/inverter/latest} — most recent snapshot (one-shot)</li>
  * </ul>
- * House consumption comes from the Powersensor (see {@code /api/house}); the
+ * House consumption comes from Solar Analytics (see {@code /api/house}); the
  * inverter only supplies solar generation, so there is no house-load endpoint.
  */
 @RestController
