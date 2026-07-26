@@ -27,4 +27,9 @@ public record HousePower(
         return new HousePower(Rounding.toPlaces(watts, 1), Rounding.toPlaces(watts / 1000.0, 3),
                 voltage, source, true, ts);
     }
+
+    /** An "unavailable" reading (not metered) — consumption can't be measured right now. */
+    public static HousePower unavailable(Instant ts) {
+        return new HousePower(0, 0, null, null, false, ts);
+    }
 }

@@ -59,15 +59,17 @@ class HousePropertiesTest {
 
     @Test
     void solarAnalyticsAppliesDefaults() {
-        var sa = new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0);
+        var sa = new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, 0);
         assertThat(sa.host()).isEqualTo("https://portal.solaranalytics.com.au/api/v3");
         assertThat(sa.pollIntervalMs()).isEqualTo(15000);
         assertThat(sa.staleAfterSeconds()).isEqualTo(60);
         assertThat(sa.requestTimeoutMs()).isEqualTo(8000);
+        assertThat(sa.minSolarWatts()).isEqualTo(800);   // default solar gate
         assertThat(sa.siteId()).isEmpty();
         assertThat(sa.hasCredentials()).isFalse();
 
-        var withCreds = new HouseProperties.SolarAnalytics(true, "https://x", "me@x.com", "pw", "12345", 0, 0, 0);
+        var withCreds = new HouseProperties.SolarAnalytics(true, "https://x", "me@x.com", "pw", "12345", 0, 0, 0, 1000);
+        assertThat(withCreds.minSolarWatts()).isEqualTo(1000);
         assertThat(withCreds.hasCredentials()).isTrue();
         assertThat(withCreds.siteId()).isEqualTo("12345");
     }

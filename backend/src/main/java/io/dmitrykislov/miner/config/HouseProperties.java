@@ -22,7 +22,7 @@ public record HouseProperties(
 
     public HouseProperties {
         if (inverter == null) inverter = new Inverter(null, 0, null, null, null, 0, 0);
-        if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0);
+        if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0, 0);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
         if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0);
     }
@@ -72,7 +72,11 @@ public record HouseProperties(
             // becomes unavailable until fresh data returns.
             int staleAfterSeconds,
             // Per-request HTTP timeout (ms).
-            long requestTimeoutMs) {
+            long requestTimeoutMs,
+            // Only poll the consumption API when the inverter is generating more than
+            // this many watts. Below it there can't be a usable surplus (the miner's
+            // floor alone exceeds it), so calling the cloud API would be wasteful.
+            int minSolarWatts) {
 
         public SolarAnalytics {
             if (host == null || host.isBlank()) host = "https://portal.solaranalytics.com.au/api/v3";
@@ -82,6 +86,7 @@ public record HouseProperties(
             if (pollIntervalMs == 0) pollIntervalMs = 15000;
             if (staleAfterSeconds == 0) staleAfterSeconds = 60;
             if (requestTimeoutMs == 0) requestTimeoutMs = 8000;
+            if (minSolarWatts == 0) minSolarWatts = 800;
         }
 
         /** Usable only when both account email and password are set. */

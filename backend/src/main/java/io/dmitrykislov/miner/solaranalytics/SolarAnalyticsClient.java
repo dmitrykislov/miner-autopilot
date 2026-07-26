@@ -1,6 +1,8 @@
 package io.dmitrykislov.miner.solaranalytics;
 
 import io.dmitrykislov.miner.config.HouseProperties;
+import io.dmitrykislov.miner.inverter.InverterStreamService;
+import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -29,6 +31,13 @@ import java.util.Base64;
  *
  * <p>The SG10RS inverter exposes no whole-home energy meter, so Solar Analytics
  * (their own CT hardware) is the source of truth for house consumption.
+ *
+ * <p>To avoid pointless cloud calls when no surplus is possible, the poll is gated
+ * on live solar generation: it only fetches consumption while the inverter is
+ * generating more than {@code house.solar-analytics.min-solar-w}. Below that the
+ * margin can't support the miner anyway, and the reading simply goes stale (which
+ * the autopilot treats as an unknown margin → safe stop). The gate reads the latest
+ * inverter snapshot (a lock-free in-memory value), so it never blocks the poll.
  */
 @Component
 public class SolarAnalyticsClient {
@@ -38,16 +47,18 @@ public class SolarAnalyticsClient {
     private final HouseProperties.SolarAnalytics cfg;
     private final HouseConsumptionState consumption;
     private final HousePowerStreamService stream;
+    private final InverterStreamService inverter;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final ObjectMapper mapper = JsonMapper.builder().build();
     private final String authHeader;
     private volatile String siteId;
 
     public SolarAnalyticsClient(HouseProperties props, HouseConsumptionState consumption,
-                                HousePowerStreamService stream) {
+                                HousePowerStreamService stream, InverterStreamService inverter) {
         this.cfg = props.solarAnalytics();
         this.consumption = consumption;
         this.stream = stream;
+        this.inverter = inverter;
         this.authHeader = "Basic " + Base64.getEncoder().encodeToString(
                 (cfg.user() + ":" + cfg.password()).getBytes(StandardCharsets.UTF_8));
         this.siteId = cfg.siteId();
@@ -58,6 +69,20 @@ public class SolarAnalyticsClient {
         if (!cfg.enabled()) return;
         if (!cfg.hasCredentials()) {
             log.debug("Solar Analytics: no credentials configured — skipping");
+            return;
+        }
+        // Gate: only spend an API call when there is meaningful solar coming in.
+        double solarW = currentSolarWatts();
+        if (solarW <= cfg.minSolarWatts()) {
+            log.debug("Solar Analytics: solar {}W ≤ {}W — no usable surplus, skipping consumption fetch",
+                    Math.round(solarW), cfg.minSolarWatts());
+            // Mark consumption UNAVAILABLE rather than leaving the last (pre-dip) reading to go
+            // stale slowly: a running miner's draw may not be in that frozen reading, so keeping
+            // it would let the margin look better than reality and hold the miner importing for
+            // up to the stale window. Unavailable → margin unknown → autopilot safely stops.
+            HousePower none = HousePower.unavailable(Instant.now());
+            consumption.update(none);
+            stream.publish(none);
             return;
         }
         try {
@@ -78,6 +103,13 @@ public class SolarAnalyticsClient {
         } catch (Exception e) {
             log.warn("Solar Analytics poll failed: {}", e.toString());
         }
+    }
+
+    /** Live solar generation (watts) from the latest inverter snapshot; 0 if none/offline. */
+    private double currentSolarWatts() {
+        InverterSnapshot snap = inverter.latest();
+        if (snap == null || !snap.online() || snap.powerBalance() == null) return 0.0;
+        return snap.powerBalance().solarPowerKw() * 1000.0;
     }
 
     /** Newest {@code consumed} (watts) from a {@code /live_site_data} response, or null. */

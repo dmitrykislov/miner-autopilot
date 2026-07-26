@@ -165,11 +165,12 @@ class MinerAutopilotPlannerTest {
         // i.e. the miner must never pull from the grid.
 
         @Test void cloudDropBringsMinerUnderTheSurplusInOneDecision() {
-            // Sunny: miner at 3000 W with +330 W to spare → inside the deadzone → hold,
-            // and 3000 W is already within the 3330 W surplus.
+            // Sunny: miner at 3000 W with +330 W to spare → inside the deadzone → hold.
+            // (Holding at 3000 W is within the 3330 W surplus, so no import.)
             var hold = on(330, 3000);
             assertThat(hold.action()).isEqualTo(Action.NONE);
-            assertThat(3000).isLessThanOrEqualTo(330 + 3000);
+            assertThat(hold.targetPowerW()).isEqualTo(3000);                 // holds at the current draw
+            assertThat(hold.targetPowerW()).isLessThanOrEqualTo(330 + 3000); // ≤ available surplus
 
             // Cloud arrives, solar collapses → margin swings to −1880 W (importing).
             // Surplus actually available = −1880 + 3000 = 1120 W. A single 1000 W step
@@ -234,6 +235,16 @@ class MinerAutopilotPlannerTest {
                 .isInstanceOf(IllegalArgumentException.class);   // low >= start
         assertThatThrownBy(() -> new MinerAutopilotPlanner(800, 3600, 1000, 100, 0))
                 .isInstanceOf(IllegalArgumentException.class);   // step <= 0
+        assertThatThrownBy(() -> new MinerAutopilotPlanner(800, 3600, 1000, -1, 800))
+                .isInstanceOf(IllegalArgumentException.class);   // negative low margin
+    }
+
+    @Test void rejectsNegativeLowMarginThatWouldAntiBufferTheStepDown() {
+        // A negative lowMarginW flips the step-down "fit" (floor(surplus) − lowMarginW) into
+        // targeting ABOVE the surplus → import. Must be rejected at construction.
+        assertThatThrownBy(() -> new MinerAutopilotPlanner(800, 3600, 1000, -500, 800))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("lowMarginW");
     }
 
     @Test void rejectsConfigsThatWouldImportFromGrid() {

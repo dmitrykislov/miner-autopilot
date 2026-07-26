@@ -6,6 +6,8 @@ import io.dmitrykislov.miner.inverter.WiNetWebSocketClient;
 import io.dmitrykislov.miner.simulator.MockInverter;
 import io.dmitrykislov.miner.simulator.MockMiner;
 import io.dmitrykislov.miner.simulator.MockSolarAnalytics;
+import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
+import io.dmitrykislov.miner.solaranalytics.HousePower;
 import io.dmitrykislov.miner.solaranalytics.SolarAnalyticsClient;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +17,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+import java.time.Instant;
 
 /**
  * End-to-end autopilot test that boots the <b>entire Spring Boot context</b> and drives
@@ -60,20 +64,31 @@ class MinerAutopilotWireMockTest {
     @Autowired InverterPoller inverterPoller;
     @Autowired SolarAnalyticsClient solarAnalyticsClient;
     @Autowired MinerService minerService;
+    @Autowired HouseConsumptionState consumption;
 
     @BeforeEach
     void arrange() {
         miner.reset();
         solar.reset();
         inverter = new MockInverter(winet);
+        // Start each test with consumption "unknown" (unmetered) so a tick that gates off
+        // the API leaves the margin genuinely unavailable rather than reusing a stale value.
+        consumption.update(new HousePower(0, 0, null, null, false, Instant.now()));
     }
 
-    /** Pull fresh solar + consumption into the live snapshot, then run one autopilot tick. */
+    /**
+     * Run one autopilot tick against the live chain. Order matters: the Solar Analytics
+     * poll is gated on live solar, so the inverter must publish solar first; then the
+     * consumption poll runs; then the inverter re-publishes a snapshot that now folds in
+     * the fresh consumption, which the autopilot reads.
+     */
     private void tick() {
-        solarAnalyticsClient.poll(); // → house consumption
-        inverterPoller.poll();       // → solar + house snapshot
-        miner.clearRequests();       // count only the tick's calls
-        autopilot.tick();
+        inverterPoller.poll();       // 1) publish solar (the gate input for Solar Analytics)
+        solar.clearRequests();       // count only this tick's consumption API calls
+        solarAnalyticsClient.poll(); // 2) fetch consumption iff solar > threshold
+        inverterPoller.poll();       // 3) rebuild the snapshot with solar + fresh consumption
+        miner.clearRequests();       // count only the tick's miner calls
+        autopilot.tick();            // 4) decide + act
     }
 
     // ---------------------------------------------------------------- start
@@ -139,12 +154,53 @@ class MinerAutopilotWireMockTest {
     }
 
     @Test void stopsWhenDeepDeficitEvenAboveFloor() {
-        // solar 0.2 kW, house 3.6 kW → margin −3400 W; even the 800 W floor exceeds the
-        // available surplus (−400 W) → stop rather than step down.
-        inverter.solar(0.2); solar.consumption(3600); miner.mining(3000);
+        // solar 0.9 kW (above the 800 W gate, so consumption IS fetched), house 3.6 kW →
+        // margin −2700 W; even the 800 W floor exceeds the available surplus (300 W) →
+        // stop rather than step down.
+        inverter.solar(0.9); solar.consumption(3600); miner.mining(3000);
         tick();
         miner.verifyStopped();
         miner.verifyNoPowerChange();
+    }
+
+    // ------------------------------------------- solar gate: skip the API when solar is low
+    @Test void lowSolarSkipsConsumptionFetchAndStopsMiner() {
+        // Solar 0.5 kW ≤ 800 W gate: no usable surplus is possible, so the consumption API
+        // must NOT be called; the margin goes unavailable → the running miner is stopped.
+        inverter.solar(0.5); solar.consumption(400); miner.mining(1800);
+        tick();
+        solar.verifyNotFetched();
+        miner.verifyStopped();
+        miner.verifyNoPowerChange();
+    }
+
+    @Test void solarAboveGateDoesFetchConsumption() {
+        // Solar 2.0 kW > 800 W gate: the consumption API IS queried and the margin is used.
+        inverter.solar(2.0); solar.consumption(1000); miner.stopped(800);
+        tick();
+        solar.verifyFetched();
+        miner.verifyStarted();
+    }
+
+    @Test void solarExactlyAtGateSkipsFetch() {
+        // Boundary: the gate is `solar <= min` (800 W), so exactly 800 W still skips the API.
+        inverter.solar(0.8); solar.consumption(400); miner.mining(1800);
+        tick();
+        solar.verifyNotFetched();
+        miner.verifyStopped();
+    }
+
+    @Test void solarDipBelowGateClearsStaleConsumptionAndStops() {
+        // Regression guard for the import window: establish a fresh METERED reading while solar
+        // is high, then drop solar below the gate. The gate must mark consumption UNAVAILABLE
+        // (not reuse the now-stale reading that omits the miner's draw) → margin unknown → stop.
+        inverter.solar(3.0); solar.consumption(1000);
+        inverterPoller.poll(); solarAnalyticsClient.poll(); inverterPoller.poll(); // consumption now metered
+        inverter.solar(0.5); miner.mining(1800);
+        tick();
+        solar.verifyNotFetched();     // gated off
+        miner.verifyStopped();        // stale reading NOT reused → margin unknown → safe stop
+        miner.verifyNoPowerChange();  // did not step down on an optimistic stale margin
     }
 
     // ---------------------------------------------------------------- deadzone
@@ -158,6 +214,7 @@ class MinerAutopilotWireMockTest {
     @Test void stopsRunningMinerWhenInverterOffline() {
         inverter.offline(); solar.consumption(1000); miner.mining(1800);
         tick();
+        solar.verifyNotFetched();   // offline → solar unknown (0) → gate also skips the fetch
         miner.verifyStopped();
         miner.verifyNoPowerChange();
     }

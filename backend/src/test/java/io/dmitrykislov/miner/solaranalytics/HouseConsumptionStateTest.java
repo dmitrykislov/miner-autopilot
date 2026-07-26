@@ -11,7 +11,7 @@ class HouseConsumptionStateTest {
 
     private HouseConsumptionState stateWithStaleAfter(int seconds) {
         var props = new HouseProperties(null,
-                new HouseProperties.SolarAnalytics(true, "h", "u", "p", "site", 15000, seconds, 8000),
+                new HouseProperties.SolarAnalytics(true, "h", "u", "p", "site", 15000, seconds, 8000, 800),
                 null, null);
         return new HouseConsumptionState(props);
     }

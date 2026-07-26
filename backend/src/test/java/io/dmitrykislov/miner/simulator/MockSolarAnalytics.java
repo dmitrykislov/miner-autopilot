@@ -26,6 +26,19 @@ public class MockSolarAnalytics {
 
     public void reset() { wm.resetAll(); }
 
+    /** Forget requests recorded so far (so verifications count only what follows). */
+    public void clearRequests() { wm.resetRequests(); }
+
+    /** Assert the consumption API WAS queried. */
+    public void verifyFetched() {
+        wm.verify(moreThanOrExactly(1), getRequestedFor(urlPathEqualTo("/api/v3/live_site_data")));
+    }
+
+    /** Assert the consumption API was NOT queried (e.g. gated off by low solar). */
+    public void verifyNotFetched() {
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/api/v3/live_site_data")));
+    }
+
     /** Live whole-home consumption reading (watts). */
     public void consumption(int watts) {
         wm.stubFor(get(urlPathEqualTo("/api/v3/live_site_data")).willReturn(okJson(

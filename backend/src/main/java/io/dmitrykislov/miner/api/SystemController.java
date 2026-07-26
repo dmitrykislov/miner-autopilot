@@ -13,7 +13,8 @@ import java.util.Map;
 /**
  * App/runtime info for the UI footer:
  * <ul>
- *   <li>{@code version}       — the application version (e.g. "1.0.1")</li>
+ *   <li>{@code version}       — the application version, sourced from the Maven
+ *       project version in pom.xml (e.g. "1.1.0")</li>
  *   <li>{@code startedAt}     — ISO-8601 instant the Spring context started</li>
  *   <li>{@code uptimeSeconds} — seconds since start (computed per request)</li>
  * </ul>
@@ -26,7 +27,7 @@ public class SystemController {
     private final String version;
     private final long startupMillis;
 
-    public SystemController(ApplicationContext ctx, @Value("${app.version:1.0.1}") String version) {
+    public SystemController(ApplicationContext ctx, @Value("${app.version:unknown}") String version) {
         this.version = version;
         this.startupMillis = ctx.getStartupDate(); // set at context refresh — stable for the run
     }

@@ -46,6 +46,11 @@ public final class MinerAutopilotPlanner {
         if (minPowerW <= 0 || maxPowerW < minPowerW) {
             throw new IllegalArgumentException("invalid power limits: min=" + minPowerW + " max=" + maxPowerW);
         }
+        if (lowMarginW < 0) {
+            // A negative low margin turns the step-down "fit" (floor(surplus) − lowMarginW)
+            // into an anti-buffer that targets ABOVE the surplus → imports. Disallow it.
+            throw new IllegalArgumentException("lowMarginW must be ≥ 0");
+        }
         if (lowMarginW >= startMarginW) {
             throw new IllegalArgumentException("lowMarginW must be < startMarginW");
         }

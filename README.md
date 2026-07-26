@@ -89,7 +89,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `SERVER_PORT` | `8080` | Backend + bundled UI |
 | `FRONTEND_PORT` | `5173` | Vite dev server (dev mode only) |
 | `LOG_LEVEL` | `INFO` | `io.dmitrykislov.miner` log level |
-| `SCHEDULING_POOL_SIZE` | `3` | So the pollers never block each other |
+| `SCHEDULING_POOL_SIZE` | `4` | One thread per scheduled task (inverter/consumption/miner/autopilot) so none blocks the others |
 | **Inverter** | | Sungrow SG10RS / WiNet-S |
 | `INVERTER_HOST` | — | dongle LAN IP (required) |
 | `INVERTER_PORT` | `443` | |
@@ -104,6 +104,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `SOLARANALYTICS_SITE_ID` | _(blank)_ | blank = auto-detect the first active site |
 | `SOLARANALYTICS_POLL_INTERVAL_MS` | `15000` | how often consumption is polled |
 | `SOLARANALYTICS_STALE_AFTER_SECONDS` | `60` | reading older than this ⇒ consumption (and margin) unavailable |
+| `SOLARANALYTICS_MIN_SOLAR_W` | `800` | only call the consumption API when solar generation exceeds this (no usable surplus below it) |
 | **Miner** | | Braiins OS+ |
 | `MINER_ENABLED` | `true` | |
 | `MINER_HOST` | — | miner LAN IP |
@@ -177,7 +178,7 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Notable device details
 
 - **Sungrow SG10RS / WiNet-S** — real-time data comes from the dongle's local WebSocket API (`wss://…/ws/home/overview`): `connect` → `login` → `devicelist` → `real`/`direct`. (Modbus TCP :502 exists but is firewalled while you're on the dongle's own WiFi AP.) The dongle's self-signed cert has no SAN, so hostname verification is disabled for these LAN clients (set once in `main()`).
-- **Solar Analytics** — polls `GET /api/v3/live_site_data` (HTTP Basic auth with the account email/password) every ~15 s and reads `consumed` (watts) as whole-home consumption. Their CT hardware measures the load directly, so — unlike the SG10RS, which has no energy meter — this yields true house consumption. Margin = `solar − consumed` (see `PowerBalance`).
+- **Solar Analytics** — polls `GET /api/v3/live_site_data` (HTTP Basic auth with the account email/password) every ~15 s and reads `consumed` (watts) as whole-home consumption. Their CT hardware measures the load directly, so — unlike the SG10RS, which has no energy meter — this yields true house consumption. Margin = `solar − consumed` (see `PowerBalance`). The poll is **gated on live solar**: it only calls the cloud API while the inverter is generating more than `SOLARANALYTICS_MIN_SOLAR_W` (default 800 W) — below that no surplus is possible, so the call is skipped and consumption is marked **unavailable** — the autopilot then treats the margin as unknown and safely stops a running miner (rather than holding it on a now-stale reading that omits the miner's own draw, which would import from the grid). The gate reads the latest inverter snapshot (a lock-free in-memory value), so it never blocks the poll or introduces a dependency cycle.
 - **Braiins OS+ miner** — GraphQL at `/graphql`. Declarative `@HttpExchange` client. `bosminer.start`/`stop` control the BOSMiner **service**; the miner only **hashes** ("Mining") when a live pool is connected — otherwise it self-pauses ("dead pools") and shows **Suspended**. Fans/hashrate are only reported while the service is up.
 - **Fans ramp on every power change** because Braiins runs them in **automatic (target-temperature) mode** — more power ⇒ more heat ⇒ higher RPM (and vice-versa). Braiins also offers a **manual fixed-speed** mode (fans hold a set %) and an **immersion** mode, but manual mode disables thermal protection and is [not recommended](https://academy.braiins.com/os/plus-en/Configuration/index_configuration.html) unless set high (≈100%). The better mitigation is to change power **less often** — the autopilot's deadzone/step/interval already limit this; widening them (or raising the target temperature) reduces fan transients without losing thermal safety. There is no separate fan-throttle-on-change knob.
 
@@ -186,8 +187,8 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Tests
 
 ```bash
-mvn clean install     # 144 backend + 36 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (144)
+mvn clean install     # 149 backend + 36 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (149)
 ```
 
 Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/surplus-invariant/config-guard cases), the **live margin source** (including staleness), and an **end-to-end WireMock** test that boots the full Spring context and drives the real margin chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. The React UI has its own Vitest suite that runs during `mvn install`.

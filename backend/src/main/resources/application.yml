@@ -1,9 +1,10 @@
 server:
   port: ${SERVER_PORT:8080}
 
-# Application version shown in the UI footer (override with APP_VERSION if needed).
+# Application version shown in the UI footer. Sourced from the Maven project version
+# (pom.xml, the single source of truth) via @...@ resource filtering; override with APP_VERSION.
 app:
-  version: ${APP_VERSION:1.0.1}
+  version: ${APP_VERSION:@project.version@}
 
 spring:
   application:
@@ -11,8 +12,9 @@ spring:
   task:
     scheduling:
       pool:
-        # >1 so the inverter, consumption, miner, and autopilot tasks never block each other
-        size: ${SCHEDULING_POOL_SIZE:3}
+        # One thread per @Scheduled task (inverter, consumption, miner, autopilot poll/tick)
+        # so a blocked I/O poller can never delay the safety-critical autopilot tick.
+        size: ${SCHEDULING_POOL_SIZE:4}
   web:
     resources:
       # UI (built React app) is bundled here and served at "/"
@@ -43,6 +45,9 @@ house:
     poll-interval-ms: ${SOLARANALYTICS_POLL_INTERVAL_MS:15000}
     stale-after-seconds: ${SOLARANALYTICS_STALE_AFTER_SECONDS:60}
     request-timeout-ms: ${SOLARANALYTICS_REQUEST_TIMEOUT_MS:8000}
+    # Only call the consumption API when the inverter generates > this many watts
+    # (no usable surplus is possible below it, so skip the call when solar is low).
+    min-solar-w: ${SOLARANALYTICS_MIN_SOLAR_W:800}
   # --- Braiins OS+ miner (Antminer S19k Pro): local GraphQL API on port 80 ---
   miner:
     enabled: ${MINER_ENABLED:true}
