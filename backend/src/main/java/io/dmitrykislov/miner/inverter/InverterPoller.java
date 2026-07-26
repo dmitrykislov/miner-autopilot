@@ -36,8 +36,8 @@ public class InverterPoller {
         this.houseConsumption = houseConsumption;
     }
 
-    /** Measured house consumption if the Powersensor is live, else null (unavailable). */
-    private Double houseKw() {
+    /** Signed net-grid power from the Powersensor if live, else null (unavailable). */
+    private Double gridNetKw() {
         return houseConsumption.measuredKw().orElse(null);
     }
 
@@ -49,7 +49,7 @@ public class InverterPoller {
             ensureSession();
             RealResponse real = client.fetchReal(device);
             DirectResponse direct = safeDirect(device);
-            InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, houseKw(), now);
+            InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, gridNetKw(), now);
             stream.publish(snapshot);
             log.debug("Published snapshot: state={} activePower={}",
                     snapshot.runningState(), snapshot.highlights().get("activePowerKw"));
@@ -85,7 +85,6 @@ public class InverterPoller {
     private void publishOffline(Instant now, String error) {
         String model = device != null ? device.model() : "SG10RS";
         String sn = device != null ? device.serialNumber() : null;
-        // Solar is unknown while offline, but house consumption may still be metered.
-        stream.publish(InverterSnapshot.offline(model, sn, now, houseKw(), error));
+        stream.publish(InverterSnapshot.offline(model, sn, now, error));
     }
 }

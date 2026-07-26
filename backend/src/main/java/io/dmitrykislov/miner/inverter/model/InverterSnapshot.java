@@ -30,13 +30,10 @@ public record InverterSnapshot(
         List<MpptString> strings,
         String error) {
 
-    public static InverterSnapshot offline(String deviceModel, String serialNumber, Instant ts,
-                                           Double houseKw, String error) {
-        // Solar is unknown while offline (0), but house may still be metered.
-        PowerBalance balance = houseKw != null
-                ? PowerBalance.metered(0.0, houseKw)
-                : PowerBalance.unmetered(0.0);
+    public static InverterSnapshot offline(String deviceModel, String serialNumber, Instant ts, String error) {
+        // Offline: solar is unknown, so house (= solar + grid) and the margin can't be
+        // computed → unavailable.
         return new InverterSnapshot(false, deviceModel, serialNumber, "Offline", ts,
-                Map.of(), balance, List.of(), List.of(), error);
+                Map.of(), PowerBalance.unmetered(0.0), List.of(), List.of(), error);
     }
 }

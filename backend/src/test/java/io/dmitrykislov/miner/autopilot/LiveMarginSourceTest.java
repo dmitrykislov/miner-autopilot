@@ -20,19 +20,19 @@ class LiveMarginSourceTest {
     private final InverterStreamService stream = mock(InverterStreamService.class);
     private final LiveMarginSource source = new LiveMarginSource(stream);
 
-    private InverterSnapshot online(double solarKw, double houseKw) {
+    private InverterSnapshot online(double solarKw, double gridNetKw) {
         return new InverterSnapshot(true, "SG10RS", "SN", "Running", Instant.now(),
-                Map.of(), PowerBalance.metered(solarKw, houseKw), List.of(), List.of(), null);
+                Map.of(), PowerBalance.metered(solarKw, gridNetKw), List.of(), List.of(), null);
     }
 
-    @Test void marginIsNetSurplusInWatts() {
-        when(stream.latest()).thenReturn(online(3.0, 1.5));      // +1.5 kW surplus
+    @Test void marginIsExportSurplusInWatts() {
+        when(stream.latest()).thenReturn(online(3.0, -1.5));     // exporting 1.5 kW ⇒ +1500 W surplus
         assertThat(source.currentMarginWatts()).isPresent();
         assertThat(source.currentMarginWatts().getAsDouble()).isCloseTo(1500.0, within(1e-6));
     }
 
     @Test void marginCanBeNegative() {
-        when(stream.latest()).thenReturn(online(0.2, 0.9));      // importing 0.7 kW
+        when(stream.latest()).thenReturn(online(0.2, 0.7));      // importing 0.7 kW ⇒ −700 W
         assertThat(source.currentMarginWatts().getAsDouble()).isCloseTo(-700.0, within(1e-6));
     }
 
@@ -43,7 +43,7 @@ class LiveMarginSourceTest {
 
     @Test void emptyWhenInverterOffline() {
         when(stream.latest()).thenReturn(
-                InverterSnapshot.offline("SG10RS", "SN", Instant.now(), 0.5, "boom"));
+                InverterSnapshot.offline("SG10RS", "SN", Instant.now(), "boom"));
         assertThat(source.currentMarginWatts()).isEmpty();
     }
 

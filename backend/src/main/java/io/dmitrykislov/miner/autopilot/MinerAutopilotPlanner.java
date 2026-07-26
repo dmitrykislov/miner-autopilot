@@ -19,10 +19,18 @@ import io.dmitrykislov.miner.autopilot.AutopilotDecision.Action;
  *       (starting draws {@code minPowerW}, leaving {@code margin − minPowerW} surplus).</li>
  *   <li>Miner on &amp; margin ≥ {@code startMarginW} → <b>STEP_UP</b> by {@code stepW}
  *       (capped at {@code maxPowerW}; NONE if already at max).</li>
- *   <li>Miner on &amp; margin &lt; {@code lowMarginW} → <b>STEP_DOWN</b> by {@code stepW};
- *       if that would fall below {@code minPowerW} → <b>STOP</b>.</li>
+ *   <li>Miner on &amp; margin &lt; {@code lowMarginW} → <b>STEP_DOWN</b> — by at least
+ *       one {@code stepW}, but further if a single step wouldn't bring the target
+ *       under the <em>available surplus</em> ({@code margin + currentPowerW}, i.e.
+ *       solar − base-house load). This guarantees the miner never draws more than
+ *       the surplus, even on a sudden solar drop. If even {@code minPowerW} would
+ *       exceed the surplus → <b>STOP</b>.</li>
  *   <li>Otherwise (deadzone {@code [lowMarginW, startMarginW)}) → <b>NONE</b> (hold).</li>
  * </ul>
+ *
+ * <p><b>Invariant:</b> under a stable config (see {@link #isStableConfig}, and
+ * {@code startMarginW ≥ minPowerW}) any decision that leaves the miner running
+ * sets a power ≤ the available surplus — the miner never imports from the grid.
  */
 public final class MinerAutopilotPlanner {
 
@@ -79,16 +87,29 @@ public final class MinerAutopilotPlanner {
         }
 
         if (marginW < lowMarginW) {
-            // Only stop when already at (or below) the floor; otherwise reduce toward
-            // it — never undershoot the hard min, and never stop prematurely from an
-            // off-ladder target (e.g. 1200 W → 800 W, not STOP).
+            // Already at the floor → can't reduce further → stop.
             if (currentPowerW <= minPowerW) {
                 return AutopilotDecision.of(Action.STOP, 0,
                         "margin " + m + "W < " + lowMarginW + "W and at floor " + minPowerW + "W → stop miner");
             }
-            int next = Math.max(currentPowerW - stepW, minPowerW);
+            // Surplus available to the miner = margin + its own current draw (the meter
+            // counts the miner, so adding its draw back yields solar − base-house load).
+            double surplusW = marginW + currentPowerW;
+            long s = Math.round(surplusW);
+            // If even the floor would draw more than the surplus, running at all imports
+            // from the grid → stop.
+            if (surplusW < minPowerW) {
+                return AutopilotDecision.of(Action.STOP, 0,
+                        "margin " + m + "W < " + lowMarginW + "W, surplus " + s
+                                + "W below floor " + minPowerW + "W → stop miner");
+            }
+            // Reduce by at least one step, but further if a single step wouldn't bring
+            // the target under the surplus (keeping a lowMarginW buffer). Clamped to the
+            // floor. The target therefore never exceeds the surplus → never imports.
+            int fitTarget = (int) Math.floor(surplusW) - lowMarginW;
+            int next = Math.max(minPowerW, Math.min(currentPowerW - stepW, fitTarget));
             return AutopilotDecision.of(Action.STEP_DOWN, next,
-                    "margin " + m + "W < " + lowMarginW + "W → down to " + next + "W");
+                    "margin " + m + "W < " + lowMarginW + "W, surplus " + s + "W → down to " + next + "W");
         }
 
         return AutopilotDecision.of(Action.NONE, currentPowerW,

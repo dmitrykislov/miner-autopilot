@@ -42,7 +42,7 @@ public final class SnapshotMapper {
     );
 
     public static InverterSnapshot map(DeviceInfo dev, RealResponse real, DirectResponse direct,
-                                       Double houseKw, Instant now) {
+                                       Double gridNetKw, Instant now) {
         List<Metric> metrics = new ArrayList<>();
         Map<String, Object> highlights = new LinkedHashMap<>();
         String runningState = "Unknown";
@@ -80,11 +80,11 @@ public final class SnapshotMapper {
             }
         }
 
-        // Solar-vs-house margin. Solar is always measured by the inverter; house
-        // load is measured by the Powersensor when live (houseKw != null), else the
-        // margin is unavailable. See PowerBalance for semantics.
-        PowerBalance balance = houseKw != null
-                ? PowerBalance.metered(solarPowerKw, houseKw)
+        // Solar-vs-house margin. Solar is measured by the inverter; the Powersensor
+        // clamp gives signed net-grid power (gridNetKw) when live, from which house
+        // and surplus are derived. Unavailable when the meter is offline.
+        PowerBalance balance = gridNetKw != null
+                ? PowerBalance.metered(solarPowerKw, gridNetKw)
                 : PowerBalance.unmetered(solarPowerKw);
 
         return new InverterSnapshot(true, dev.model(), dev.serialNumber(),

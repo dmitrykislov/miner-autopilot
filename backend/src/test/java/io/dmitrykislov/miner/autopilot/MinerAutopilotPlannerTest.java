@@ -155,12 +155,72 @@ class MinerAutopilotPlannerTest {
         }
     }
 
+    // -------------------------------------------------- surplus invariant (never import)
+    @Nested
+    class SurplusInvariant {
+        // The surplus a running miner can draw from = margin + its own current draw
+        // (the meter counts the miner, so adding it back yields solar − base house).
+        // A decision that leaves the miner running must set a power ≤ that surplus,
+        // i.e. the miner must never pull from the grid.
+
+        @Test void cloudDropBringsMinerUnderTheSurplusInOneDecision() {
+            // Sunny: miner at 3000 W with +330 W to spare → inside the deadzone → hold,
+            // and 3000 W is already within the 3330 W surplus.
+            var hold = on(330, 3000);
+            assertThat(hold.action()).isEqualTo(Action.NONE);
+            assertThat(3000).isLessThanOrEqualTo(330 + 3000);
+
+            // Cloud arrives, solar collapses → margin swings to −1880 W (importing).
+            // Surplus actually available = −1880 + 3000 = 1120 W. A single 1000 W step
+            // (→2000 W) would STILL import; the planner must drop below the surplus now.
+            int surplus = -1880 + 3000;                          // 1120 W
+            var d = on(-1880, 3000);
+            assertThat(d.action()).isEqualTo(Action.STEP_DOWN);
+            assertThat(d.targetPowerW()).isLessThan(surplus);    // strictly under the surplus
+            assertThat(d.targetPowerW()).isLessThan(3000);       // and it really reduced
+            assertThat(d.targetPowerW()).isEqualTo(1020);        // surplus − low-margin buffer
+        }
+
+        @Test void stopsWhenEvenTheFloorWouldExceedTheSurplus() {
+            assertThat(on(-3000, 3000).action()).isEqualTo(Action.STOP); // surplus 0  < 800 floor
+            assertThat(on(-2500, 3000).action()).isEqualTo(Action.STOP); // surplus 500 < 800 floor
+            // surplus 900 ≥ floor → run at the floor rather than stop.
+            assertThat(on(-2100, 3000).action()).isEqualTo(Action.STEP_DOWN);
+            assertThat(on(-2100, 3000).targetPowerW()).isEqualTo(800);
+        }
+
+        @Test void runningPowerNeverExceedsAvailableSurplus() {
+            int[] margins = {-4000, -1880, -500, -100, 0, 50, 99, 100, 300, 999, 1000, 2500, 6000};
+            int[] currents = {800, 1000, 1500, 2200, 3000, 3600};
+            for (int margin : margins) {
+                for (int cur : currents) {
+                    var d = on(margin, cur);
+                    Integer runningPower = switch (d.action()) {
+                        case STEP_UP, STEP_DOWN, START -> d.targetPowerW();
+                        case NONE -> cur;      // holding at the current draw
+                        case STOP -> null;     // miner off — draws nothing
+                    };
+                    if (runningPower != null) {
+                        assertThat(runningPower)
+                                .as("margin=%d cur=%d action=%s", margin, cur, d.action())
+                                .isLessThanOrEqualTo(margin + cur);   // ≤ available surplus
+                    }
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- config stability
     @Test void detectsOscillationProneThresholds() {
         // deadzone (start-low) must be ≥ step, else a single step overshoots the band
         assertThat(MinerAutopilotPlanner.isStableConfig(1000, 100, 1000)).isFalse(); // 900 < 1000
         assertThat(MinerAutopilotPlanner.isStableConfig(1100, 100, 1000)).isTrue();  // 1000 == 1000
         assertThat(MinerAutopilotPlanner.isStableConfig(1000, 100, 900)).isTrue();   // 900 == 900
+    }
+
+    @Test void shippedDefaultsAreStable() {
+        // Defaults start=1000, low=100, step=800 → deadzone 900 ≥ step 800 → stable.
+        assertThat(MinerAutopilotPlanner.isStableConfig(1000, 100, 800)).isTrue();
     }
 
     // ---------------------------------------------------------------- guards

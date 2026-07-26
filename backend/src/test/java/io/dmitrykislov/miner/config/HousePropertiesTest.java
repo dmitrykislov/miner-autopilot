@@ -66,6 +66,18 @@ class HousePropertiesTest {
     }
 
     @Test
+    void autopilotDefaultsAreStable() {
+        var a = new HouseProperties.Autopilot(false, 0, 0, 0, 0);
+        assertThat(a.intervalMs()).isEqualTo(30000);
+        assertThat(a.startMarginW()).isEqualTo(1000);
+        assertThat(a.lowMarginW()).isEqualTo(100);
+        assertThat(a.stepW()).isEqualTo(800);   // was 1000 — narrowed so the deadzone ≥ step
+        // The shipped thresholds must not be oscillation-prone: deadzone ≥ one step.
+        assertThat(io.dmitrykislov.miner.autopilot.MinerAutopilotPlanner
+                .isStableConfig(a.startMarginW(), a.lowMarginW(), a.stepW())).isTrue();
+    }
+
+    @Test
     void powerSensorAppliesDefaults() {
         var ps = new HouseProperties.PowerSensor(true, null, 0, 0, 0, 0, null);
         assertThat(ps.subscribeLifetimeSeconds()).isEqualTo(180);

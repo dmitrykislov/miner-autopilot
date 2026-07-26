@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InverterStreamServiceTest {
 
     private InverterSnapshot snap(String model) {
-        return InverterSnapshot.offline(model, "SN", Instant.parse("2026-07-25T08:00:00Z"), 0.5, null);
+        return InverterSnapshot.offline(model, "SN", Instant.parse("2026-07-25T08:00:00Z"), null);
     }
 
     @Test

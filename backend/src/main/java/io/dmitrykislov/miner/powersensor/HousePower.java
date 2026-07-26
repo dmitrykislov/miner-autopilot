@@ -5,15 +5,18 @@ import io.dmitrykislov.miner.util.Rounding;
 import java.time.Instant;
 
 /**
- * A live whole-home power reading derived from the Powersensor mains clamp.
+ * A live reading from the Powersensor mains clamp. The clamp sits on the grid
+ * feed, so this is <b>net grid power</b>: {@code powerW}/{@code powerKw} are
+ * <b>positive when importing</b> from the grid and <b>negative when exporting</b>.
+ * House consumption is not measured directly — it is derived as {@code solar + grid}
+ * (see {@link io.dmitrykislov.miner.inverter.model.PowerBalance}).
  *
- * @param powerW        measured whole-home power draw, in watts
- * @param powerKw       same value in kilowatts (for the margin/UI)
+ * @param powerW        net grid power, watts (+ import / − export)
+ * @param powerKw       same value in kilowatts
  * @param mainsVoltageV latest mains RMS voltage from the gateway plug (nullable —
  *                      the clamp itself reports no voltage)
  * @param sourceMac     MAC of the reporting clamp
- * @param metered       true for a real measured reading; false for the
- *                      "no data yet / sensor disabled" placeholder
+ * @param metered       true for a real measured reading
  * @param timestamp     when this reading was received (server clock)
  */
 public record HousePower(

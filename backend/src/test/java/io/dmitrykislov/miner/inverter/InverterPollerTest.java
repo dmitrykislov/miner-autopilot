@@ -31,7 +31,8 @@ class InverterPollerTest {
         client = mock(WiNetWebSocketClient.class);
         stream = mock(InverterStreamService.class);
         houseConsumption = mock(HouseConsumptionState.class);
-        when(houseConsumption.measuredKw()).thenReturn(Optional.of(1.0)); // live meter reading by default
+        // net grid −1.0 kW = exporting 1 kW by default
+        when(houseConsumption.measuredKw()).thenReturn(Optional.of(-1.0));
         poller = new InverterPoller(client, stream, houseConsumption);
     }
 
@@ -58,24 +59,28 @@ class InverterPollerTest {
         assertThat(s.deviceModel()).isEqualTo("SG10RS");
         assertThat(s.strings()).hasSize(1);
         assertThat(s.powerBalance().solarPowerKw()).isEqualTo(3.0);
-        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(2.0); // 3.0 - 1.0 house
+        // solar 3.0, grid −1.0 (exporting) ⇒ house 2.0, surplus 1.0
+        assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-1.0);
+        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(2.0);
+        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(1.0);
     }
 
     @Test
-    void usesMeasuredConsumptionWhenAvailable() throws Exception {
+    void derivesHouseAndSurplusFromGridReading() throws Exception {
         when(client.isConnected()).thenReturn(false);
         when(client.fetchFirstDevice()).thenReturn(DEV);
         when(client.fetchReal(DEV)).thenReturn(new RealResponse("real", List.of(
                 new RealPoint("I18N_COMMON_TOTAL_ACTIVE_POWER", "4.0", "kW"))));
         when(client.fetchDirect(DEV)).thenReturn(new DirectResponse("direct", List.of(), 0));
-        when(houseConsumption.measuredKw()).thenReturn(Optional.of(1.5)); // live meter reading
+        when(houseConsumption.measuredKw()).thenReturn(Optional.of(-1.5)); // exporting 1.5 kW
 
         poller.poll();
 
         InverterSnapshot s = capturePublished();
-        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(1.5);
         assertThat(s.powerBalance().consumptionMetered()).isTrue();
-        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(2.5); // 4.0 - 1.5
+        assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-1.5);
+        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(2.5); // 4.0 + (−1.5)
+        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(1.5);       // −grid
     }
 
     @Test
@@ -93,7 +98,8 @@ class InverterPollerTest {
         assertThat(s.online()).isTrue();
         assertThat(s.powerBalance().solarPowerKw()).isEqualTo(3.0);   // solar still measured
         assertThat(s.powerBalance().consumptionMetered()).isFalse();
-        assertThat(s.powerBalance().houseConsumptionKw()).isNull();   // no assumed baseline
+        assertThat(s.powerBalance().gridPowerKw()).isNull();
+        assertThat(s.powerBalance().houseConsumptionKw()).isNull();
         assertThat(s.powerBalance().netSurplusKw()).isNull();         // margin unavailable
     }
 

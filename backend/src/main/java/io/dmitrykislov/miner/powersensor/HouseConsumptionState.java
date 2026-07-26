@@ -9,9 +9,10 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Holds the most recent measured whole-home consumption from the Powersensor
- * clamp, and answers whether it is still "fresh" enough to trust. When stale (or
- * never received), the solar-vs-house margin is unavailable.
+ * Holds the most recent net-grid reading from the Powersensor mains clamp (signed:
+ * + import, − export), and answers whether it is still "fresh" enough to trust.
+ * When stale (or never received), the solar-vs-house margin is unavailable.
+ * {@link #measuredKw()} returns the signed net-grid power in kW.
  */
 @Component
 public class HouseConsumptionState {

@@ -31,6 +31,15 @@ class HouseConsumptionStateTest {
     }
 
     @Test
+    void exportReadingIsNegativeAndPreserved() {
+        // clamp on the grid feed reads negative when exporting to the grid
+        var s = stateWithStaleAfter(30);
+        s.update(HousePower.measured(-4085.0, 238.6, "clamp", Instant.now()));
+        assertThat(s.measuredKw()).contains(-4.085);
+        assertThat(s.latest().powerW()).isEqualTo(-4085.0);
+    }
+
+    @Test
     void staleReadingIsNotMetered() {
         var s = stateWithStaleAfter(30);
         s.update(HousePower.measured(2500.0, 241.0, "clamp", Instant.now().minusSeconds(120)));

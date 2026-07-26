@@ -4,7 +4,7 @@ A single, self-contained app that monitors a home solar setup and controls a Bit
 
 - **⛏ Miner** — **Braiins OS+** (Antminer S19k Pro) via its local GraphQL API — start/stop, set power target, live status & fans
 - **☀ Solar** — Sungrow **SG10RS** inverter via the WiNet-S local WebSocket API
-- **🏠 House consumption** — **Powersensor** mains clamp via its local UDP API
+- **🏠 House consumption** — **derived** as `solar − grid export` from the **Powersensor** mains clamp (its local UDP API), which measures **net grid** import/export
 - **🔌 Smart plug** — TP-Link **Tapo P110** (present but disabled by default; see [Limitations](#limitations))
 
 The React UI and the Spring Boot backend build into **one runnable jar**. Everything is configured from `.env` — no hardcoded IPs, accounts, or secrets in the source.
@@ -34,7 +34,8 @@ The React UI and the Spring Boot backend build into **one runnable jar**. Everyt
 ```
 miner-controller/
 ├─ pom.xml                 # aggregator
-├─ start.sh                # build + run (see below)
+├─ start.sh                # build + run locally (see below)
+├─ deploy.sh               # build here + deploy to a remote host over SSH
 ├─ .env / .env.example     # all configuration
 ├─ backend/                # Spring Boot app (io.dmitrykislov.miner)
 │  ├─ config/HouseProperties.java      # nested @ConfigurationProperties (house.*)
@@ -70,6 +71,15 @@ Open **http://localhost:8080** (or whatever `SERVER_PORT` you set).
 
 `start.sh` sources `.env`, exports the vars, and the jar reads them via `application.yml` `${PLACEHOLDER}` bindings. The jar serves UI + REST + SSE from one process.
 
+### Deploy to a remote host (`deploy.sh`)
+
+`./deploy.sh` builds the jar locally (UI + tests) and deploys it over SSH: copies a staged jar, stops the running app, swaps it in, starts it detached, and waits for it to serve. The remote `.env` is left untouched (device config + `AUTOPILOT_ENABLED` are managed there). Connection settings come from env vars (with sensible defaults):
+
+```bash
+DEPLOY_HOST=<ip> DEPLOY_PORT=<port> DEPLOY_USER=<user> DEPLOY_KEY=<path.pem> ./deploy.sh
+SKIP_TESTS=1 ./deploy.sh   # build without re-running tests
+```
+
 ---
 
 ## Configuration (`.env`)
@@ -89,7 +99,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `INVERTER_USERNAME` / `INVERTER_PASSWORD` | — | WiNet local login |
 | `INVERTER_POLL_INTERVAL_MS` | `10000` | |
 | `INVERTER_REQUEST_TIMEOUT_MS` | `8000` | |
-| **Powersensor** | | Whole-home consumption |
+| **Powersensor** | | Net-grid power (mains clamp) |
 | `POWERSENSOR_ENABLED` | `true` | |
 | `POWERSENSOR_HOST` | — | gateway LAN IP |
 | `POWERSENSOR_PORT` | `49476` | |
@@ -110,7 +120,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `AUTOPILOT_INTERVAL_MS` | `30000` | how often the margin is evaluated |
 | `AUTOPILOT_START_MARGIN_W` | `1000` | start / step-up when margin ≥ this |
 | `AUTOPILOT_LOW_MARGIN_W` | `100` | back off (step down / stop) when margin < this |
-| `AUTOPILOT_STEP_W` | `1000` | power increment/decrement per step |
+| `AUTOPILOT_STEP_W` | `800` | power step (kept ≤ deadzone `start−low`=900 so it can't oscillate) |
 | **Plug** (disabled) | | Tapo P110 |
 | `PLUG_ENABLED` | `false` | see [Limitations](#limitations) |
 | `PLUG_HOST` / `PLUG_EMAIL` / `PLUG_PASSWORD` / `PLUG_MODE` / `PLUG_MAC` / `PLUG_CLOUD_BASE_URL` | — | |
@@ -127,39 +137,44 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/inverter/stream` · `/latest` | Solar snapshot: state, power balance, 22 metrics, MPPT strings |
-| `GET /api/house/stream` · `/latest` | Measured whole-home power (Powersensor clamp), pushed live |
+| `GET /api/inverter/stream` · `/latest` | Solar snapshot: power balance (solar, net-grid, house, surplus), 22 metrics, MPPT strings |
+| `GET /api/house/stream` · `/latest` | Net-grid power from the Powersensor clamp (signed: + import, − export), pushed live |
 | `GET /api/miner/stream` · `/status` | Miner status: state, hashrate, power draw, fans, pools, power target |
 | `POST /api/miner/start` · `/stop` | Start/stop BOSMiner |
-| `POST /api/miner/power?watts=&apply=` | Set autotuning power target |
+| `POST /api/miner/power?watts=&apply=` | Set autotuning power target (clamped to the hard [min,max]) |
 | `GET /api/plug/stream` · `/status` · `POST /on|off|toggle` | Tapo plug (when enabled) |
+| `GET /api/system` | App version, start time, and uptime (for the UI footer) |
 
 ---
 
 ## UI
 
-- **Live Power Flow** hero: Solar → Home → Grid with animated connectors, a compact side panel with a **self-sufficiency ring** and **net margin**, a live house-power **sparkline**, and a metered/offline badge. When the Powersensor isn't reporting, house consumption and the margin show as **unavailable** (no assumed value).
-- **KPI row:** Today / Lifetime yield, grid frequency, inverter temperature.
+- **Live Power Flow** hero: Solar → Home → Grid with animated connectors, and a side panel with a **self-sufficiency ring** and the **surplus margin** (`solar − house`). House consumption is derived from `solar − net-grid` and updates live (with a sparkline). When the Powersensor isn't reporting, house and the margin show as **unavailable** (no assumed value).
+- **KPI row:** Today / Lifetime yield, grid frequency, inverter temperature. These promoted values are **not repeated** in the detail sections below (de-duplicated).
 - **Miner card:** honest state — **Mining / Suspended / Stopped / Offline** with reason (e.g. "no active pool"), live hashrate, power draw, **fan RPM**, uptime, pool count, editable **power target** + Apply, and **Start/Stop**.
-- **Inverter detail sections:** Energy, Power, Grid & AC, DC/PV, Device Status, Per-phase — every reading with an info tooltip.
+- **Inverter detail sections:** Energy, Power, Grid & AC, DC/PV, Device Status, Per-phase — every reading with an info tooltip (excludes the values already shown as KPIs / in the hero).
+- **Footer:** app version, start time, and live uptime (from `/api/system`).
 - Theme-aware (light/dark), responsive.
 
 ---
 
 ## Solar-margin autopilot
 
-Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default**) that soaks up surplus solar by driving the miner. Every `AUTOPILOT_INTERVAL_MS` (30 s) it reads the **margin** (solar − measured house consumption, W) and the miner state, then decides via a pure, fully-tested planner. Because the Powersensor meters the whole home, the margin already reflects the miner's own draw while it is mining:
+Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default**) that soaks up surplus solar by driving the miner. Every `AUTOPILOT_INTERVAL_MS` (30 s) it reads the **margin** (the exportable surplus = `solar − house = −net-grid`, W) and the miner state, then decides via a pure, fully-tested planner.
+
+> **Wiring assumption:** the control law assumes the Powersensor mains clamp sits on the whole-home feed **upstream of the miner**, so the miner's own draw is included in the net-grid reading and the margin already reflects it while mining. If the miner is on a circuit the clamp doesn't see, that assumption breaks (the margin won't drop as the miner ramps) — verify your clamp placement before enabling autopilot. With the assumption holding:
 
 - **Off & margin ≥ 1000 W** → **start** the miner at the 800 W floor (leaving ~200 W headroom).
-- **Mining & margin ≥ 1000 W** → **step power up** +1000 W (capped at 3600 W).
-- **Mining & margin < 100 W** → **step power down** −1000 W, clamped to the 800 W floor; **stop** only when already at the floor.
+- **Mining & margin ≥ 1000 W** → **step power up** +800 W (capped at 3600 W).
+- **Mining & margin < 100 W** → **step power down** — by at least one step, but **further if a single step wouldn't bring the target under the available surplus**; **stop** if even the 800 W floor would exceed the surplus.
 - **Margin in [100, 1000)** → hold (deadzone).
 
 Safety/correctness properties:
+- **The running power never exceeds the available surplus.** The surplus a running miner can draw from is `margin + its own draw` (the meter counts the miner). On a sudden solar drop — say the miner is at 3000 W with +330 W to spare and a cloud swings the margin to −1880 W — one fixed step (→2200 W) would still import; instead the planner drops straight to ~1020 W (under the 1120 W now available) in a single tick. It never leaves the miner pulling from the grid.
 - **Stops the miner when the margin can't be computed** — if solar is unavailable (inverter offline, e.g. at night) or house consumption is unavailable (Powersensor meter offline), the true margin is unknown, so it's unsafe to keep mining on a guess. The safe fallback is to stop.
 - Acts only on **actually-mining** state, never `SUSPENDED` — a suspended miner (e.g. dead pools) draws ~0 W, so its draw is *not* in the margin; the autopilot skips it rather than ramping on phantom surplus.
 - Respects the miner's hard **[min, max]** power limits (also enforced in `MinerService` on every set).
-- Logs a startup **warning if the thresholds can oscillate** (deadzone `start − low` < step); with the defaults (1000/100/1000) it will — set `AUTOPILOT_START_MARGIN_W=1100` (or `AUTOPILOT_STEP_W=900`) for a stable deadzone ≥ one step.
+- **Stable by default:** the deadzone (`start − low` = 900 W) is ≥ one step (800 W), so a step can't carry the margin across the whole band and flap. A startup **warning** fires if custom thresholds break this.
 
 The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot` wires it to the live margin and `MinerService`. Enable with `AUTOPILOT_ENABLED=true`.
 
@@ -168,7 +183,7 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Notable device details
 
 - **Sungrow SG10RS / WiNet-S** — real-time data comes from the dongle's local WebSocket API (`wss://…/ws/home/overview`): `connect` → `login` → `devicelist` → `real`/`direct`. (Modbus TCP :502 exists but is firewalled while you're on the dongle's own WiFi AP.) The dongle's self-signed cert has no SAN, so hostname verification is disabled for these LAN clients (set once in `main()`).
-- **Powersensor** — UDP pub/sub on :49476: send `subscribe(180)`, receive `instant_power` datagrams, re-subscribe every 90 s. The **mains clamp** (the reading with `voltage == null`) is whole-home draw; the gateway plug supplies mains voltage.
+- **Powersensor** — UDP pub/sub on :49476: send `subscribe(180)`, receive `instant_power` datagrams, re-subscribe every 90 s. The **mains clamp** (the reading with `voltage == null`) reports **net grid power** (signed: + importing, − exporting); the gateway plug supplies mains voltage. House consumption is derived as `solar + net-grid` (see `PowerBalance`).
 - **Braiins OS+ miner** — GraphQL at `/graphql`. Declarative `@HttpExchange` client. `bosminer.start`/`stop` control the BOSMiner **service**; the miner only **hashes** ("Mining") when a live pool is connected — otherwise it self-pauses ("dead pools") and shows **Suspended**. Fans/hashrate are only reported while the service is up.
 - **Fans ramp on every power change** because Braiins runs them in **automatic (target-temperature) mode** — more power ⇒ more heat ⇒ higher RPM (and vice-versa). Braiins also offers a **manual fixed-speed** mode (fans hold a set %) and an **immersion** mode, but manual mode disables thermal protection and is [not recommended](https://academy.braiins.com/os/plus-en/Configuration/index_configuration.html) unless set high (≈100%). The better mitigation is to change power **less often** — the autopilot's deadzone/step/interval already limit this; widening them (or raising the target temperature) reduces fan transients without losing thermal safety. There is no separate fan-throttle-on-change knob.
 

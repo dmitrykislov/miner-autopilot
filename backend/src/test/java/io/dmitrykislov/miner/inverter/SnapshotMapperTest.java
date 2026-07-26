@@ -37,7 +37,8 @@ class SnapshotMapperTest {
                 pt("I18N_CONFIG_KEY_1003334", "--", "V")  // unavailable -> not a highlight
         );
 
-        InverterSnapshot s = SnapshotMapper.map(DEV, real, null, 1.0, TS);
+        // grid −1.0 kW = exporting 1 kW
+        InverterSnapshot s = SnapshotMapper.map(DEV, real, null, -1.0, TS);
 
         assertThat(s.online()).isTrue();
         assertThat(s.deviceModel()).isEqualTo("SG10RS");
@@ -54,10 +55,11 @@ class SnapshotMapperTest {
                 .containsEntry("activePowerKw", 3.2)
                 .containsEntry("gridFrequencyHz", 50.01);
 
-        // solar power drives the margin
+        // solar 3.2 measured; grid −1.0 ⇒ house 2.2, surplus 1.0
         assertThat(s.powerBalance().solarPowerKw()).isEqualTo(3.2);
-        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(1.0);
-        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(2.2);
+        assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-1.0);
+        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(2.2);
+        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(1.0);
         assertThat(s.powerBalance().coveringLoad()).isTrue();
     }
 
@@ -98,17 +100,20 @@ class SnapshotMapperTest {
     }
 
     @Test
-    void meteredWhenHousePresentUnmeteredWhenNull() {
+    void meteredWhenGridPresentUnmeteredWhenNull() {
         RealResponse real = real(pt("I18N_COMMON_TOTAL_ACTIVE_POWER", "2.0", "kW"));
 
-        var metered = SnapshotMapper.map(DEV, real, null, 1.5, TS).powerBalance();
+        // grid −0.5 kW (exporting) with solar 2.0 ⇒ house 1.5, surplus 0.5
+        var metered = SnapshotMapper.map(DEV, real, null, -0.5, TS).powerBalance();
         assertThat(metered.consumptionMetered()).isTrue();
+        assertThat(metered.gridPowerKw()).isEqualTo(-0.5);
         assertThat(metered.houseConsumptionKw()).isEqualTo(1.5);
         assertThat(metered.netSurplusKw()).isEqualTo(0.5);
 
-        // No live meter reading → house + margin unavailable (no assumed baseline).
+        // No live meter reading → grid + house + margin unavailable (no assumed baseline).
         var unmetered = SnapshotMapper.map(DEV, real, null, null, TS).powerBalance();
         assertThat(unmetered.consumptionMetered()).isFalse();
+        assertThat(unmetered.gridPowerKw()).isNull();
         assertThat(unmetered.houseConsumptionKw()).isNull();
         assertThat(unmetered.netSurplusKw()).isNull();
         assertThat(unmetered.solarPowerKw()).isEqualTo(2.0); // solar still measured

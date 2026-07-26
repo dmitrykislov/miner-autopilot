@@ -2,6 +2,7 @@ package io.dmitrykislov.miner.api;
 
 import io.dmitrykislov.miner.inverter.InverterStreamService;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
+import io.dmitrykislov.miner.inverter.model.PowerBalance;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webflux.test.autoconfigure.WebFluxTest;
@@ -14,6 +15,8 @@ import reactor.test.StepVerifier;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 
 import static org.mockito.Mockito.*;
 
@@ -27,8 +30,10 @@ class InverterControllerTest {
     InverterStreamService stream;
 
     private InverterSnapshot sample() {
-        return InverterSnapshot.offline("SG10RS", "A24A0965660",
-                Instant.parse("2026-07-25T08:00:00Z"), 0.5, null);
+        // online, metered: solar 3.0, grid −1.0 (exporting) ⇒ house 2.0, surplus 1.0
+        return new InverterSnapshot(true, "SG10RS", "A24A0965660", "Running",
+                Instant.parse("2026-07-25T08:00:00Z"), Map.of(),
+                PowerBalance.metered(3.0, -1.0), List.of(), List.of(), null);
     }
 
     @Test
@@ -41,7 +46,9 @@ class InverterControllerTest {
                 .expectBody()
                 .jsonPath("$.deviceModel").isEqualTo("SG10RS")
                 .jsonPath("$.serialNumber").isEqualTo("A24A0965660")
-                .jsonPath("$.powerBalance.houseConsumptionKw").isEqualTo(0.5);
+                .jsonPath("$.powerBalance.gridPowerKw").isEqualTo(-1.0)
+                .jsonPath("$.powerBalance.houseConsumptionKw").isEqualTo(2.0)
+                .jsonPath("$.powerBalance.netSurplusKw").isEqualTo(1.0);
     }
 
     @Test

@@ -7,9 +7,11 @@ import org.springframework.stereotype.Component;
 import java.util.OptionalDouble;
 
 /**
- * Live margin from the latest inverter snapshot: {@code netSurplusKw} is already
- * solar − house (measured when the Powersensor is live), converted to watts.
- * Empty when there is no online snapshot yet.
+ * Live margin from the latest inverter snapshot: {@code netSurplusKw} is the
+ * exportable surplus (solar − house = −net-grid, from the Powersensor mains clamp),
+ * converted to watts. Because the clamp already counts the miner's own draw, this
+ * margin reflects the miner while it is mining. Empty when there is no online,
+ * metered snapshot yet (so the autopilot never acts on a guess).
  */
 @Component
 public class LiveMarginSource implements MarginSource {

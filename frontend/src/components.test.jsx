@@ -80,22 +80,39 @@ describe('MinerCard', () => {
 })
 
 describe('EnergyFlow', () => {
-  const house = (over) => ({ kw: 0.5, metered: true, powerW: 500, ts: 't', ageSec: 3, ...over })
+  // grid prop = signed net-grid reading (− = exporting). house = solar + grid.
+  const grid = (over) => ({ kw: -0.5, metered: true, ts: 't', ageSec: 3, ...over })
 
-  it('metered home shows the measured value (read-only, no input)', () => {
-    const { container } = render(<EnergyFlow solar={3} house={house({ kw: 1.5 })} spark={[]} />)
-    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument() // no editable input when metered
-    expect(container.textContent).toMatch(/exporting/i)              // solar 3 > house 1.5
+  it('derives house from solar+grid and shows the surplus margin', () => {
+    // solar 3, grid −1.5 (exporting 1.5) ⇒ house 1.5, surplus +1.5
+    const { container } = render(<EnergyFlow solar={3} grid={grid({ kw: -1.5 })} spark={[]} />)
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument() // no editable input
+    expect(container.textContent).toMatch(/surplus margin/i)         // labelled surplus margin
+    expect(container.textContent).toContain('+1.50')                 // solar − house = +1.5 kW
+    expect(container.textContent).toContain('1.50')                  // house consumption node
+    expect(container.textContent).toMatch(/exporting/i)              // grid leg direction
   })
 
-  it('metered importing home shows the topping-up caption', () => {
-    const { container } = render(<EnergyFlow solar={0.2} house={house({ kw: 2.0 })} spark={[]} />)
-    expect(container.textContent).toMatch(/topping up/i)             // solar 0.2 < house 2.0 → importing
+  it('shows the surplus figure once (no duplication)', () => {
+    const { container } = render(<EnergyFlow solar={3} grid={grid({ kw: -1.5 })} spark={[]} />)
+    const t = container.textContent
+    // the hero no longer repeats a metered/assumed badge (that lives in the header pill)
+    expect(t).not.toMatch(/consumption metered/i)
+    // the signed surplus "+1.50" appears once (the Surplus margin tile), not echoed in the caption
+    expect(t.match(/\+1\.50/g) || []).toHaveLength(1)
   })
 
-  it('unmetered home shows waiting-for-meter, no input, and unavailable margin', () => {
-    const { container } = render(<EnergyFlow solar={3} house={{ kw: null, metered: false }} spark={[]} />)
-    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument() // no editable baseline any more
+  it('shows importing as drawing from the grid', () => {
+    // solar 0.2, grid +1.8 (importing 1.8) ⇒ house 2.0, surplus −1.8
+    const { container } = render(<EnergyFlow solar={0.2} grid={grid({ kw: 1.8 })} spark={[]} />)
+    expect(container.textContent).toMatch(/drawing from the grid/i)  // qualitative caption
+    expect(container.textContent).toMatch(/importing/i)              // grid leg direction
+    expect(container.textContent).toContain('-1.80')                 // surplus margin (deficit)
+  })
+
+  it('unmetered shows waiting-for-meter, no input, and unavailable margin', () => {
+    const { container } = render(<EnergyFlow solar={3} grid={{ kw: null, metered: false }} spark={[]} />)
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
     expect(container.textContent).toMatch(/waiting for/i)            // meter offline message
     expect(container.textContent).toMatch(/unavailable/i)            // margin can't be computed
   })

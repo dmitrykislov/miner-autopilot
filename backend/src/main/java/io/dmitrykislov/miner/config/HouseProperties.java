@@ -218,7 +218,9 @@ public record HouseProperties(
             if (intervalMs == 0) intervalMs = 30000;
             if (startMarginW == 0) startMarginW = 1000;
             if (lowMarginW == 0) lowMarginW = 100;
-            if (stepW == 0) stepW = 1000;
+            // 800 keeps the deadzone (start − low = 900) ≥ one step, so a single step
+            // can't carry the margin across the band and oscillate. See isStableConfig.
+            if (stepW == 0) stepW = 800;
         }
     }
 }
