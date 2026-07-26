@@ -3,6 +3,8 @@ import { ICONS, Sun, Info, ArrowUp, ArrowDown } from './icons.jsx'
 import { metaFor } from './metricMeta.js'
 import { fmt, flow, minerView, formatDuration } from './logic.js'
 import { useEventSource } from './hooks.js'
+import { isAuthed, clearToken, authHeaders, withToken } from './auth.js'
+import Login from './Login.jsx'
 
 // ---------------------------------------------------------------- primitives
 
@@ -311,7 +313,7 @@ const PROMOTED_KEYS = new Set([
 
 // ---------------------------------------------------------------- app
 
-export default function App() {
+function Dashboard({ onLogout }) {
   const [snapshot, setSnapshot] = useState(null)
   const [connected, setConnected] = useState(false)
   const [houseLive, setHouseLive] = useState(null)
@@ -321,24 +323,30 @@ export default function App() {
   const [now, setNow] = useState(Date.now())
   const [system, setSystem] = useState(null)
 
+  // fetch with the bearer token; a 401 means the token is gone/expired → log out.
+  const authFetch = (url, opts = {}) =>
+    fetch(url, { ...opts, headers: { ...(opts.headers || {}), ...authHeaders() } })
+      .then((r) => { if (r.status === 401) { onLogout(); throw new Error('unauthorized') } return r })
+
   useEffect(() => {
-    fetch('/api/house/latest').then((r) => (r.ok ? r.json() : null))
+    authFetch('/api/house/latest').then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d && d.metered) setHouseLive({ ...d, at: Date.now() }) }).catch(() => {})
-    fetch('/api/system').then((r) => (r.ok ? r.json() : null))
+    authFetch('/api/system').then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d) setSystem({ version: d.version, startedMs: Date.parse(d.startedAt) }) }).catch(() => {})
   }, [])
 
-  useEventSource('/api/inverter/stream', setSnapshot,
+  // SSE carries the token as ?token= (EventSource can't set headers).
+  useEventSource(withToken('/api/inverter/stream'), setSnapshot,
     { onOpen: () => setConnected(true), onError: () => setConnected(false) })
 
-  useEventSource('/api/house/stream', (r) => {
+  useEventSource(withToken('/api/house/stream'), (r) => {
     if (r && r.metered) {
       setHouseLive({ ...r, at: Date.now() })
       setSpark((prev) => [...prev, r.powerKw].slice(-SPARK_MAX)) // measured house consumption
     }
   })
 
-  useEventSource('/api/miner/stream', setMiner)
+  useEventSource(withToken('/api/miner/stream'), setMiner)
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -347,7 +355,7 @@ export default function App() {
 
   const minerCmd = (url) => {
     setMinerPending(true)
-    fetch(url, { method: 'POST' })
+    authFetch(url, { method: 'POST' })
       .then((r) => r.json()).then((s) => setMiner(s))
       .catch(() => {}).finally(() => setMinerPending(false))
   }
@@ -449,16 +457,25 @@ export default function App() {
           Solar via Sungrow WiNet-S (polled) · house consumption via Solar Analytics (polled) ·
           margin = solar − measured house; unavailable while consumption data is stale.
         </div>
-        {system && (
-          <div className="foot-sys">
+        <div className="foot-sys">
+          {system && <>
             <strong>v{system.version}</strong>
             {Number.isFinite(system.startedMs) && <>
               {' · '}started {new Date(system.startedMs).toLocaleString()}
               {' · '}up {formatDuration(Math.floor((now - system.startedMs) / 1000))}
             </>}
-          </div>
-        )}
+            {' · '}
+          </>}
+          <button type="button" className="logout" onClick={onLogout}>Log out</button>
+        </div>
       </footer>
     </div>
   )
+}
+
+/** Auth gate: show the password page until a token is stored, then the dashboard. */
+export default function App() {
+  const [authed, setAuthed] = useState(isAuthed())
+  if (!authed) return <Login onSuccess={() => setAuthed(true)} />
+  return <Dashboard onLogout={() => { clearToken(); setAuthed(false) }} />
 }

@@ -61,6 +61,7 @@ class FullApplicationWireMockTest {
         // Others off so the context boots clean and fast
         r.add("house.solar-analytics.enabled", () -> false);
         r.add("house.autopilot.enabled", () -> false);
+        r.add("auth.enabled", () -> false); // exercise the endpoints without a token here
     }
 
     @AfterAll

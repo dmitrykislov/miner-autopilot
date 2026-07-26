@@ -1,11 +1,21 @@
 package io.dmitrykislov.miner.api;
 
+import io.dmitrykislov.miner.config.AuthProperties;
+import io.dmitrykislov.miner.security.AuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.webflux.test.autoconfigure.WebFluxTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
+// The app's AuthWebFilter is a WebFilter, so @WebFluxTest wires it in — provide its
+// deps and switch auth off; the login flow itself is covered by AuthSecurityTest.
 @WebFluxTest(SystemController.class)
+@Import(AuthService.class)
+@EnableConfigurationProperties(AuthProperties.class)
+@TestPropertySource(properties = "auth.enabled=false")
 class SystemControllerTest {
 
     @Autowired

@@ -5,7 +5,12 @@ import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import io.dmitrykislov.miner.inverter.model.PowerBalance;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import io.dmitrykislov.miner.config.AuthProperties;
+import io.dmitrykislov.miner.security.AuthService;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.webflux.test.autoconfigure.WebFluxTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.FluxExchangeResult;
@@ -21,6 +26,9 @@ import java.util.Map;
 import static org.mockito.Mockito.*;
 
 @WebFluxTest(InverterController.class)
+@Import(AuthService.class)
+@EnableConfigurationProperties(AuthProperties.class)
+@TestPropertySource(properties = "auth.enabled=false")
 class InverterControllerTest {
 
     @Autowired

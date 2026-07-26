@@ -47,6 +47,7 @@ class MinerAutopilotWireMockTest {
         r.add("house.solar-analytics.poll-interval-ms", () -> 3_600_000);
         r.add("house.inverter.host", () -> "localhost"); // client is mocked; host just needs to exist
         r.add("house.inverter.poll-interval-ms", () -> 3_600_000);
+        r.add("auth.enabled", () -> false);              // no HTTP here; keep the context quiet
         r.add("house.autopilot.enabled", () -> true);    // never fires on its own — we call tick()
         r.add("house.autopilot.interval-ms", () -> 3_600_000);
         r.add("house.autopilot.start-margin-w", () -> 1000);

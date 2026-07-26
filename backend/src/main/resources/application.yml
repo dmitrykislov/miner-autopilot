@@ -6,6 +6,13 @@ server:
 app:
   version: ${APP_VERSION:@project.version@}
 
+# Access control: a single shared password (as a bcrypt hash) protects every /api/** endpoint.
+# Generate a hash with:  htpasswd -bnBC 10 "" 'yourpassword' | tr -d ':\n'
+auth:
+  enabled: ${AUTH_ENABLED:true}
+  password-hash: ${AUTH_PASSWORD_HASH:}     # blank ⇒ fail-closed (all requests rejected)
+  token-ttl-days: ${AUTH_TOKEN_TTL_DAYS:30}
+
 spring:
   application:
     name: ${APP_NAME:miner-controller}

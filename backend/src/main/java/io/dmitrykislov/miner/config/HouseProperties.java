@@ -25,6 +25,17 @@ public record HouseProperties(
         if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0, 0);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
         if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0);
+        // The consumption gate must sit BELOW the autopilot's start threshold. If it didn't,
+        // Solar Analytics would stop fetching exactly in the solar range where the autopilot
+        // wants to (re)start the miner — leaving the margin permanently unknown and the miner
+        // stranded OFF. A start needs margin ≥ startMarginW, i.e. solar ≥ startMarginW, so the
+        // gate (skips at solar ≤ minSolarWatts) is only safe when minSolarWatts < startMarginW.
+        if (solarAnalytics.minSolarWatts() >= autopilot.startMarginW()) {
+            throw new IllegalArgumentException("solar-analytics.min-solar-w (" + solarAnalytics.minSolarWatts()
+                    + ") must be < autopilot.start-margin-w (" + autopilot.startMarginW()
+                    + "): otherwise the consumption gate skips exactly when the autopilot needs data,"
+                    + " stranding the miner OFF");
+        }
     }
 
     /** Sungrow WiNet-S dongle — local WebSocket API (wss on 443) for generation. */

@@ -119,8 +119,12 @@ All environment-specific values are driven by env vars — the source and `appli
 | `AUTOPILOT_START_MARGIN_W` | `1000` | start / step-up when margin ≥ this |
 | `AUTOPILOT_LOW_MARGIN_W` | `100` | back off (step down / stop) when margin < this |
 | `AUTOPILOT_STEP_W` | `800` | power step (kept ≤ deadzone `start−low`=900 so it can't oscillate) |
+| **Access control** | | Password gate (see [Access control](#access-control)) |
+| `AUTH_ENABLED` | `true` | when off, all endpoints are open (dev only) |
+| `AUTH_PASSWORD_HASH` | — | bcrypt hash of the UI password; blank ⇒ fail-closed (everything rejected) |
+| `AUTH_TOKEN_TTL_DAYS` | `30` | how long a login stays valid |
 
-Config is bound to a single nested record, `HouseProperties` (`house.inverter`, `house.solar-analytics`, `house.miner`, `house.autopilot`).
+Config is bound to nested records: `HouseProperties` (`house.inverter`, `house.solar-analytics`, `house.miner`, `house.autopilot`) and `AuthProperties` (`auth.*`).
 
 `.env.example` mirrors `.env` key-for-key with the host/account/password values blanked; `cp .env.example .env` and fill in.
 
@@ -138,6 +142,42 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 | `POST /api/miner/start` · `/stop` | Start/stop BOSMiner |
 | `POST /api/miner/power?watts=&apply=` | Set autotuning power target (clamped to the hard [min,max]) |
 | `GET /api/system` | App version, start time, and uptime (for the UI footer) |
+| `POST /api/auth/login` | Exchange `{password}` for a bearer token (the one open endpoint) |
+
+Every endpoint except `/api/auth/login` (and static assets) requires the token — sent as
+`Authorization: Bearer <token>`, or `?token=<token>` for the SSE streams (see [Access control](#access-control)).
+
+---
+
+## Access control
+
+All endpoints are protected by a single shared password. The password is never stored or
+committed in plaintext — only its **bcrypt** hash lives in `.env` (`AUTH_PASSWORD_HASH`).
+
+**Generate the hash** for your chosen password (the single quotes matter — a bcrypt hash
+contains `$`, which the shell would otherwise try to expand):
+
+```bash
+# prints the $2y$… hash; paste it into .env, single-quoted
+htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n'
+# .env →  AUTH_PASSWORD_HASH='$2y$10$....'
+```
+
+(`-B` = bcrypt, `C 10` = cost factor 10. No `htpasswd`? Any bcrypt tool works, e.g.
+`python3 -c "import bcrypt;print(bcrypt.hashpw(b'your-password',bcrypt.gensalt(10)).decode())"`.)
+
+**How it works:**
+- The UI shows a password page until you log in. `POST /api/auth/login` checks the password
+  against the bcrypt hash and returns a stateless, HMAC-signed bearer token (signed with a key
+  derived from the hash, so a token survives a restart).
+- The token is kept in the browser's `localStorage` and sent on every request. It is valid for
+  `AUTH_TOKEN_TTL_DAYS` (default **30 days**) — enforced both client-side and server-side.
+- **Log out** (footer button) clears the stored token, so the app immediately re-locks.
+- **Fail-closed:** if `AUTH_ENABLED=true` but no hash is set, *every* request is rejected — a
+  missing hash can never leave the app accidentally open.
+
+> The password is set only via its bcrypt hash in the git-ignored `.env` — never in the
+> source or in git. Generate the hash as above and keep the plaintext to yourself.
 
 ---
 
@@ -147,6 +187,7 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 - **KPI row:** Today / Lifetime yield, grid frequency, inverter temperature. These promoted values are **not repeated** in the detail sections below (de-duplicated).
 - **Miner card:** honest state — **Mining / Suspended / Stopped / Offline** with reason (e.g. "no active pool"), live hashrate, power draw, **fan RPM**, uptime, pool count, editable **power target** + Apply, and **Start/Stop**.
 - **Inverter detail sections:** Energy, Power, Grid & AC, DC/PV, Device Status, Per-phase — every reading with an info tooltip (excludes the values already shown as KPIs / in the hero).
+- **Login gate:** a password page guards the whole app; a successful login is remembered for a month. The **footer** has a **Log out** button that clears it.
 - **Footer:** app version, start time, and live uptime (from `/api/system`).
 - Theme-aware (light/dark), responsive.
 
@@ -187,11 +228,11 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Tests
 
 ```bash
-mvn clean install     # 149 backend + 36 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (149)
+mvn clean install     # 164 backend + 49 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (164)
 ```
 
-Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/surplus-invariant/config-guard cases), the **live margin source** (including staleness), and an **end-to-end WireMock** test that boots the full Spring context and drives the real margin chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. The React UI has its own Vitest suite that runs during `mvn install`.
+Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/surplus-invariant/config-guard cases), the **live margin source** (including staleness), and an **end-to-end WireMock** test that boots the full Spring context and drives the real margin chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.
 
 ---
 

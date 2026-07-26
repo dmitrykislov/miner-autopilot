@@ -34,6 +34,30 @@ class HousePropertiesTest {
     }
 
     @Test
+    void rejectsSolarGateAtOrAboveStartMargin() {
+        // min-solar-w must be < start-margin-w, else the gate strands the miner OFF.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new HouseProperties(null,
+                new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, 1500),
+                null,
+                new HouseProperties.Autopilot(false, 0, 1000, 100, 800)))   // start 1000 ≤ gate 1500
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("min-solar-w");
+        // Equal is also rejected (gate must be strictly below).
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new HouseProperties(null,
+                new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, 1000),
+                null,
+                new HouseProperties.Autopilot(false, 0, 1000, 100, 800)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void acceptsSolarGateBelowStartMargin() {
+        // Shipped defaults: gate 800 < start 1000 → valid.
+        org.assertj.core.api.Assertions.assertThatCode(() -> new HouseProperties(null, null, null, null))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
     void inverterAppliesDefaultsAndBuildsWsUri() {
         var inv = new HouseProperties.Inverter(null, 0, "  ", null, null, 0, 0);
         assertThat(inv.host()).isEmpty();                      // no hardcoded IP

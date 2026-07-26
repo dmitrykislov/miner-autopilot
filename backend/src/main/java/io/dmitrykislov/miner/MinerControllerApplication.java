@@ -5,11 +5,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
+import io.dmitrykislov.miner.config.AuthProperties;
 import io.dmitrykislov.miner.config.HouseProperties;
 
 @SpringBootApplication
 @EnableScheduling
-@EnableConfigurationProperties(HouseProperties.class)
+@EnableConfigurationProperties({HouseProperties.class, AuthProperties.class})
 public class MinerControllerApplication {
     static {
         // Must be set before ANY java.net.http.HttpClient initialises its TLS layer.
