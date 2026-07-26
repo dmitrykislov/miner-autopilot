@@ -35,6 +35,15 @@ public record HouseProperties(
         // Only enforced when the autopilot is enabled: with it off nothing auto-(re)starts the
         // miner, so a high gate merely hides consumption at low solar (a UI concern, not stranding).
         if (autopilot.enabled()) {
+            // The autopilot's margin is solar − measured house consumption, and Solar Analytics is
+            // the only consumption source (the SG10RS has no whole-home meter). With it disabled the
+            // margin is always unknown, so the autopilot would permanently stop / never start the
+            // miner. Require the consumption source when the autopilot is on.
+            if (!solarAnalytics.enabled()) {
+                throw new IllegalArgumentException("autopilot.enabled requires solar-analytics.enabled:"
+                        + " the autopilot needs measured house consumption to compute the margin;"
+                        + " without it the margin is always unknown and the miner is stranded OFF");
+            }
             int gateCeiling = Math.min(autopilot.startMarginW(), miner.minPowerW() + autopilot.lowMarginW());
             if (solarAnalytics.minSolarWatts() >= gateCeiling) {
                 throw new IllegalArgumentException("solar-analytics.min-solar-w ("

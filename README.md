@@ -228,8 +228,8 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Tests
 
 ```bash
-mvn clean install     # 170 backend + 50 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (170)
+mvn clean install     # 171 backend + 50 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (171)
 ```
 
 Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/surplus-invariant/config-guard cases), the **live margin source** (including staleness), and an **end-to-end WireMock** test that boots the full Spring context and drives the real margin chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.

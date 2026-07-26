@@ -55,6 +55,29 @@ class HousePropertiesTest {
         // Exactly at the ceiling (900) is rejected too (gate must be strictly below).
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 900, 1000))
                 .isInstanceOf(IllegalArgumentException.class);
+        // When start-margin-w is the smaller arm it binds: ceiling = min(850, 900) = 850.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 875, 850))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 850, 850))
+                .isInstanceOf(IllegalArgumentException.class); // equality at the start arm
+    }
+
+    @Test
+    void rejectsAutopilotEnabledWithoutSolarAnalytics() {
+        // The autopilot's only consumption source is Solar Analytics; with it disabled the margin
+        // is always unknown → the miner would be permanently stranded OFF. Reject at startup.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new HouseProperties(null,
+                new HouseProperties.SolarAnalytics(false, null, null, null, null, 0, 0, 0, 0),
+                null,
+                new HouseProperties.Autopilot(true, 0, 1000, 100, 800)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("solar-analytics");
+        // Autopilot off + Solar Analytics off is fine (nothing auto-drives the miner).
+        org.assertj.core.api.Assertions.assertThatCode(() -> new HouseProperties(null,
+                new HouseProperties.SolarAnalytics(false, null, null, null, null, 0, 0, 0, 0),
+                null,
+                new HouseProperties.Autopilot(false, 0, 1000, 100, 800)))
+                .doesNotThrowAnyException();
     }
 
     @Test
