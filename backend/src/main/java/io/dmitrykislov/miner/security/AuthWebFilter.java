@@ -33,6 +33,9 @@ public class AuthWebFilter implements WebFilter, Ordered {
     private static final PathPattern API_PATHS;
     private static final PathPattern LOGIN_PATH;
     static {
+        // Default parser config to match the router's (case-sensitive, "/" separator, no
+        // trailing-slash match). Soundness depends on this agreeing with WebFlux's parser — if
+        // the app ever customizes WebFlux path matching, mirror it here or the two could diverge.
         PathPatternParser parser = new PathPatternParser();
         API_PATHS = parser.parse("/api/**");
         LOGIN_PATH = parser.parse("/api/auth/login");

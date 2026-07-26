@@ -95,6 +95,22 @@ class AuthSecurityTest {
                 .expectStatus().value(s -> assertThat(s).isNotEqualTo(401));
     }
 
+    @Test void onlyExactLoginPathIsOpenAmongApiPaths() {
+        // Login is opened by an EXACT match — near-misses must stay protected (401 without token).
+        web().get().uri("/api/auth/loginX").exchange().expectStatus().isUnauthorized();
+        web().get().uri("/api/auth/login/").exchange().expectStatus().isUnauthorized();
+        // The real login path is open (no token needed); a GET has no handler (only POST),
+        // so it's anything-but-401 (auth passed → 404/405), never an unauthenticated pass-through 401.
+        web().get().uri("/api/auth/login").exchange()
+                .expectStatus().value(s -> assertThat(s).isNotEqualTo(401));
+    }
+
+    @Test void doubleEncodedApiPathIsNeverUnauthenticatedSuccess() {
+        // "/%2561pi" decodes once to the literal "%61pi" (no controller) — must not be a 200.
+        web().get().uri(java.net.URI.create("http://localhost:" + port + "/%2561pi/system"))
+                .exchange().expectStatus().value(s -> assertThat(s).isNotEqualTo(200));
+    }
+
     private String login(String password) {
         AuthController.LoginResponse body = web().post().uri("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)

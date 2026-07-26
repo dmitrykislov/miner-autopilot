@@ -25,16 +25,24 @@ public record HouseProperties(
         if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0, 0);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
         if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0);
-        // The consumption gate must sit BELOW the autopilot's start threshold. If it didn't,
-        // Solar Analytics would stop fetching exactly in the solar range where the autopilot
-        // wants to (re)start the miner — leaving the margin permanently unknown and the miner
-        // stranded OFF. A start needs margin ≥ startMarginW, i.e. solar ≥ startMarginW, so the
-        // gate (skips at solar ≤ minSolarWatts) is only safe when minSolarWatts < startMarginW.
-        if (solarAnalytics.minSolarWatts() >= autopilot.startMarginW()) {
-            throw new IllegalArgumentException("solar-analytics.min-solar-w (" + solarAnalytics.minSolarWatts()
-                    + ") must be < autopilot.start-margin-w (" + autopilot.startMarginW()
-                    + "): otherwise the consumption gate skips exactly when the autopilot needs data,"
-                    + " stranding the miner OFF");
+        // The consumption gate must sit below where the autopilot still cares about the margin,
+        // or it would mark consumption unavailable (→ margin unknown → stop) while the miner could
+        // still (re)start or keep running on solar — stranding it OFF. The binding ceiling is the
+        // lower of:
+        //   • startMarginW           — a start needs margin ≥ this, i.e. solar ≥ this;
+        //   • minPowerW + lowMarginW — a running miner (draw ≥ minPowerW) only holds while
+        //                              margin ≥ lowMarginW, i.e. solar ≥ minPowerW + lowMarginW.
+        // Only enforced when the autopilot is enabled: with it off nothing auto-(re)starts the
+        // miner, so a high gate merely hides consumption at low solar (a UI concern, not stranding).
+        if (autopilot.enabled()) {
+            int gateCeiling = Math.min(autopilot.startMarginW(), miner.minPowerW() + autopilot.lowMarginW());
+            if (solarAnalytics.minSolarWatts() >= gateCeiling) {
+                throw new IllegalArgumentException("solar-analytics.min-solar-w ("
+                        + solarAnalytics.minSolarWatts() + ") must be < " + gateCeiling
+                        + " (min of autopilot.start-margin-w and miner.min-power-w + autopilot.low-margin-w):"
+                        + " otherwise the consumption gate would strand the miner OFF while it could"
+                        + " still run on solar");
+            }
         }
     }
 

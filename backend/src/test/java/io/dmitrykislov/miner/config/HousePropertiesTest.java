@@ -33,27 +33,44 @@ class HousePropertiesTest {
         assertThat(new HouseProperties.Miner(true, "h", 0, 0, "tok", 0, 0).hasAuth()).isTrue();
     }
 
+    // min-solar-w must be < min(start-margin-w, min-power-w + low-margin-w) when the autopilot
+    // is enabled, else the gate would strand the miner OFF (can't start, or a running hold stopped).
+    // Helper: min 800, low 100, step 800 → ceiling = min(start, 900).
+    private static HouseProperties withGate(boolean autopilotEnabled, int minSolarW, int startMarginW) {
+        return new HouseProperties(null,
+                new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, minSolarW),
+                new HouseProperties.Miner(true, "h", 0, 0, "", 0, 0),               // min 800 / max 3600
+                new HouseProperties.Autopilot(autopilotEnabled, 0, startMarginW, 100, 800));
+    }
+
     @Test
-    void rejectsSolarGateAtOrAboveStartMargin() {
-        // min-solar-w must be < start-margin-w, else the gate strands the miner OFF.
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new HouseProperties(null,
-                new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, 1500),
-                null,
-                new HouseProperties.Autopilot(false, 0, 1000, 100, 800)))   // start 1000 ≤ gate 1500
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("min-solar-w");
-        // Equal is also rejected (gate must be strictly below).
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new HouseProperties(null,
-                new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, 1000),
-                null,
-                new HouseProperties.Autopilot(false, 0, 1000, 100, 800)))
+    void rejectsSolarGateThatWouldStrandTheMiner() {
+        // Above the start threshold → can't start.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 1500, 1000))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("min-solar-w");
+        // Between minPower+low (900) and start (1000): passes the old start-only check but would
+        // stop a validly-running miner — must still be rejected by the tighter ceiling.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 950, 1000))
+                .isInstanceOf(IllegalArgumentException.class);
+        // Exactly at the ceiling (900) is rejected too (gate must be strictly below).
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 900, 1000))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void acceptsSolarGateBelowStartMargin() {
-        // Shipped defaults: gate 800 < start 1000 → valid.
+    void acceptsSolarGateBelowCeiling() {
+        // Shipped defaults: gate 800 < ceiling 900 → valid.
         org.assertj.core.api.Assertions.assertThatCode(() -> new HouseProperties(null, null, null, null))
+                .doesNotThrowAnyException();
+        org.assertj.core.api.Assertions.assertThatCode(() -> withGate(true, 899, 1000))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void solarGateGuardDoesNotFireWhenAutopilotDisabled() {
+        // Autopilot off → nothing auto-(re)starts the miner, so a high gate can't strand it;
+        // the guard must not crash startup for an unused threshold.
+        org.assertj.core.api.Assertions.assertThatCode(() -> withGate(false, 5000, 800))
                 .doesNotThrowAnyException();
     }
 
