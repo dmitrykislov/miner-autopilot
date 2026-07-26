@@ -31,6 +31,22 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
+            <exclusions>
+                <!-- HTTP/3 (QUIC) is unused; its native libs bundle ~11 MB across 5 platforms.
+                     Dropping them shrinks the jar (faster Pi deploys) with no runtime effect. -->
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-codec-native-quic</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-codec-classes-quic</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-codec-http3</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <!-- @ConfigurationProperties binding + metadata -->
         <dependency>
