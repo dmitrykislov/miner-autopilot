@@ -6,7 +6,7 @@ import io.dmitrykislov.miner.inverter.dto.RealPoint;
 import io.dmitrykislov.miner.inverter.dto.RealResponse;
 import io.dmitrykislov.miner.inverter.model.DeviceInfo;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
-import io.dmitrykislov.miner.powersensor.HouseConsumptionState;
+import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -31,8 +31,8 @@ class InverterPollerTest {
         client = mock(WiNetWebSocketClient.class);
         stream = mock(InverterStreamService.class);
         houseConsumption = mock(HouseConsumptionState.class);
-        // net grid −1.0 kW = exporting 1 kW by default
-        when(houseConsumption.measuredKw()).thenReturn(Optional.of(-1.0));
+        // house consumption 1.0 kW by default
+        when(houseConsumption.measuredKw()).thenReturn(Optional.of(1.0));
         poller = new InverterPoller(client, stream, houseConsumption);
     }
 
@@ -59,28 +59,28 @@ class InverterPollerTest {
         assertThat(s.deviceModel()).isEqualTo("SG10RS");
         assertThat(s.strings()).hasSize(1);
         assertThat(s.powerBalance().solarPowerKw()).isEqualTo(3.0);
-        // solar 3.0, grid −1.0 (exporting) ⇒ house 2.0, surplus 1.0
-        assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-1.0);
-        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(2.0);
-        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(1.0);
+        // solar 3.0, house 1.0 ⇒ surplus 2.0, grid (house−solar) −2.0
+        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(1.0);
+        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(2.0);
+        assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-2.0);
     }
 
     @Test
-    void derivesHouseAndSurplusFromGridReading() throws Exception {
+    void computesSurplusFromMeasuredConsumption() throws Exception {
         when(client.isConnected()).thenReturn(false);
         when(client.fetchFirstDevice()).thenReturn(DEV);
         when(client.fetchReal(DEV)).thenReturn(new RealResponse("real", List.of(
                 new RealPoint("I18N_COMMON_TOTAL_ACTIVE_POWER", "4.0", "kW"))));
         when(client.fetchDirect(DEV)).thenReturn(new DirectResponse("direct", List.of(), 0));
-        when(houseConsumption.measuredKw()).thenReturn(Optional.of(-1.5)); // exporting 1.5 kW
+        when(houseConsumption.measuredKw()).thenReturn(Optional.of(1.5)); // house consumption 1.5 kW
 
         poller.poll();
 
         InverterSnapshot s = capturePublished();
         assertThat(s.powerBalance().consumptionMetered()).isTrue();
-        assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-1.5);
-        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(2.5); // 4.0 + (−1.5)
-        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(1.5);       // −grid
+        assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(1.5);
+        assertThat(s.powerBalance().netSurplusKw()).isEqualTo(2.5);  // 4.0 − 1.5
+        assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-2.5);  // house − solar (exporting)
     }
 
     @Test

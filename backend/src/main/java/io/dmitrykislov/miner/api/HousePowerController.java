@@ -1,8 +1,8 @@
 package io.dmitrykislov.miner.api;
 
-import io.dmitrykislov.miner.powersensor.HouseConsumptionState;
-import io.dmitrykislov.miner.powersensor.HousePower;
-import io.dmitrykislov.miner.powersensor.HousePowerStreamService;
+import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
+import io.dmitrykislov.miner.solaranalytics.HousePower;
+import io.dmitrykislov.miner.solaranalytics.HousePowerStreamService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;

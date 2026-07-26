@@ -30,10 +30,10 @@ class InverterControllerTest {
     InverterStreamService stream;
 
     private InverterSnapshot sample() {
-        // online, metered: solar 3.0, grid −1.0 (exporting) ⇒ house 2.0, surplus 1.0
+        // online, metered: solar 3.0, house 2.0 ⇒ surplus 1.0, grid −1.0 (exporting)
         return new InverterSnapshot(true, "SG10RS", "A24A0965660", "Running",
                 Instant.parse("2026-07-25T08:00:00Z"), Map.of(),
-                PowerBalance.metered(3.0, -1.0), List.of(), List.of(), null);
+                PowerBalance.metered(3.0, 2.0), List.of(), List.of(), null);
     }
 
     @Test

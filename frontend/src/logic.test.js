@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fmt, flowFromGrid, formatUptime, formatDuration, minerView } from './logic.js'
+import { fmt, flow, formatUptime, formatDuration, minerView } from './logic.js'
 
 describe('fmt', () => {
   it('renders "--" for non-numeric / missing values', () => {
@@ -18,46 +18,37 @@ describe('fmt', () => {
   })
 })
 
-describe('flowFromGrid', () => {
-  // 2nd arg is signed net-grid (− = exporting). house = solar + grid; net = −grid.
-  it('exports when grid is negative (solar exceeds house)', () => {
-    const f = flowFromGrid(3, -1.5)     // exporting 1.5 kW
-    expect(f.house).toBe(1.5)           // 3 + (−1.5)
-    expect(f.net).toBe(1.5)             // surplus = −grid
+describe('flow', () => {
+  // (solar, house) — house measured directly; net = solar − house.
+  it('exports when solar exceeds house', () => {
+    const f = flow(3, 1.5)
+    expect(f.net).toBe(1.5)
     expect(f.exporting).toBe(true)
     expect(f.gridFlow).toBe(1.5)
-    expect(f.coverage).toBe(100)        // capped (solar > house)
+    expect(f.coverage).toBe(100) // capped
   })
-  it('imports when grid is positive (house exceeds solar)', () => {
-    const f = flowFromGrid(1, 3)        // importing 3 kW
-    expect(f.house).toBe(4)             // 1 + 3
+  it('imports when house exceeds solar', () => {
+    const f = flow(1, 4)
     expect(f.net).toBe(-3)
     expect(f.exporting).toBe(false)
     expect(f.gridFlow).toBe(3)
-    expect(f.coverage).toBeCloseTo(25, 5) // 1 / 4
+    expect(f.coverage).toBeCloseTo(25, 5)
   })
-  it('treats no grid flow as exactly balanced (net 0, exporting)', () => {
-    const f = flowFromGrid(2, 0)
-    expect(f.house).toBe(2)
+  it('treats an exact balance as exporting (net 0)', () => {
+    const f = flow(2, 2)
     expect(f.net).toBe(0)
     expect(f.exporting).toBe(true)
     expect(f.gridFlow).toBe(0)
     expect(f.coverage).toBe(100)
   })
-  it('handles zero / missing inputs without dividing by zero', () => {
-    expect(flowFromGrid(0, 0).coverage).toBe(100)
-    expect(flowFromGrid(2, undefined).net).toBe(0)   // grid → 0
-    expect(flowFromGrid(undefined, undefined).net).toBe(0)
-    expect(flowFromGrid(NaN, NaN).coverage).toBe(100)
+  it('handles zero / missing house load without dividing by zero', () => {
+    expect(flow(0, 0).coverage).toBe(100)
+    expect(flow(2, 0).coverage).toBe(100)
+    expect(flow(undefined, undefined).net).toBe(0)
+    expect(flow(NaN, NaN).coverage).toBe(100)
   })
-  it('clamps a tiny-negative derived house to zero', () => {
-    const f = flowFromGrid(0, -0.1)     // export with no solar (battery/noise)
-    expect(f.house).toBe(0)
-    expect(f.net).toBe(0.1)
-  })
-  it('rounds to milli-kW', () => {
-    expect(flowFromGrid(1.23456, -0.5).house).toBe(0.735)
-    expect(flowFromGrid(1.23456, -0.5).net).toBe(0.5)
+  it('rounds net to milli-kW', () => {
+    expect(flow(1.23456, 0.5).net).toBe(0.735)
   })
 })
 

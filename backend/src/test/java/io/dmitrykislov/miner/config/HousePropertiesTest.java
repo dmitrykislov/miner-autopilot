@@ -12,8 +12,8 @@ class HousePropertiesTest {
         // No hardcoded IPs/accounts — hosts default to empty and come from env.
         assertThat(p.inverter().host()).isEmpty();
         assertThat(p.inverter().port()).isEqualTo(443);        // generic protocol default kept
-        assertThat(p.powerSensor().host()).isEmpty();
-        assertThat(p.powerSensor().port()).isEqualTo(49476);
+        assertThat(p.solarAnalytics().host()).isEqualTo("https://portal.solaranalytics.com.au/api/v3");
+        assertThat(p.solarAnalytics().hasCredentials()).isFalse();
         assertThat(p.plug().host()).isEmpty();
         assertThat(p.plug().pollIntervalMs()).isEqualTo(10000);
         assertThat(p.miner().host()).isEmpty();
@@ -78,25 +78,17 @@ class HousePropertiesTest {
     }
 
     @Test
-    void powerSensorAppliesDefaults() {
-        var ps = new HouseProperties.PowerSensor(true, null, 0, 0, 0, 0, null);
-        assertThat(ps.subscribeLifetimeSeconds()).isEqualTo(180);
-        assertThat(ps.resubscribeIntervalSeconds()).isEqualTo(90);
-        assertThat(ps.staleAfterSeconds()).isEqualTo(30);
-        assertThat(ps.clampMac()).isEmpty();
-    }
+    void solarAnalyticsAppliesDefaults() {
+        var sa = new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0);
+        assertThat(sa.host()).isEqualTo("https://portal.solaranalytics.com.au/api/v3");
+        assertThat(sa.pollIntervalMs()).isEqualTo(15000);
+        assertThat(sa.staleAfterSeconds()).isEqualTo(60);
+        assertThat(sa.requestTimeoutMs()).isEqualTo(8000);
+        assertThat(sa.siteId()).isEmpty();
+        assertThat(sa.hasCredentials()).isFalse();
 
-    @Test
-    void isClampDetectsByNullVoltageWhenNoMacConfigured() {
-        var ps = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "");
-        assertThat(ps.isClamp("ecda3ba52594", null)).isTrue();     // clamp: no voltage
-        assertThat(ps.isClamp("5443b27fc72c", 241.5)).isFalse();   // gateway: has voltage
-    }
-
-    @Test
-    void isClampMatchesExplicitConfiguredMac() {
-        var ps = new HouseProperties.PowerSensor(true, "h", 1, 1, 1, 1, "ECDA3BA52594");
-        assertThat(ps.isClamp("ecda3ba52594", 999.0)).isTrue();    // case-insensitive, voltage ignored
-        assertThat(ps.isClamp("5443b27fc72c", null)).isFalse();
+        var withCreds = new HouseProperties.SolarAnalytics(true, "https://x", "me@x.com", "pw", "12345", 0, 0, 0);
+        assertThat(withCreds.hasCredentials()).isTrue();
+        assertThat(withCreds.siteId()).isEqualTo("12345");
     }
 }

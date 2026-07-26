@@ -1,4 +1,4 @@
-package io.dmitrykislov.miner.powersensor;
+package io.dmitrykislov.miner.solaranalytics;
 
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HousePowerStreamServiceTest {
 
     private HousePower w(double watts) {
-        return HousePower.measured(watts, 241.0, "clamp", Instant.parse("2026-07-25T08:00:00Z"));
+        return HousePower.measured(watts, null, "12345", Instant.parse("2026-07-25T08:00:00Z"));
     }
 
     @Test

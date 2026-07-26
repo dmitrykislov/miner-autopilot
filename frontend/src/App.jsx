@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { ICONS, Sun, Info, ArrowUp, ArrowDown } from './icons.jsx'
 import { metaFor } from './metricMeta.js'
-import { fmt, flowFromGrid, minerView, formatDuration } from './logic.js'
+import { fmt, flow, minerView, formatDuration } from './logic.js'
 import { useEventSource } from './hooks.js'
 
 // ---------------------------------------------------------------- primitives
@@ -87,15 +87,15 @@ function Flow({ active, dir, tone, value }) {
   )
 }
 
-export function EnergyFlow({ solar, grid, spark }) {
+export function EnergyFlow({ solar, house, spark }) {
   const solarKw = solar ?? 0
-  const metered = grid.metered
-  const gridKw = grid.kw
-  // House (= solar + grid) and the margin are only known while the Powersensor reports.
-  const known = metered && Number.isFinite(gridKw)
-  const { house: houseKw, net, exporting, coverage, gridFlow } = known
-    ? flowFromGrid(solarKw, gridKw)
-    : { house: null, net: null, exporting: false, coverage: null, gridFlow: null }
+  const metered = house.metered
+  const houseKw = house.kw
+  // House consumption and the margin are only known while Solar Analytics reports.
+  const known = metered && Number.isFinite(houseKw)
+  const { net, exporting, coverage, gridFlow } = known
+    ? flow(solarKw, houseKw)
+    : { net: null, exporting: false, coverage: null, gridFlow: null }
 
   return (
     <section className="hero card">
@@ -106,7 +106,7 @@ export function EnergyFlow({ solar, grid, spark }) {
               Surplus margin tile, so they aren't repeated here. */}
           <span className="hero-caption">
             {!known
-              ? <>Waiting for the Powersensor meter — consumption &amp; margin unavailable</>
+              ? <>Waiting for Solar Analytics — consumption &amp; margin unavailable</>
               : exporting
                 ? <>Solar is covering the home, with surplus to spare</>
                 : <>Solar can't cover the home — drawing from the grid</>}
@@ -126,15 +126,15 @@ export function EnergyFlow({ solar, grid, spark }) {
 
         <FlowNode icon="house" tone="house" label="Home"
           info={metered
-            ? 'Whole-home consumption, derived from measured solar minus net-grid export (Powersensor mains clamp). Updates live as the meter reports.'
-            : 'The Powersensor mains clamp is not reporting, so whole-home consumption is currently unavailable.'}>
+            ? 'Whole-home consumption measured by Solar Analytics (their CT hardware). Updates live as new readings arrive.'
+            : 'Solar Analytics is not reporting, so whole-home consumption is currently unavailable.'}>
           {known ? (
             <>
-              <span key={grid.ts} className="node-value live flash">{fmt(houseKw)}<em>kW</em></span>
+              <span key={house.ts} className="node-value live flash">{fmt(houseKw)}<em>kW</em></span>
               <Sparkline data={spark} />
               <span className="node-age">
                 <span className="live-dot" /> updated{' '}
-                {grid.ageSec === 0 ? 'just now' : `${grid.ageSec}s ago`}
+                {house.ageSec === 0 ? 'just now' : `${house.ageSec}s ago`}
               </span>
             </>
           ) : (
@@ -320,7 +320,6 @@ export default function App() {
   const [minerPending, setMinerPending] = useState(false)
   const [now, setNow] = useState(Date.now())
   const [system, setSystem] = useState(null)
-  const solarRef = useRef(0) // latest solar, so the live meter handler can derive house = solar + grid
 
   useEffect(() => {
     fetch('/api/house/latest').then((r) => (r.ok ? r.json() : null))
@@ -335,9 +334,7 @@ export default function App() {
   useEventSource('/api/house/stream', (r) => {
     if (r && r.metered) {
       setHouseLive({ ...r, at: Date.now() })
-      // r.powerKw is net grid (− = export); house consumption = solar + grid
-      const houseKw = Math.max(0, +(solarRef.current + r.powerKw).toFixed(3))
-      setSpark((prev) => [...prev, houseKw].slice(-SPARK_MAX))
+      setSpark((prev) => [...prev, r.powerKw].slice(-SPARK_MAX)) // measured house consumption
     }
   })
 
@@ -362,15 +359,14 @@ export default function App() {
   }
 
   const meterFresh = houseLive && (now - houseLive.at) < STALE_MS
-  // grid = signed net-grid reading from the Powersensor (− = exporting)
-  const grid = meterFresh
+  // house = measured whole-home consumption (kW) from Solar Analytics
+  const house = meterFresh
     ? { kw: houseLive.powerKw, metered: true,
         ts: houseLive.timestamp, ageSec: Math.max(0, Math.round((now - houseLive.at) / 1000)) }
     : { kw: null, metered: false }
 
   const online = snapshot?.online
   const solar = snapshot?.powerBalance?.solarPowerKw
-  solarRef.current = Number.isFinite(solar) ? solar : 0
   const hl = snapshot?.highlights ?? {}
   const metrics = snapshot?.metrics ?? []
   const strings = snapshot?.strings ?? []
@@ -391,7 +387,7 @@ export default function App() {
         </div>
         <div className="status-group">
           <span className={`pill state-${(snapshot?.runningState || '').toLowerCase()}`}><span className="pdot" />{state}</span>
-          <span className={`pill meter ${grid.metered ? 'up' : 'down'}`}><span className="pdot" />{grid.metered ? 'Meter live' : 'Meter offline'}</span>
+          <span className={`pill meter ${house.metered ? 'up' : 'down'}`}><span className="pdot" />{house.metered ? 'Meter live' : 'Meter offline'}</span>
           <span className={`pill conn ${connected && online ? 'up' : 'down'}`}>
             <span className="pdot" />{connected ? (online ? 'Live' : 'Inverter offline') : 'Reconnecting…'}
             {snapshot?.timestamp && <span className="ts">{new Date(snapshot.timestamp).toLocaleTimeString()}</span>}
@@ -404,7 +400,7 @@ export default function App() {
 
       {snapshot && (
         <>
-          <EnergyFlow solar={solar} grid={grid} spark={spark} />
+          <EnergyFlow solar={solar} house={house} spark={spark} />
 
           <div className="kpis">
             <Kpi icon="calendar" label="Today" value={fmt(hl.dailyYieldKwh, 1)} unit="kWh"
@@ -450,8 +446,8 @@ export default function App() {
 
       <footer className="foot">
         <div>
-          Solar via Sungrow WiNet-S (polled) · house consumption via Powersensor mains clamp (streamed live) ·
-          margin = solar − measured house; unavailable while the meter is offline.
+          Solar via Sungrow WiNet-S (polled) · house consumption via Solar Analytics (polled) ·
+          margin = solar − measured house; unavailable while consumption data is stale.
         </div>
         {system && (
           <div className="foot-sys">

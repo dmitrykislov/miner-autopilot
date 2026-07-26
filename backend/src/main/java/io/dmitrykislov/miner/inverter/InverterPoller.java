@@ -4,7 +4,7 @@ import io.dmitrykislov.miner.inverter.dto.DirectResponse;
 import io.dmitrykislov.miner.inverter.dto.RealResponse;
 import io.dmitrykislov.miner.inverter.model.DeviceInfo;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
-import io.dmitrykislov.miner.powersensor.HouseConsumptionState;
+import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -36,8 +36,8 @@ public class InverterPoller {
         this.houseConsumption = houseConsumption;
     }
 
-    /** Signed net-grid power from the Powersensor if live, else null (unavailable). */
-    private Double gridNetKw() {
+    /** Measured house consumption (kW) if a fresh Solar Analytics reading exists, else null. */
+    private Double houseKw() {
         return houseConsumption.measuredKw().orElse(null);
     }
 
@@ -49,7 +49,7 @@ public class InverterPoller {
             ensureSession();
             RealResponse real = client.fetchReal(device);
             DirectResponse direct = safeDirect(device);
-            InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, gridNetKw(), now);
+            InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, houseKw(), now);
             stream.publish(snapshot);
             log.debug("Published snapshot: state={} activePower={}",
                     snapshot.runningState(), snapshot.highlights().get("activePowerKw"));

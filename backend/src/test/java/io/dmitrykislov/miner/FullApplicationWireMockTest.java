@@ -59,7 +59,7 @@ class FullApplicationWireMockTest {
         r.add("house.inverter.port", () -> 59999);
         r.add("house.inverter.poll-interval-ms", () -> 1000);
         // Others off so the context boots clean and fast
-        r.add("house.power-sensor.enabled", () -> false);
+        r.add("house.solar-analytics.enabled", () -> false);
         r.add("house.plug.enabled", () -> false);
         r.add("house.autopilot.enabled", () -> false);
     }

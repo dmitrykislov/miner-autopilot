@@ -6,22 +6,19 @@ export const fmt = (n, d = 2) =>
   n === null || n === undefined || Number.isNaN(Number(n)) ? '--' : Number(n).toFixed(d)
 
 /**
- * Solar-vs-house power flow, derived from measured solar and the signed net-grid
- * reading (the Powersensor clamp on the mains: + importing, − exporting).
- *   house = solar + grid ; surplus (net) = solar − house = −grid.
- * @returns {{house:number, net:number, exporting:boolean, coverage:number, gridFlow:number}}
- * house = consumption (kW, ≥0); net = surplus margin (kW, + exporting / − importing);
- * exporting when net ≥ 0; coverage = % of house met by solar (0..100, capped);
- * gridFlow = |net| = grid exchange magnitude.
+ * Solar-vs-house power flow from measured solar and measured house consumption
+ * (Solar Analytics). net = surplus margin = solar − house; grid flow = |net|.
+ * @returns {{net:number, exporting:boolean, coverage:number, gridFlow:number}}
+ * net = surplus (kW, + exporting / − importing); exporting when net ≥ 0;
+ * coverage = % of house met by solar (0..100, capped; 100 when house ≤ 0).
  */
-export function flowFromGrid(solarKw, gridNetKw) {
+export function flow(solarKw, houseKw) {
   const solar = Number.isFinite(solarKw) ? solarKw : 0
-  const grid = Number.isFinite(gridNetKw) ? gridNetKw : 0
-  const house = Math.max(0, +(solar + grid).toFixed(3))
-  const net = +(-grid).toFixed(3)
+  const house = Number.isFinite(houseKw) ? houseKw : 0
+  const net = +(solar - house).toFixed(3)
   const exporting = net >= 0
   const coverage = house > 0 ? Math.min(100, (solar / house) * 100) : 100
-  return { house, net, exporting, coverage, gridFlow: Math.abs(net) }
+  return { net, exporting, coverage, gridFlow: Math.abs(net) }
 }
 
 /** Human uptime: null → null; ≥1h → "Xh Ym"; else "Xm". */

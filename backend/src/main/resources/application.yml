@@ -32,16 +32,17 @@ house:
     password: ${INVERTER_PASSWORD:}
     poll-interval-ms: ${INVERTER_POLL_INTERVAL_MS:10000}
     request-timeout-ms: ${INVERTER_REQUEST_TIMEOUT_MS:8000}
-  # --- Powersensor gateway: local UDP pub/sub API (measured house consumption) ---
-  power-sensor:
-    enabled: ${POWERSENSOR_ENABLED:true}
-    host: ${POWERSENSOR_HOST:}
-    port: ${POWERSENSOR_PORT:49476}
-    subscribe-lifetime-seconds: ${POWERSENSOR_SUBSCRIBE_LIFETIME_SECONDS:180}
-    resubscribe-interval-seconds: ${POWERSENSOR_RESUBSCRIBE_INTERVAL_SECONDS:90}
-    stale-after-seconds: ${POWERSENSOR_STALE_AFTER_SECONDS:30}
-    # Optional: MAC of the mains clamp. Blank = auto-detect (clamp reports no voltage).
-    clamp-mac: ${POWERSENSOR_CLAMP_MAC:}
+  # --- Solar Analytics cloud API: measured whole-home consumption ---
+  solar-analytics:
+    enabled: ${SOLARANALYTICS_ENABLED:true}
+    host: ${SOLARANALYTICS_HOST:https://portal.solaranalytics.com.au/api/v3}
+    user: ${SOLARANALYTICS_USER:}
+    password: ${SOLARANALYTICS_PASSWORD:}
+    # Site id to read; blank = auto-detect the first active site from /site_list.
+    site-id: ${SOLARANALYTICS_SITE_ID:}
+    poll-interval-ms: ${SOLARANALYTICS_POLL_INTERVAL_MS:15000}
+    stale-after-seconds: ${SOLARANALYTICS_STALE_AFTER_SECONDS:60}
+    request-timeout-ms: ${SOLARANALYTICS_REQUEST_TIMEOUT_MS:8000}
   # --- TP-Link Tapo P110 smart plug (switch + status) ---
   plug:
     enabled: ${PLUG_ENABLED:true}

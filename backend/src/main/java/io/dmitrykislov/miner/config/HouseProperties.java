@@ -8,23 +8,23 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
  *
  * <pre>
  * house
- *  ├─ inverter      → the Sungrow SG10RS / WiNet-S (solar generation)
- *  ├─ power-sensor  → the Powersensor gateway (measured house consumption)
- *  ├─ plug          → the TP-Link Tapo P110 smart plug (switchable load + status)
+ *  ├─ inverter        → the Sungrow SG10RS / WiNet-S (solar generation)
+ *  ├─ solar-analytics → Solar Analytics cloud API (measured whole-home consumption)
+ *  ├─ plug            → the TP-Link Tapo P110 smart plug (switchable load + status)
  *  └─ miner         → the Braiins OS+ miner (Antminer S19k Pro) GraphQL API
  * </pre>
  */
 @ConfigurationProperties(prefix = "house")
 public record HouseProperties(
         @NestedConfigurationProperty Inverter inverter,
-        @NestedConfigurationProperty PowerSensor powerSensor,
+        @NestedConfigurationProperty SolarAnalytics solarAnalytics,
         @NestedConfigurationProperty Plug plug,
         @NestedConfigurationProperty Miner miner,
         @NestedConfigurationProperty Autopilot autopilot) {
 
     public HouseProperties {
         if (inverter == null) inverter = new Inverter(null, 0, null, null, null, 0, 0);
-        if (powerSensor == null) powerSensor = new PowerSensor(true, null, 0, 0, 0, 0, null);
+        if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0);
         if (plug == null) plug = new Plug(true, null, null, null, null, 0, 0, null, null, null);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
         if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0);
@@ -54,41 +54,42 @@ public record HouseProperties(
         }
     }
 
-    /** Powersensor gateway — local UDP pub/sub API for measured whole-home power. */
-    public record PowerSensor(
-            // Master switch — when false the client never opens a socket.
+    /**
+     * Solar Analytics cloud API — measured whole-home consumption (their CT hardware).
+     * Authenticates with the account email + password over HTTP Basic; polls
+     * {@code /live_site_data} for real-time {@code consumed}/{@code generated} watts.
+     */
+    public record SolarAnalytics(
+            // Master switch — when false the client never polls.
             boolean enabled,
-            // Gateway/plug IP that serves the local API.
+            // API base URL, e.g. https://portal.solaranalytics.com.au/api/v3
             String host,
-            // UDP port of the local API (proprietary high port).
-            int port,
-            // Lifetime (seconds) passed in the subscribe() request.
-            int subscribeLifetimeSeconds,
-            // How often (seconds) to re-send subscribe() to keep the stream alive;
-            // must be < the lifetime or the device stops streaming.
-            int resubscribeIntervalSeconds,
-            // A measured reading older than this (seconds) is treated as stale, so
-            // the margin becomes unavailable until fresh data returns.
+            // Solar Analytics account email + password (HTTP Basic auth).
+            String user,
+            String password,
+            // Site to read; blank = auto-detect the first active site from /site_list.
+            String siteId,
+            // How often (ms) to poll live_site_data for whole-home consumption.
+            long pollIntervalMs,
+            // A reading older than this (seconds) is treated as stale, so the margin
+            // becomes unavailable until fresh data returns.
             int staleAfterSeconds,
-            // Optional explicit MAC of the mains clamp (whole-home). Blank = auto-detect
-            // the clamp as the reporting device whose voltage is null.
-            String clampMac) {
+            // Per-request HTTP timeout (ms).
+            long requestTimeoutMs) {
 
-        public PowerSensor {
-            if (host == null) host = ""; // no hardcoded IP — supplied via POWERSENSOR_HOST
-            if (port == 0) port = 49476;
-            if (subscribeLifetimeSeconds == 0) subscribeLifetimeSeconds = 180;
-            if (resubscribeIntervalSeconds == 0) resubscribeIntervalSeconds = 90;
-            if (staleAfterSeconds == 0) staleAfterSeconds = 30;
-            if (clampMac == null) clampMac = "";
+        public SolarAnalytics {
+            if (host == null || host.isBlank()) host = "https://portal.solaranalytics.com.au/api/v3";
+            if (user == null) user = "";
+            if (password == null) password = "";
+            if (siteId == null) siteId = "";
+            if (pollIntervalMs == 0) pollIntervalMs = 15000;
+            if (staleAfterSeconds == 0) staleAfterSeconds = 60;
+            if (requestTimeoutMs == 0) requestTimeoutMs = 8000;
         }
 
-        /** True when {@code mac} is the whole-home clamp, per config or voltage heuristic. */
-        public boolean isClamp(String mac, Double voltage) {
-            if (!clampMac.isBlank()) {
-                return clampMac.equalsIgnoreCase(mac);
-            }
-            return voltage == null; // the mains clamp reports no voltage
+        /** Usable only when both account email and password are set. */
+        public boolean hasCredentials() {
+            return !user.isBlank() && !password.isBlank();
         }
     }
 
