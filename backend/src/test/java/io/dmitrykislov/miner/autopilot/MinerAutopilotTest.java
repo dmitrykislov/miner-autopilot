@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.OptionalDouble;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 /**
@@ -35,8 +36,11 @@ class MinerAutopilotTest {
                 new HouseProperties.Autopilot(autopilotEnabled, 30000, 1000, 100, 1000));
     }
 
+    private AutopilotStreamService stream;
+
     private MinerAutopilot autopilot(boolean enabled) {
-        return new MinerAutopilot(margin, miner, props(enabled));
+        stream = new AutopilotStreamService();
+        return new MinerAutopilot(margin, miner, props(enabled), stream);
     }
 
     private MinerStatus status(boolean reachable, boolean running, Integer powerTargetW) {
@@ -200,5 +204,75 @@ class MinerAutopilotTest {
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(500));
         autopilot(true).tick();
         neverActs();
+    }
+
+    // ------------------------------------------- runtime enable/disable + status
+    @Test void enabledFlagDefaultsFromConfig() {
+        assertThat(autopilot(true).isEnabled()).isTrue();
+        assertThat(autopilot(false).isEnabled()).isFalse();
+    }
+
+    @Test void disabledAtRuntimeDoesNothingEvenIfConfigEnabled() {
+        var ap = autopilot(true);
+        ap.setEnabled(false);
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(5000)); // would normally start
+        ap.tick();
+        neverActs();
+        assertThat(ap.isEnabled()).isFalse();
+    }
+
+    @Test void toggleUpdatesStatusAndPublishesToStream() {
+        var ap = autopilot(false);
+        assertThat(ap.status().enabled()).isFalse();
+        ap.setEnabled(true);
+        assertThat(ap.isEnabled()).isTrue();
+        assertThat(ap.status().enabled()).isTrue();
+        assertThat(stream.latest().enabled()).isTrue(); // pushed to SSE subscribers
+    }
+
+    @Test void recordsStartChangeWithDetails() {
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
+        var ap = autopilot(true);
+        ap.tick();
+        var s = ap.status();
+        assertThat(s.evaluatedAt()).isNotNull();
+        assertThat(s.lastDecision()).contains("start");
+        assertThat(s.lastChangeAt()).isNotNull();
+        assertThat(s.lastChange().action()).isEqualTo("START");
+        assertThat(s.lastChange().fromPowerW()).isNull();      // was off
+        assertThat(s.lastChange().toPowerW()).isEqualTo(800);  // started at the floor
+    }
+
+    @Test void recordsStepUpChangeFromTo() {
+        when(miner.refresh()).thenReturn(status(true, true, 800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
+        var ap = autopilot(true);
+        ap.tick();
+        assertThat(ap.status().lastChange().action()).isEqualTo("STEP_UP");
+        assertThat(ap.status().lastChange().fromPowerW()).isEqualTo(800);
+        assertThat(ap.status().lastChange().toPowerW()).isEqualTo(1800);
+    }
+
+    @Test void recordsStopChangeOnUnknownMargin() {
+        when(miner.refresh()).thenReturn(status(true, true, 800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.empty());
+        var ap = autopilot(true);
+        ap.tick();
+        assertThat(ap.status().lastChange().action()).isEqualTo("STOP");
+        assertThat(ap.status().lastChange().fromPowerW()).isEqualTo(800);
+        assertThat(ap.status().lastChange().toPowerW()).isNull();     // turned off
+        assertThat(ap.status().lastDecision()).contains("margin unknown");
+    }
+
+    @Test void holdRecordsDecisionButNoChange() {
+        when(miner.refresh()).thenReturn(status(true, true, 1800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(500));
+        var ap = autopilot(true);
+        ap.tick();
+        assertThat(ap.status().lastDecision()).contains("deadzone");
+        assertThat(ap.status().lastChange()).isNull();       // nothing changed
+        assertThat(ap.status().lastChangeAt()).isNull();
     }
 }

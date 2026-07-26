@@ -313,6 +313,45 @@ const PROMOTED_KEYS = new Set([
 
 // ---------------------------------------------------------------- app
 
+/** Autopilot on/off toggle plus its status and the details of the last change it made. */
+export function AutopilotCard({ autopilot, pending, onToggle }) {
+  const enabled = !!autopilot?.enabled
+  const c = autopilot?.lastChange
+  const fmtTime = (iso) => {
+    if (!iso) return null
+    const d = new Date(iso)
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleString()
+  }
+  const power = (w) => (w == null ? 'off' : `${w} W`)
+  return (
+    <div className={`plug card autopilot ${enabled ? 'is-on' : 'is-off'}`}>
+      <div className="plug-icon"><Icon name="bolt" size={22} /></div>
+      <div className="plug-body">
+        <div className="plug-name">
+          Autopilot
+          <span className={`pill ${enabled ? 'up' : 'down'}`} style={{ marginLeft: 8 }}>
+            <span className="pdot" />{enabled ? 'On' : 'Off'}
+          </span>
+        </div>
+        <div className="plug-status" aria-label="last decision">{autopilot?.lastDecision || '—'}</div>
+        {c ? (
+          <div className="ap-change">
+            Last change: <strong>{c.action}</strong> {power(c.fromPowerW)} → {power(c.toPowerW)}
+            {fmtTime(c.at) && <span className="muted"> · {fmtTime(c.at)}</span>}
+            {c.detail && <div className="ap-detail muted">{c.detail}</div>}
+          </div>
+        ) : (
+          <div className="ap-change muted">No changes made yet</div>
+        )}
+        <button type="button" className={`ap-toggle ${enabled ? 'is-off' : 'is-on'}`}
+                disabled={pending} onClick={onToggle}>
+          {pending ? '…' : enabled ? 'Disable autopilot' : 'Enable autopilot'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function Dashboard({ onLogout }) {
   const [snapshot, setSnapshot] = useState(null)
   const [connected, setConnected] = useState(false)
@@ -322,6 +361,8 @@ function Dashboard({ onLogout }) {
   const [minerPending, setMinerPending] = useState(false)
   const [now, setNow] = useState(Date.now())
   const [system, setSystem] = useState(null)
+  const [autopilot, setAutopilot] = useState(null)
+  const [apPending, setApPending] = useState(false)
 
   // fetch with the bearer token; a 401 means the token is gone/expired → log out.
   const authFetch = (url, opts = {}) =>
@@ -347,11 +388,20 @@ function Dashboard({ onLogout }) {
   })
 
   useEventSource(withToken('/api/miner/stream'), setMiner)
+  useEventSource(withToken('/api/autopilot/stream'), setAutopilot)
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
   }, [])
+
+  const toggleAutopilot = () => {
+    setApPending(true)
+    const path = autopilot?.enabled ? '/api/autopilot/disable' : '/api/autopilot/enable'
+    authFetch(path, { method: 'POST' })
+      .then((r) => r.json()).then(setAutopilot)
+      .catch(() => {}).finally(() => setApPending(false))
+  }
 
   const minerCmd = (url) => {
     setMinerPending(true)
@@ -429,6 +479,15 @@ function Dashboard({ onLogout }) {
             </div>
             <MinerCard miner={miner} pending={minerPending}
               onStart={minerStart} onStop={minerStop} onSetPower={minerSetPower} />
+          </section>
+
+          <section className="section">
+            <div className="section-head">
+              <span className="section-icon"><Icon name="bolt" size={16} /></span>
+              <h2>Autopilot</h2>
+              <InfoDot text="Solar-margin autopilot — starts, steps, and stops the miner to soak up surplus solar. Drives real hardware; toggle with care." />
+            </div>
+            <AutopilotCard autopilot={autopilot} pending={apPending} onToggle={toggleAutopilot} />
           </section>
 
           {SECTIONS.map((sec) => {

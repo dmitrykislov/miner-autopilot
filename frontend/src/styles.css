@@ -317,3 +317,16 @@ body {
   font-size: 12px; padding: 3px 10px; border-radius: 8px; cursor: pointer;
 }
 .logout:hover { color: var(--text); border-color: var(--muted); }
+
+/* ---------------------------------------------------------------- autopilot */
+.autopilot.is-on .plug-icon { color: var(--good); background: rgba(53, 208, 127, 0.14); }
+.autopilot.is-off .plug-icon { color: var(--muted); }
+.ap-change { font-size: 12.5px; margin-top: 6px; }
+.ap-detail { font-size: 12px; margin-top: 2px; }
+.ap-toggle {
+  margin-top: 10px; align-self: flex-start; padding: 7px 14px; font-size: 13px; font-weight: 700;
+  border: none; border-radius: 9px; cursor: pointer;
+}
+.ap-toggle.is-on { background: var(--good); color: #0a1f12; }        /* action: turn on */
+.ap-toggle.is-off { background: var(--line); color: var(--text); }   /* action: turn off */
+.ap-toggle:disabled { opacity: 0.5; cursor: default; }

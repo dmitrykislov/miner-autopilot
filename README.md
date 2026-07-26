@@ -141,6 +141,8 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 | `GET /api/miner/stream` · `/status` | Miner status: state, hashrate, power draw, fans, pools, power target |
 | `POST /api/miner/start` · `/stop` | Start/stop BOSMiner |
 | `POST /api/miner/power?watts=&apply=` | Set autotuning power target (clamped to the hard [min,max]) |
+| `GET /api/autopilot` · `/stream` | Autopilot status: enabled, last decision, and last change (action, from→to, time) |
+| `POST /api/autopilot/enable` · `/disable` | Turn the autopilot on/off at runtime; returns the new status |
 | `GET /api/system` | App version, start time, and uptime (for the UI footer) |
 | `POST /api/auth/login` | Exchange `{password}` for a bearer token (the one open endpoint) |
 
@@ -187,6 +189,7 @@ htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n'
 - **KPI row:** Today / Lifetime yield, grid frequency, inverter temperature. These promoted values are **not repeated** in the detail sections below (de-duplicated).
 - **Miner card:** honest state — **Mining / Suspended / Stopped / Offline** with reason (e.g. "no active pool"), live hashrate, power draw, **fan RPM**, uptime, pool count, editable **power target** + Apply, and **Start/Stop**.
 - **Inverter detail sections:** Energy, Power, Grid & AC, DC/PV, Device Status, Per-phase — every reading with an info tooltip (excludes the values already shown as KPIs / in the hero).
+- **Autopilot card:** On/Off badge, an Enable/Disable button, the last decision, and the last change it made (action, from→to power, time) — live over SSE.
 - **Login gate:** a password page guards the whole app; a successful login is remembered for a month. The **footer** has a **Log out** button that clears it.
 - **Footer:** app version, start time, and live uptime (from `/api/system`).
 - Theme-aware (light/dark), responsive.
@@ -212,7 +215,9 @@ Safety/correctness properties:
 - Respects the miner's hard **[min, max]** power limits (also enforced in `MinerService` on every set).
 - **Safe-by-construction config:** the planner validates its thresholds at boot and refuses to start if a setting would break the never-import guarantee — `start ≥ min` (starting can't import) and `step ≤ start` (a step-up can't import). It also **warns** if the deadzone (`start − low` = 900 W) is narrower than one step (800 W), which would let a single step flap the miner across the band.
 
-The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot` wires it to the live margin and `MinerService`. Enable with `AUTOPILOT_ENABLED=true`.
+The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot` wires it to the live margin and `MinerService`.
+
+**Runtime control:** `AUTOPILOT_ENABLED` now sets the **boot state** of a runtime toggle (and still gates the boot-time config guards). Once running, the UI has an **Autopilot** card — an Enable/Disable button plus live status: whether it's on, the last decision (including "hold"/skips), and the last change it actually made (action, from→to power, time, reason). Backend: `GET /api/autopilot` (+ `/stream` SSE) and `POST /api/autopilot/enable|disable`. The env var only seeds the starting position; the toggle overrides it at runtime.
 
 ---
 
@@ -228,8 +233,8 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Tests
 
 ```bash
-mvn clean install     # 171 backend + 50 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (171)
+mvn clean install     # 182 backend + 57 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (182)
 ```
 
 Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/surplus-invariant/config-guard cases), the **live margin source** (including staleness), and an **end-to-end WireMock** test that boots the full Spring context and drives the real margin chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.
