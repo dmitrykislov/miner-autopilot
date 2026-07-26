@@ -55,4 +55,13 @@ describe('App auth gate', () => {
     await waitFor(() => expect(getToken()).toBeNull())
     expect(screen.getByLabelText('Password')).toBeInTheDocument()
   })
+
+  it('a 401 from the API auto-logs-out and returns to the login gate', async () => {
+    // The dashboard's initial fetches get 401 (expired/invalid token) → clear + re-lock.
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+    setToken('stale')
+    render(<App />)
+    await waitFor(() => expect(getToken()).toBeNull())
+    expect(await screen.findByLabelText('Password')).toBeInTheDocument()
+  })
 })

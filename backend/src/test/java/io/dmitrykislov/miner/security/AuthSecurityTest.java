@@ -72,6 +72,29 @@ class AuthSecurityTest {
         web().get().uri("/api/system?token=bogus").exchange().expectStatus().isUnauthorized();
     }
 
+    @Test void writeEndpointRequiresTokenAndWorksWithOne() {
+        // A state-changing endpoint must be gated too, and reachable with a valid token
+        // (the miner isn't connected here, so we only assert auth passed — not 401).
+        web().post().uri("/api/miner/stop").exchange().expectStatus().isUnauthorized();
+        web().post().uri("/api/miner/stop")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + login("secret"))
+                .exchange().expectStatus().value(s -> assertThat(s).isNotEqualTo(401));
+    }
+
+    @Test void encodedApiPathStillRequiresToken() {
+        // Regression for the decoded-path bypass: an encoded "/api" (%61 = 'a') must NOT slip
+        // past the filter as a "static" path while the router still decodes it to a controller.
+        web().post().uri(java.net.URI.create("http://localhost:" + port + "/%61pi/miner/stop"))
+                .exchange().expectStatus().isUnauthorized();
+        web().get().uri(java.net.URI.create("http://localhost:" + port + "/%61pi/system"))
+                .exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test void optionsPreflightIsOpen() {
+        web().options().uri("/api/system").exchange()
+                .expectStatus().value(s -> assertThat(s).isNotEqualTo(401));
+    }
+
     private String login(String password) {
         AuthController.LoginResponse body = web().post().uri("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)

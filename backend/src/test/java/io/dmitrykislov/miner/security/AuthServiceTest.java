@@ -40,19 +40,22 @@ class AuthServiceTest {
         assertThat(auth.isValidToken(auth.issueToken())).isTrue();
     }
 
-    @Test void rejectsTamperedOrMalformedToken() {
+    @Test void rejectsTamperedOrMalformedToken() throws Exception {
         String good = auth.issueToken();
         assertThat(auth.isValidToken(good + "x")).isFalse();      // mutated signature
         assertThat(auth.isValidToken("9999999999.bad")).isFalse(); // wrong signature
         assertThat(auth.isValidToken("garbage")).isFalse();        // no separator
+        assertThat(auth.isValidToken("123.")).isFalse();           // empty signature (dot at end)
         assertThat(auth.isValidToken("")).isFalse();
         assertThat(auth.isValidToken(null)).isFalse();
+        // Authentic signature but a non-numeric expiry → the parse must reject it, not throw.
+        assertThat(auth.isValidToken(signPayload("notanumber"))).isFalse();
     }
 
     @Test void rejectsExpiredButAuthenticToken() throws Exception {
         // Forge an authentically-signed token with a past expiry — must still be rejected.
-        assertThat(auth.isValidToken(signed(Instant.now().getEpochSecond() - 60))).isFalse();
-        assertThat(auth.isValidToken(signed(Instant.now().getEpochSecond() + 3600))).isTrue();
+        assertThat(auth.isValidToken(signPayload(Long.toString(Instant.now().getEpochSecond() - 60)))).isFalse();
+        assertThat(auth.isValidToken(signPayload(Long.toString(Instant.now().getEpochSecond() + 3600)))).isTrue();
     }
 
     @Test void tokenSurvivesAcrossServiceInstances() {
@@ -64,10 +67,12 @@ class AuthServiceTest {
 
     // ---- fail-closed --------------------------------------------------------
     @Test void failsClosedWhenNoHashConfigured() {
+        String realToken = auth.issueToken(); // valid under the configured service
         AuthService blank = new AuthService(new AuthProperties(true, "", 30));
         assertThat(blank.verifyPassword("anything")).isFalse();
-        // isValidToken short-circuits on an unconfigured hash before checking any signature,
-        // so no token is ever accepted (every request is rejected → fail-closed).
+        // A blank-hash service accepts NO token — not a bogus one, and not even a token that
+        // is genuinely valid under a configured service. Every request is rejected (fail-closed).
+        assertThat(blank.isValidToken(realToken)).isFalse();
         assertThat(blank.isValidToken("9999999999.anything")).isFalse();
     }
 
@@ -76,12 +81,12 @@ class AuthServiceTest {
         assertThat(new AuthService(new AuthProperties(false, HASH, 30)).enabled()).isFalse();
     }
 
-    /** Independently sign a payload with the same scheme, to forge tokens for the expiry test. */
-    private static String signed(long expEpochSec) throws Exception {
+    /** Independently sign a payload with the same scheme, to forge tokens for the tests. */
+    private static String signPayload(String payload) throws Exception {
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(HASH.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
         String sig = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(mac.doFinal(Long.toString(expEpochSec).getBytes(StandardCharsets.UTF_8)));
-        return expEpochSec + "." + sig;
+                .encodeToString(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
+        return payload + "." + sig;
     }
 }
