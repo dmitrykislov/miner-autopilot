@@ -28,9 +28,11 @@ import io.dmitrykislov.miner.autopilot.AutopilotDecision.Action;
  *   <li>Otherwise (deadzone {@code [lowMarginW, startMarginW)}) → <b>NONE</b> (hold).</li>
  * </ul>
  *
- * <p><b>Invariant:</b> under a stable config (see {@link #isStableConfig}, and
- * {@code startMarginW ≥ minPowerW}) any decision that leaves the miner running
- * sets a power ≤ the available surplus — the miner never imports from the grid.
+ * <p><b>Invariant:</b> any decision that leaves the miner running sets a power ≤ the
+ * available surplus — the miner never imports from the grid. The constructor enforces
+ * the two preconditions this depends on ({@code startMarginW ≥ minPowerW} and
+ * {@code stepW ≤ startMarginW}); {@link #isStableConfig} additionally flags a config
+ * whose deadzone is narrower than a step (prone to start/stop oscillation).
  */
 public final class MinerAutopilotPlanner {
 
@@ -46,6 +48,20 @@ public final class MinerAutopilotPlanner {
         }
         if (lowMarginW >= startMarginW) {
             throw new IllegalArgumentException("lowMarginW must be < startMarginW");
+        }
+        if (stepW <= 0) {
+            throw new IllegalArgumentException("stepW must be > 0");
+        }
+        // Preconditions that make the "never import" invariant hold (see class javadoc):
+        // starting draws minPowerW, so the start margin must cover it; and a step-up
+        // fires at margin ≥ startMarginW yet adds stepW of draw, so a step can't exceed it.
+        if (startMarginW < minPowerW) {
+            throw new IllegalArgumentException("startMarginW (" + startMarginW + ") must be ≥ minPowerW ("
+                    + minPowerW + "): starting the miner would otherwise import from the grid");
+        }
+        if (stepW > startMarginW) {
+            throw new IllegalArgumentException("stepW (" + stepW + ") must be ≤ startMarginW ("
+                    + startMarginW + "): a step-up would otherwise import from the grid");
         }
         this.minPowerW = minPowerW;
         this.maxPowerW = maxPowerW;

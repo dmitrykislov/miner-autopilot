@@ -1,197 +1,192 @@
 package io.dmitrykislov.miner.autopilot;
 
-import io.dmitrykislov.miner.braiins.BraiinsClientConfig;
-import io.dmitrykislov.miner.braiins.BraiinsMinerClient;
 import io.dmitrykislov.miner.braiins.MinerService;
-import io.dmitrykislov.miner.braiins.MinerStreamService;
-import io.dmitrykislov.miner.config.HouseProperties;
-import com.github.tomakehurst.wiremock.WireMockServer;
-import org.junit.jupiter.api.AfterEach;
+import io.dmitrykislov.miner.inverter.InverterPoller;
+import io.dmitrykislov.miner.inverter.WiNetWebSocketClient;
+import io.dmitrykislov.miner.simulator.MockInverter;
+import io.dmitrykislov.miner.simulator.MockMiner;
+import io.dmitrykislov.miner.simulator.MockSolarAnalytics;
+import io.dmitrykislov.miner.solaranalytics.SolarAnalyticsClient;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import tools.jackson.databind.json.JsonMapper;
-
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.OptionalDouble;
-
-import static com.github.tomakehurst.wiremock.client.WireMock.*;
-import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 /**
- * End-to-end autopilot test against a WireMock that simulates BOTH the Braiins
- * miner GraphQL API and the inverter/house power (the margin). Each scenario sets
- * a simulated margin + miner state, runs one autopilot tick, and asserts the exact
- * GraphQL mutation(s) the autopilot sent to the miner.
+ * End-to-end autopilot test that boots the <b>entire Spring Boot context</b> and drives
+ * the real margin chain — solar (inverter) − house consumption (Solar Analytics) →
+ * {@code PowerBalance} → {@link LiveMarginSource} → {@link MinerAutopilot} — against
+ * simulated devices ({@link MockMiner}, {@link MockSolarAnalytics}, {@link MockInverter}).
+ *
+ * <p>Each test reads as: arrange solar / consumption / miner state, run one tick, assert
+ * the exact miner API calls. Limits: min 800, max 3600, start 1000, low 100, step 1000.
  */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class MinerAutopilotWireMockTest {
 
-    private WireMockServer wm;
-    private final JsonMapper mapper = JsonMapper.builder().build();
-    private final HttpClient http = HttpClient.newHttpClient();
+    static final MockMiner miner = new MockMiner();
+    static final MockSolarAnalytics solar = new MockSolarAnalytics();
 
-    private MinerService minerService;
-    private MinerStreamService stream;
-    private MinerAutopilot autopilot;
+    @DynamicPropertySource
+    static void wire(DynamicPropertyRegistry r) {
+        r.add("house.miner.host", miner::host);
+        r.add("house.miner.poll-interval-ms", () -> 3_600_000);
+        r.add("house.solar-analytics.enabled", () -> true);
+        r.add("house.solar-analytics.host", solar::baseUrl);
+        r.add("house.solar-analytics.user", () -> "test@example.com");
+        r.add("house.solar-analytics.password", () -> "pw");
+        r.add("house.solar-analytics.site-id", () -> "12345");
+        r.add("house.solar-analytics.poll-interval-ms", () -> 3_600_000);
+        r.add("house.inverter.host", () -> "localhost"); // client is mocked; host just needs to exist
+        r.add("house.inverter.poll-interval-ms", () -> 3_600_000);
+        r.add("house.plug.enabled", () -> false);
+        r.add("house.autopilot.enabled", () -> true);    // never fires on its own — we call tick()
+        r.add("house.autopilot.interval-ms", () -> 3_600_000);
+        r.add("house.autopilot.start-margin-w", () -> 1000);
+        r.add("house.autopilot.low-margin-w", () -> 100);
+        r.add("house.autopilot.step-w", () -> 1000);
+    }
+
+    @AfterAll
+    static void stopSimulators() { miner.stop(); solar.stop(); }
+
+    @MockitoBean WiNetWebSocketClient winet;
+    MockInverter inverter;
+
+    @Autowired MinerAutopilot autopilot;
+    @Autowired InverterPoller inverterPoller;
+    @Autowired SolarAnalyticsClient solarAnalyticsClient;
+    @Autowired MinerService minerService;
 
     @BeforeEach
-    void setup() {
-        wm = new WireMockServer(options().dynamicPort());
-        wm.start();
-        configureFor("localhost", wm.port());   // point the static stubFor/verify DSL at this server
-
-        // --- fixed miner GraphQL stubs (matched by GraphQL operationName) ---
-        stubFor(post("/graphql").withRequestBody(matchingJsonPath("$[?(@.operationName == 'Realtime')]"))
-                .willReturn(okJson("{\"data\":{\"bosminer\":{\"info\":{"
-                        + "\"summary\":{\"realHashrate\":{\"mhs5S\":95000000},"
-                        + "\"power\":{\"approxConsumptionW\":800,\"limitW\":900}},"
-                        + "\"fans\":[{\"name\":\"0\",\"rpm\":3000,\"speed\":80}]}}}}")));
-        stubFor(post("/graphql").withRequestBody(matchingJsonPath("$[?(@.operationName == 'WorkspaceBosStart')]"))
-                .willReturn(okJson("{\"data\":{\"bosminer\":{\"start\":{\"__typename\":\"BosminerResult\"}}}}")));
-        stubFor(post("/graphql").withRequestBody(matchingJsonPath("$[?(@.operationName == 'WorkspaceBosStop')]"))
-                .willReturn(okJson("{\"data\":{\"bosminer\":{\"stop\":{\"__typename\":\"VoidResult\",\"void\":true}}}}")));
-        stubFor(post("/graphql").withRequestBody(matchingJsonPath("$[?(@.operationName == 'SettingsPerformanceEditWithTuning')]"))
-                .willReturn(okJson("{\"data\":{\"bosminer\":{\"config\":{\"updateAutotuning\":{\"__typename\":\"BosminerConfig\"}}}}}")));
-
-        var props = props();
-        var api = new BraiinsClientConfig().braiinsApi(props);
-        minerService = new MinerService(new BraiinsMinerClient(api), stream = new MinerStreamService(), props);
-        autopilot = new MinerAutopilot(simMargin(), minerService, stream, props);
+    void arrange() {
+        miner.reset();
+        solar.reset();
+        inverter = new MockInverter(winet);
     }
 
-    @AfterEach
-    void tearDown() { wm.stop(); }
-
-    private HouseProperties props() {
-        return new HouseProperties(null, null, null,
-                new HouseProperties.Miner(true, "localhost:" + wm.port(), 0, 0, "", 0, 0),
-                new HouseProperties.Autopilot(true, 30000, 1000, 100, 1000));
+    /** Pull fresh solar + consumption into the live snapshot, then run one autopilot tick. */
+    private void tick() {
+        solarAnalyticsClient.poll(); // → house consumption
+        inverterPoller.poll();       // → solar + house snapshot
+        miner.clearRequests();       // count only the tick's calls
+        autopilot.tick();
     }
 
-    /** Miner status stub for a given state (get_device_info / "Status" query). */
-    private void stubMinerState(boolean running, int powerTargetW) {
-        String uptime = running ? "{\"durationS\":600,\"since\":\"2026-07-25T00:00:00Z\"}" : "null";
-        String pools = running ? "{\"url\":\"stratum\",\"active\":true}" : "";
-        stubFor(post("/graphql").withRequestBody(matchingJsonPath("$[?(@.operationName == 'Status')]"))
-                .willReturn(okJson("{\"data\":{\"bosminer\":{"
-                        + "\"info\":{\"modelName\":\"Antminer S19k Pro\",\"poolGroups\":[{\"pools\":[" + pools + "]}]},"
-                        + "\"uptime\":" + uptime + ","
-                        + "\"config\":{\"autotuning\":{\"enabled\":true,\"powerTarget\":" + powerTargetW + "}}}}}")));
+    // ---------------------------------------------------------------- start
+    @Test void startsAtMinWhenOffAndMarginAtThreshold() {
+        inverter.solar(2.0); solar.consumption(1000); miner.stopped(800); // margin = 1000 W (== start)
+        tick();
+        miner.verifyPowerSetTo(800); // starts at the floor
+        miner.verifyStarted();
     }
 
-    /** Simulated inverter+house margin, served by WireMock at /sim/power. */
-    private void stubMargin(int solarW, int houseW) {
-        stubFor(get("/sim/power").willReturn(okJson("{\"solarW\":" + solarW + ",\"houseW\":" + houseW + "}")));
+    @Test void doesNotStartBelowStartMargin() {
+        inverter.solar(1.2); solar.consumption(500); miner.stopped(800); // margin = 700 W < 1000
+        tick();
+        miner.verifyNoMutations();
     }
 
-    private MarginSource simMargin() {
-        return () -> {
-            try {
-                var resp = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + wm.port() + "/sim/power")).build(),
-                        HttpResponse.BodyHandlers.ofString());
-                var n = mapper.readTree(resp.body());
-                return OptionalDouble.of(n.path("solarW").asDouble() - n.path("houseW").asDouble());
-            } catch (Exception e) {
-                return OptionalDouble.empty();
-            }
-        };
+    // ---------------------------------------------------------------- step up
+    @Test void stepsUpWhenMiningAndSurplus() {
+        inverter.solar(3.0); solar.consumption(1500); miner.mining(800); // margin = 1500 W
+        tick();
+        miner.verifyPowerSetTo(1800); // 800 + step 1000
+        miner.verifyNoStartOrStop();
     }
 
-    private void primeAndTick() {
-        minerService.refresh();  // reads miner status from WireMock → stream.latest()
-        autopilot.tick();        // decide + apply against WireMock
+    @Test void stepsUpFromOffLadderTarget() {
+        inverter.solar(3.0); solar.consumption(1500); miner.mining(1200); // margin 1500, target off the ladder
+        tick();
+        miner.verifyPowerSetTo(2200); // 1200 + 1000
     }
 
-    // ---- 1) START: miner off, margin 1500 → start at min (800) ----
-    @Test
-    void startsMinerWhenMarginSufficient() {
-        stubMinerState(false, 800);      // stopped
-        stubMargin(2000, 500);           // margin = 1500 ≥ 1000
-        primeAndTick();
-        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("\"powerTarget\":800")));
-        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStart")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStop")));
+    @Test void stepUpCapsAtMaxPower() {
+        inverter.solar(5.0); solar.consumption(500); miner.mining(3100); // big margin
+        tick();
+        miner.verifyPowerSetTo(3600); // 3100 + 1000 capped at max
     }
 
-    @Test
-    void doesNotStartWhenMarginTooLow() {
-        stubMinerState(false, 800);
-        stubMargin(1200, 500);           // margin = 700 < 1000
-        primeAndTick();
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStart")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("updateAutotuning")));
+    @Test void holdsAtMaxNoPowerChange() {
+        inverter.solar(6.0); solar.consumption(500); miner.mining(3600); // already at max
+        tick();
+        miner.verifyNoPowerChange();
     }
 
-    // ---- 2) UPDATE POWER: running at 800, margin 1500 → step up to 1800 ----
-    @Test
-    void stepsPowerUpWhenSurplus() {
-        stubMinerState(true, 800);
-        stubMargin(3000, 1500);          // margin = 1500 ≥ 1000
-        primeAndTick();
-        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("\"powerTarget\":1800")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStart")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStop")));
+    // ---------------------------------------------------------------- step down
+    @Test void stepsDownWhenMarginLow() {
+        inverter.solar(1.0); solar.consumption(950); miner.mining(1800); // margin = 50 W < low
+        tick();
+        miner.verifyPowerSetTo(800); // drops to the floor, stays running
+        miner.verifyNoStartOrStop();
     }
 
-    // ---- 2b) UPDATE POWER down: running at 2000, margin 50 → step down to 1000 ----
-    @Test
-    void stepsPowerDownWhenMarginLow() {
-        stubMinerState(true, 2000);
-        stubMargin(1000, 950);           // margin = 50 < 100
-        primeAndTick();
-        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("\"powerTarget\":1000")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStop")));
+    @Test void stepsDownOffLadderTargetToFloor() {
+        inverter.solar(1.0); solar.consumption(950); miner.mining(1500); // margin 50, off-ladder target
+        tick();
+        miner.verifyPowerSetTo(800);
     }
 
-    // ---- 3) STOP: running at floor (800), margin 50 → stop ----
-    @Test
-    void stopsMinerAtFloorWhenMarginLow() {
-        stubMinerState(true, 800);
-        stubMargin(1000, 950);           // margin = 50 < 100, at min → stop
-        primeAndTick();
-        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStop")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("updateAutotuning")));
+    // ---------------------------------------------------------------- stop
+    @Test void stopsAtFloorWhenMarginLow() {
+        inverter.solar(1.0); solar.consumption(950); miner.mining(800); // margin 50, already at floor
+        tick();
+        miner.verifyStopped();
+        miner.verifyNoPowerChange();
     }
 
-    // ---- step up caps at max: running at 3100, big margin → powerTarget 3600 ----
-    @Test
-    void stepUpCapsAtMaxPower() {
-        stubMinerState(true, 3100);
-        stubMargin(5000, 500);           // margin 4500 ≥ 1000
-        primeAndTick();
-        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("\"powerTarget\":3600")));
+    @Test void stopsWhenDeepDeficitEvenAboveFloor() {
+        // solar 0.2 kW, house 3.6 kW → margin −3400 W; even the 800 W floor exceeds the
+        // available surplus (−400 W) → stop rather than step down.
+        inverter.solar(0.2); solar.consumption(3600); miner.mining(3000);
+        tick();
+        miner.verifyStopped();
+        miner.verifyNoPowerChange();
     }
 
-    // ---- at max: no further step ----
-    @Test
-    void holdsAtMaxNoMutation() {
-        stubMinerState(true, 3600);
-        stubMargin(6000, 500);           // margin 5500 but already at max
-        primeAndTick();
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("updateAutotuning")));
+    // ---------------------------------------------------------------- deadzone
+    @Test void holdsInDeadzone() {
+        inverter.solar(2.3); solar.consumption(1800); miner.mining(1800); // margin = 500 W → deadzone
+        tick();
+        miner.verifyNoMutations();
     }
 
-    // ---- safety: margin unavailable (inverter/meter offline) → stop a running miner ----
-    @Test
-    void stopsRunningMinerWhenMarginUnavailable() {
-        stubMinerState(true, 1800);
-        // deliberately do NOT stub /sim/power → simMargin() returns empty (unknown margin)
-        primeAndTick();
-        verify(postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStop")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("updateAutotuning")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStart")));
+    // ------------------------------------------- safety: margin unavailable → stop
+    @Test void stopsRunningMinerWhenInverterOffline() {
+        inverter.offline(); solar.consumption(1000); miner.mining(1800);
+        tick();
+        miner.verifyStopped();
+        miner.verifyNoPowerChange();
     }
 
-    // ---- deadzone: running at 1800, margin 500 → no action ----
-    @Test
-    void holdsInDeadzone() {
-        stubMinerState(true, 1800);
-        stubMargin(2300, 1800);          // margin = 500 → deadzone
-        primeAndTick();
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("updateAutotuning")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStart")));
-        verify(0, postRequestedFor(urlEqualTo("/graphql")).withRequestBody(containing("WorkspaceBosStop")));
+    @Test void leavesStoppedMinerAloneWhenInverterOffline() {
+        inverter.offline(); solar.consumption(1000); miner.stopped(800);
+        tick();
+        miner.verifyNoMutations();
+    }
+
+    @Test void stopsSuspendedMinerWhenInverterOffline() {
+        // suspended still counts as "running" (service up) → stopped for safety.
+        inverter.offline(); solar.consumption(1000); miner.suspended(1800);
+        tick();
+        miner.verifyStopped();
+    }
+
+    // ------------------------------------------- suspended (known margin): never ramp
+    @Test void suspendedWithSurplusDoesNotRamp() {
+        inverter.solar(3.0); solar.consumption(500); miner.suspended(1800); // margin 2500 W, but suspended
+        tick();
+        miner.verifyNoMutations();
+    }
+
+    // ------------------------------------------- miner unreachable → skip
+    @Test void unreachableMinerSkips() {
+        inverter.solar(3.0); solar.consumption(500); miner.unreachable();
+        tick();
+        miner.verifyNoMutations();
     }
 }

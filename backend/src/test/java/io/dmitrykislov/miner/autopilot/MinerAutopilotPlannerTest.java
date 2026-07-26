@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -226,10 +227,29 @@ class MinerAutopilotPlannerTest {
     // ---------------------------------------------------------------- guards
     @Test void rejectsInvalidConfiguration() {
         assertThatThrownBy(() -> new MinerAutopilotPlanner(0, 3600, 1000, 100, 1000))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class);   // min <= 0
         assertThatThrownBy(() -> new MinerAutopilotPlanner(3600, 800, 1000, 100, 1000))
                 .isInstanceOf(IllegalArgumentException.class);   // max < min
         assertThatThrownBy(() -> new MinerAutopilotPlanner(800, 3600, 100, 100, 1000))
                 .isInstanceOf(IllegalArgumentException.class);   // low >= start
+        assertThatThrownBy(() -> new MinerAutopilotPlanner(800, 3600, 1000, 100, 0))
+                .isInstanceOf(IllegalArgumentException.class);   // step <= 0
+    }
+
+    @Test void rejectsConfigsThatWouldImportFromGrid() {
+        // start < min → starting at the floor would draw more than the surplus.
+        assertThatThrownBy(() -> new MinerAutopilotPlanner(800, 3600, 700, 100, 500))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("startMarginW");
+        // step > start → a step-up fires at margin==start yet adds more draw than that.
+        assertThatThrownBy(() -> new MinerAutopilotPlanner(800, 3600, 1000, 100, 1500))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("stepW");
+    }
+
+    @Test void acceptsBoundaryConfigWhereStepEqualsStartAndStartEqualsMin() {
+        // start == min and step == start are both the tightest safe boundary → allowed.
+        assertThatCode(() -> new MinerAutopilotPlanner(800, 3600, 800, 100, 800))
+                .doesNotThrowAnyException();
     }
 }

@@ -2,7 +2,6 @@ package io.dmitrykislov.miner.autopilot;
 
 import io.dmitrykislov.miner.braiins.MinerService;
 import io.dmitrykislov.miner.braiins.MinerStatus;
-import io.dmitrykislov.miner.braiins.MinerStreamService;
 import io.dmitrykislov.miner.config.HouseProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -13,18 +12,21 @@ import java.util.OptionalDouble;
 
 import static org.mockito.Mockito.*;
 
-/** Verifies the autopilot applies the planner's decision through {@link MinerService}. */
+/**
+ * Unit tests for the autopilot orchestration: it reads a FRESH miner state via
+ * {@link MinerService#refresh()} each tick, and re-verifies state immediately
+ * before every mutating operation (start/step/stop). min=800, max=3600,
+ * start=1000, low=100, step=1000.
+ */
 class MinerAutopilotTest {
 
     private MarginSource margin;
     private MinerService miner;
-    private MinerStreamService stream;
 
     @BeforeEach
     void setup() {
         margin = mock(MarginSource.class);
         miner = mock(MinerService.class);
-        stream = mock(MinerStreamService.class);
     }
 
     private HouseProperties props(boolean autopilotEnabled) {
@@ -34,7 +36,7 @@ class MinerAutopilotTest {
     }
 
     private MinerAutopilot autopilot(boolean enabled) {
-        return new MinerAutopilot(margin, miner, stream, props(enabled));
+        return new MinerAutopilot(margin, miner, props(enabled));
     }
 
     private MinerStatus status(boolean reachable, boolean running, Integer powerTargetW) {
@@ -43,34 +45,39 @@ class MinerAutopilotTest {
                 running ? 600L : null, Instant.now(), null);
     }
 
-    /** Service up but paused (e.g. dead pools): running=true, state=SUSPENDED, ~0 W draw. */
+    /** Service up but paused (dead pools): running=true, state=SUSPENDED, ~0 W draw. */
     private MinerStatus suspended(Integer powerTargetW) {
         return new MinerStatus(true, true, MinerStatus.SUSPENDED, "dead pools", "S19k",
                 powerTargetW, true, 0, 1, null, null, List.of(), 600L, Instant.now(), null);
     }
 
-    // ---- guards ----
+    private void neverActs() {
+        verify(miner, never()).start();
+        verify(miner, never()).stop();
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+    }
+
+    // ---------------------------------------------------------------- guards
     @Test void disabledDoesNothing() {
-        when(stream.latest()).thenReturn(status(true, false, 800));
         autopilot(false).tick();
-        verifyNoInteractions(miner);
+        verifyNoInteractions(miner); // never even reads state
     }
 
-    @Test void unreachableMinerDoesNothing() {
-        when(stream.latest()).thenReturn(status(false, false, null));
+    @Test void unreachableMinerSkips() {
+        when(miner.refresh()).thenReturn(status(false, false, null));
         autopilot(true).tick();
-        verifyNoInteractions(miner);
+        neverActs();
     }
 
-    @Test void nullMinerStatusDoesNothing() {
-        when(stream.latest()).thenReturn(null);
+    @Test void nullStatusSkips() {
+        when(miner.refresh()).thenReturn(null);
         autopilot(true).tick();
-        verifyNoInteractions(miner);
+        neverActs();
     }
 
-    // ---- safety: margin unavailable (solar OR house meter offline) → stop ----
+    // ------------------------------------------- safety: margin unavailable → stop
     @Test void unknownMarginStopsRunningMiner() {
-        when(stream.latest()).thenReturn(status(true, true, 1800));
+        when(miner.refresh()).thenReturn(status(true, true, 1800));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.empty());
         autopilot(true).tick();
         verify(miner).stop();
@@ -79,95 +86,119 @@ class MinerAutopilotTest {
     }
 
     @Test void unknownMarginStopsSuspendedMiner() {
-        // suspended still counts as "running" (service up) → stop for safety
-        when(stream.latest()).thenReturn(suspended(1800));
+        when(miner.refresh()).thenReturn(suspended(1800)); // suspended still "running"
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.empty());
         autopilot(true).tick();
         verify(miner).stop();
     }
 
     @Test void unknownMarginLeavesStoppedMinerAlone() {
-        when(stream.latest()).thenReturn(status(true, false, null));
+        when(miner.refresh()).thenReturn(status(true, false, null));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.empty());
         autopilot(true).tick();
-        verifyNoInteractions(miner);
+        neverActs();
     }
 
-    // ---- suspended: never ramp on phantom surplus ----
+    // ------------------------------------------- suspended: never ramp on phantom surplus
     @Test void suspendedWithSurplusDoesNotRamp() {
-        // A suspended miner draws ~0 W, so the surplus is NOT headroom to step into.
-        when(stream.latest()).thenReturn(suspended(1800));
+        when(miner.refresh()).thenReturn(suspended(1800));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
         autopilot(true).tick();
-        verifyNoInteractions(miner);
+        neverActs();
     }
 
-    // ---- 1) start ----
-    @Test void startsMinerAtMinWhenOffAndMarginHigh() {
-        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
-        when(stream.latest()).thenReturn(status(true, false, 800));
+    // ---------------------------------------------------------------- start
+    @Test void startsAtMinWhenOffAndMarginAtThreshold() {
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1000)); // exactly the start threshold
         autopilot(true).tick();
-        verifyStartLadderInOrder();
-    }
-    private void verifyStartLadderInOrder() {
         var io = inOrder(miner);
-        io.verify(miner).setPowerTarget(800, true);   // start at the min
+        io.verify(miner).setPowerTarget(800, true); // start at the floor
         io.verify(miner).start();
         verify(miner, never()).stop();
     }
 
-    // ---- 2) update power up / down ----
-    @Test void stepsUpWhenRunningAndSurplus() {
-        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
-        when(stream.latest()).thenReturn(status(true, true, 800));
+    @Test void doesNotStartBelowStartMargin() {
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(999)); // just below 1000
         autopilot(true).tick();
-        verify(miner).setPowerTarget(1800, true);
+        neverActs();
+    }
+
+    @Test void startIsSkippedIfMinerAlreadyRunningAtOpTime() {
+        // decision made while OFF, but by the time we act it's already running → skip.
+        when(miner.refresh()).thenReturn(status(true, false, null), status(true, true, 800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
+        autopilot(true).tick();
+        verify(miner, never()).start();
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+    }
+
+    // ---------------------------------------------------------------- step up
+    @Test void stepsUpWhenMiningAndSurplus() {
+        when(miner.refresh()).thenReturn(status(true, true, 800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
+        autopilot(true).tick();
+        verify(miner).setPowerTarget(1800, true); // 800 + step 1000
         verify(miner, never()).start();
         verify(miner, never()).stop();
     }
 
-    @Test void stepsDownWhenRunningAndMarginLow() {
+    @Test void stepUpSkippedIfMinerStoppedAtOpTime() {
+        when(miner.refresh()).thenReturn(status(true, true, 800), status(true, false, null));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(1500));
+        autopilot(true).tick();
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+    }
+
+    // ---------------------------------------------------------------- step down
+    @Test void stepsDownWhenMarginLow() {
+        when(miner.refresh()).thenReturn(status(true, true, 1800));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(50));
-        when(stream.latest()).thenReturn(status(true, true, 1800));
         autopilot(true).tick();
         verify(miner).setPowerTarget(800, true);
         verify(miner, never()).stop();
     }
 
-    // ---- 3) stop ----
-    @Test void stopsWhenAtFloorAndMarginLow() {
+    @Test void stepsDownOffLadderTargetToFloor() {
+        when(miner.refresh()).thenReturn(status(true, true, 1200)); // off-ladder target
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(50));
-        when(stream.latest()).thenReturn(status(true, true, 800));
+        autopilot(true).tick();
+        verify(miner).setPowerTarget(800, true);
+        verify(miner, never()).stop();
+    }
+
+    // ---------------------------------------------------------------- stop
+    @Test void stopsAtFloorWhenMarginLow() {
+        when(miner.refresh()).thenReturn(status(true, true, 800));
+        when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(50));
         autopilot(true).tick();
         verify(miner).stop();
         verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
         verify(miner, never()).start();
     }
 
-    @Test void stepsDownOffLadderTargetToFloor() {
+    @Test void stopSkippedIfMinerAlreadyOffAtOpTime() {
+        when(miner.refresh()).thenReturn(status(true, true, 800), status(true, false, null));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(50));
-        when(stream.latest()).thenReturn(status(true, true, 1200));   // off-ladder target
         autopilot(true).tick();
-        verify(miner).setPowerTarget(800, true);                       // → floor, not stop
         verify(miner, never()).stop();
     }
 
-    @Test void nullReportedPowerIsTreatedAsMin() {
-        // running but the miner didn't report a target → treat as the min floor
+    @Test void nullReportedPowerTreatedAsFloorThenStops() {
+        // running but no reported target → treated as the floor → low margin → stop.
+        when(miner.refresh()).thenReturn(status(true, true, null));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(50));
-        when(stream.latest()).thenReturn(status(true, true, null));
         autopilot(true).tick();
-        verify(miner).stop();                                          // at min + low margin → stop
+        verify(miner).stop();
         verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
     }
 
-    // ---- deadzone ----
+    // ---------------------------------------------------------------- deadzone
     @Test void holdsInDeadzone() {
+        when(miner.refresh()).thenReturn(status(true, true, 1800));
         when(margin.currentMarginWatts()).thenReturn(OptionalDouble.of(500));
-        when(stream.latest()).thenReturn(status(true, true, 1800));
         autopilot(true).tick();
-        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
-        verify(miner, never()).start();
-        verify(miner, never()).stop();
+        neverActs();
     }
 }
