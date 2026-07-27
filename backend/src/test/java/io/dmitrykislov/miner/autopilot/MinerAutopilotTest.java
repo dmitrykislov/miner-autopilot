@@ -91,12 +91,17 @@ class MinerAutopilotTest {
                 online ? "Running" : "Offline", ts, Map.of(), pb, List.of(), List.of(), null));
     }
 
-    /** Feed the energy engine two timestamped samples spanning the coverage → trusted averages. */
+    /**
+     * Feed the energy engine two timestamped samples spanning the coverage → trusted averages.
+     * Records solar/consumption/draw so the miner-independent surplus works out to
+     * {@code availSurplusW}: surplus = solar − consumption + draw = availSurplus − draw + draw.
+     */
     private void feedEnergy(double availSurplusW, int minerDrawW) {
         Instant now = Instant.now();
         for (Instant at : List.of(now.minusSeconds(20), now)) {
-            energy.recordSolar(at, availSurplusW);      // solar − consumption = margin
-            energy.recordConsumption(at, minerDrawW);   // S = margin + minerDraw = availSurplus
+            energy.recordSolar(at, availSurplusW);
+            energy.recordConsumption(at, minerDrawW);   // house = the miner draw (base 0)
+            energy.recordMinerDraw(at, minerDrawW);     // add the draw back → surplus = availSurplus
         }
     }
 

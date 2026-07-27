@@ -42,26 +42,26 @@ class EnergyAveragesTest {
         EnergyAverages a = avg();
         a.recordSolar(at(0), 4000);
         a.recordConsumption(at(0), 1500);
-        assertThat(a.marginAvg(at(5), SHORT, ZERO).getAsDouble()).isCloseTo(2500, within(1e-6));
+        assertThat(a.surplusAvg(at(5), SHORT, ZERO).getAsDouble()).isCloseTo(2500, within(1e-6));
     }
 
     @Test void marginEmptyWhenConsumptionMissing() {
         EnergyAverages a = avg();
         a.recordSolar(at(0), 4000);
-        assertThat(a.marginAvg(at(5), SHORT, ZERO)).isEmpty();
+        assertThat(a.surplusAvg(at(5), SHORT, ZERO)).isEmpty();
     }
 
     @Test void marginEmptyWhenSolarMissing() {
         EnergyAverages a = avg();
         a.recordConsumption(at(0), 1500);
-        assertThat(a.marginAvg(at(5), SHORT, ZERO)).isEmpty();
+        assertThat(a.surplusAvg(at(5), SHORT, ZERO)).isEmpty();
     }
 
     @Test void marginEmptyWhenAFeedGoesStale() {
         EnergyAverages a = avg();
         a.recordSolar(at(0), 4000);
         a.recordConsumption(at(0), 1500);
-        assertThat(a.marginAvg(at(91), SHORT, ZERO)).isEmpty(); // > 90s fresh bound
+        assertThat(a.surplusAvg(at(91), SHORT, ZERO)).isEmpty(); // > 90s fresh bound
     }
 
     // ---- coverage ----
@@ -71,14 +71,14 @@ class EnergyAveragesTest {
         a.recordSolar(at(10), 4000);
         a.recordConsumption(at(0), 1500);
         a.recordConsumption(at(10), 1500);
-        assertThat(a.marginAvg(at(10), SHORT, SHORT_COV)).isEmpty();      // only 10s of data < 60s coverage
-        assertThat(a.marginAvg(at(10), SHORT, ZERO).getAsDouble()).isCloseTo(2500, within(1e-6));
+        assertThat(a.surplusAvg(at(10), SHORT, SHORT_COV)).isEmpty();      // only 10s of data < 60s coverage
+        assertThat(a.surplusAvg(at(10), SHORT, ZERO).getAsDouble()).isCloseTo(2500, within(1e-6));
     }
 
     @Test void marginAvailableOnceWellCovered() {
         EnergyAverages a = avg();
         feed(a, 120, 4000, 1500);   // 120s of data ≥ 60s coverage
-        assertThat(a.marginAvg(at(130), SHORT, SHORT_COV).getAsDouble()).isCloseTo(2500, within(1e-6));
+        assertThat(a.surplusAvg(at(130), SHORT, SHORT_COV).getAsDouble()).isCloseTo(2500, within(1e-6));
     }
 
     // ---- dataFresh (stale vs sparse) ----
@@ -109,8 +109,8 @@ class EnergyAveragesTest {
             a.recordSolar(at(s), 1000 + (3000.0 * s / 900)); // solar ramps up
             a.recordConsumption(at(s), 1000);                // consumption flat
         }
-        double shortM = a.marginAvg(at(900), SHORT, ZERO).getAsDouble();
-        double longM = a.marginAvg(at(900), LONG, ZERO).getAsDouble();
+        double shortM = a.surplusAvg(at(900), SHORT, ZERO).getAsDouble();
+        double longM = a.surplusAvg(at(900), LONG, ZERO).getAsDouble();
         assertThat(shortM).isGreaterThan(longM);
     }
 
@@ -119,8 +119,8 @@ class EnergyAveragesTest {
         feed(a, 360, 5000, 1000);   // 6 min of data → both windows well covered
         var sig = a.signals(at(360));
         assertThat(sig.dataFresh()).isTrue();
-        assertThat(sig.shortMarginW().getAsDouble()).isCloseTo(4000, within(1e-6));
-        assertThat(sig.longMarginW().getAsDouble()).isCloseTo(4000, within(1e-6));
+        assertThat(sig.shortSurplusW().getAsDouble()).isCloseTo(4000, within(1e-6));
+        assertThat(sig.longSurplusW().getAsDouble()).isCloseTo(4000, within(1e-6));
         assertThat(sig.solarShortW().getAsDouble()).isCloseTo(5000, within(1e-6));
         assertThat(sig.consumptionShortW().getAsDouble()).isCloseTo(1000, within(1e-6));
     }
@@ -131,8 +131,41 @@ class EnergyAveragesTest {
         a.recordConsumption(at(0), 1000);
         var sig = a.signals(at(20)); // fresh (20s) but < 60s short coverage
         assertThat(sig.dataFresh()).isTrue();       // not blind…
-        assertThat(sig.shortMarginW()).isEmpty();   // …but not enough coverage to trust yet
-        assertThat(sig.longMarginW()).isEmpty();
+        assertThat(sig.shortSurplusW()).isEmpty();   // …but not enough coverage to trust yet
+        assertThat(sig.longSurplusW()).isEmpty();
+    }
+
+    // ---- miner-draw correction (the fix for the post-power-change spurious stop) ----
+    @Test void surplusAddsBackTheMinerDraw() {
+        EnergyAverages a = avg();
+        // solar 4000, house 3000 (includes a 2000 W miner), so base = 1000 → true surplus = 3000.
+        a.recordSolar(at(0), 4000);
+        a.recordConsumption(at(0), 3000);
+        a.recordMinerDraw(at(0), 2000);
+        assertThat(a.surplusAvg(at(5), SHORT, ZERO).getAsDouble()).isCloseTo(3000, within(1e-6)); // 4000−3000+2000
+    }
+
+    @Test void surplusIsImmuneToAPowerChangeMidWindow() {
+        // Constant true surplus of 3000 W (solar 4000, base 1000). The miner draw changes from 2000
+        // to 800 mid-window; measured consumption follows (base + draw). The averaged surplus must
+        // stay 3000 regardless of when the draw changed — this is what kills the spurious post-step STOP.
+        EnergyAverages a = avg();
+        for (long s = 0; s <= 120; s += 15) {
+            double draw = s < 60 ? 2000 : 800;      // draw drops mid-window
+            a.recordSolar(at(s), 4000);
+            a.recordConsumption(at(s), 1000 + draw); // house = base(1000) + draw
+            a.recordMinerDraw(at(s), draw);
+        }
+        // avg(margin) is contaminated (mix of −(1000..) values) but avg(margin)+avg(draw) = 3000.
+        assertThat(a.surplusAvg(at(120), SHORT, ZERO).getAsDouble()).isCloseTo(3000, within(1e-6));
+    }
+
+    @Test void surplusEqualsMarginWhenMinerNotDrawing() {
+        // No draw recorded (miner off) → draw term is 0 → surplus == solar − consumption.
+        EnergyAverages a = avg();
+        a.recordSolar(at(0), 5000);
+        a.recordConsumption(at(0), 1200);
+        assertThat(a.surplusAvg(at(5), SHORT, ZERO).getAsDouble()).isCloseTo(3800, within(1e-6));
     }
 
     // ---- validation ----

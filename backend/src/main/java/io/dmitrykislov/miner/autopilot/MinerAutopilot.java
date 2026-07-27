@@ -146,7 +146,7 @@ public class MinerAutopilot {
         AutopilotGovernor.Input input = new AutopilotGovernor.Input(
                 now, st.reachable(), st.running(), MinerStatus.SUSPENDED.equals(st.state()),
                 st.powerTargetW(), miningSince, lastChangeAt(), dataFresh,
-                sig.shortMarginW(), sig.longMarginW());
+                sig.shortSurplusW(), sig.longSurplusW());
 
         AutopilotDecision d = governor.decide(input);
         lastDecision = d.reason();

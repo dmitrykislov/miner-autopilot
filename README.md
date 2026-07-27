@@ -119,6 +119,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `SOLARANALYTICS_SITE_ID` | _(blank)_ | blank = auto-detect the first active site |
 | `SOLARANALYTICS_POLL_INTERVAL_MS` | `15000` | how often consumption is polled |
 | `SOLARANALYTICS_STALE_AFTER_SECONDS` | `60` | reading older than this ⇒ consumption (and surplus) unavailable |
+| `SOLARANALYTICS_REQUEST_TIMEOUT_MS` | `8000` | per-request timeout for the Solar Analytics API |
 | `SOLARANALYTICS_MIN_SOLAR_W` | `800` | only call the consumption API when solar generation exceeds this (no usable surplus below it) |
 | **Miner** | | Braiins OS+ |
 | `MINER_ENABLED` | `true` | |
@@ -288,6 +289,7 @@ Safety/correctness properties:
 - **The running power never exceeds the available surplus** — because `headroom > 0`, the target is always strictly below the surplus. On a sudden collapse (say 3600 W and the 15-min surplus falls to 1800 W) the governor steps straight down to the highest rung the surplus holds (1600 W) in one move, never leaving the miner importing.
 - **Stops the miner when the surplus is unknown** — if solar is unavailable (inverter offline, e.g. at night), consumption is unavailable (Solar Analytics stale/offline/gated), the inverter reading is stale (poller stalled), *or* the rolling windows themselves have gone stale, the surplus can't be trusted. The safe fallback is to stop. A **stale feed** (→ stop a running miner) is distinguished from a merely **sparse window** right after boot (→ hold, don't disrupt a healthy miner before the window fills).
 - **Always uses live miner state** — each tick reads a fresh miner status (never cached), and every mutating op (start / step / stop) re-verifies the state immediately before acting.
+- **Recovers a miner it stopped.** A stopped Braiins miner reports its API as unreachable ("Service unavailable"); the autopilot treats an unreachable miner as *off and start-eligible* rather than skipping it, so once a sustained surplus returns it (re)starts the miner (the start command targets the service manager and works even while the status query is down). Gated by the up-interval so it can't flap. (If the miner is genuinely off the LAN — "no route to host" — there's nothing to start until it's back on the network.)
 - Skips `SUSPENDED` — a suspended miner (e.g. dead pools) draws ~0 W, so it isn't reflected in the surplus and there's nothing to protect against; the autopilot leaves it alone.
 - Respects the miner's hard **[min, max]** power limits (also enforced in `MinerService` on every set).
 - **Safe-by-construction config:** the governor validates its config at boot and refuses to start on any setting that would break an invariant — e.g. `start-surplus > floor` (hysteresis), `up-interval ≥ long-window` (a just-made change can't contaminate the average driving the next up-move), positive intervals/step, `floor ≥ miner-min` and `max > floor`.
@@ -319,8 +321,8 @@ A lightweight, **file-backed** telemetry log feeds an interactive **D3 chart** u
 ## Tests
 
 ```bash
-mvn clean install     # 182 backend + 57 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (182)
+mvn clean install     # 266 backend + 81 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (266)
 ```
 
 Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, divergent short/long windows, emergency + stop boundaries, never-import property sweep, config guards) — the autopilot **orchestration** (live-state re-verification, feed validity), and an **end-to-end WireMock** test that boots the full Spring context and drives the real surplus chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. The **history** layer is covered too — the file-backed `TelemetryStore` (record/query, retention pruning of memory + day-files, restart persistence, line (de)serialization incl. corrupt-line skipping), the `TelemetryRecorder` (building a sample from the cached streams, once-only event capture), `Downsampling`, and the `HistoryController` (window clamping + downsampling); the React D3 chart has its own Vitest suite (series, event markers + hover detail, window switching, empty state). **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.

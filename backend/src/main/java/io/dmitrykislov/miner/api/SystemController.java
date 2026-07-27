@@ -14,7 +14,7 @@ import java.util.Map;
  * App/runtime info for the UI footer:
  * <ul>
  *   <li>{@code version}       — the application version, sourced from the Maven
- *       project version in pom.xml (e.g. "1.1.0")</li>
+ *       project version in pom.xml (e.g. "1.2.0")</li>
  *   <li>{@code startedAt}     — ISO-8601 instant the Spring context started</li>
  *   <li>{@code uptimeSeconds} — seconds since start (computed per request)</li>
  * </ul>

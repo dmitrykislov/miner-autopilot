@@ -30,11 +30,10 @@ class AutopilotGovernorTest {
             Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800);
     private final AutopilotGovernor gov = new AutopilotGovernor(cfg);
 
-    /** Running miner at {@code cur} W with available surplus {@code S} (both windows = S). */
+    /** Running miner at {@code cur} W with available (miner-independent) surplus {@code S}. */
     private Input running(int cur, double S, Instant lastChange, Instant miningSince) {
-        double margin = S - cur;
         return new Input(NOW, true, true, false, cur, miningSince, lastChange,
-                true, OptionalDouble.of(margin), OptionalDouble.of(margin));
+                true, OptionalDouble.of(S), OptionalDouble.of(S));
     }
 
     /** Off miner with available surplus {@code S}. */
@@ -46,7 +45,7 @@ class AutopilotGovernorTest {
     /** Running miner with <em>divergent</em> short- and long-window available surpluses. */
     private Input runningSL(int cur, double sShort, double sLong, Instant lastChange, Instant miningSince) {
         return new Input(NOW, true, true, false, cur, miningSince, lastChange,
-                true, OptionalDouble.of(sShort - cur), OptionalDouble.of(sLong - cur));
+                true, OptionalDouble.of(sShort), OptionalDouble.of(sLong));
     }
 
     // ---------------------------------------------------------------- guards
@@ -163,7 +162,7 @@ class AutopilotGovernorTest {
 
     @Test void doesNotRampUpWithoutLongWindowAverage() {
         Input in = new Input(NOW, true, true, false, 1200, MINED_LONG, LONG_AGO,
-                true, OptionalDouble.of(2600), OptionalDouble.empty()); // short only
+                true, OptionalDouble.of(3800), OptionalDouble.empty()); // short surplus only
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
         assertThat(gov.decide(in).reason()).contains("long-window");
     }
@@ -229,7 +228,7 @@ class AutopilotGovernorTest {
 
     @Test void nullCurrentPowerWhileRunningTreatedAsFloor() {
         Input in = new Input(NOW, true, true, false, null, MINED_LONG, LONG_AGO,
-                true, OptionalDouble.of(400), OptionalDouble.of(400)); // S = 400 + floor(1200) = 1600
+                true, OptionalDouble.of(1600), OptionalDouble.of(1600)); // surplus 1600, cur→floor 1200
         assertThatCode(() -> gov.decide(in)).doesNotThrowAnyException();
         assertThat(gov.decide(in).action()).isIn(Action.NONE, Action.STEP_UP, Action.STEP_DOWN, Action.STOP);
     }
@@ -369,6 +368,10 @@ class AutopilotGovernorTest {
                 .isInstanceOf(IllegalArgumentException.class);
         // start ≤ floor (no hysteresis)
         assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1200,
+                Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800))
+                .isInstanceOf(IllegalArgumentException.class);
+        // start below the stop threshold (floor+headroom=1400) → start/stop churn
+        assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1300,
                 Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800))
                 .isInstanceOf(IllegalArgumentException.class);
         // upInterval < longWindow (contamination)

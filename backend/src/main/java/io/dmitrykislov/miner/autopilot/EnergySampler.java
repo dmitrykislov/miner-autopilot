@@ -1,5 +1,7 @@
 package io.dmitrykislov.miner.autopilot;
 
+import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.braiins.MinerStreamService;
 import io.dmitrykislov.miner.inverter.InverterStreamService;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import io.dmitrykislov.miner.inverter.model.PowerBalance;
@@ -22,18 +24,22 @@ import java.time.Instant;
  * <p>Consumption is recorded only when the snapshot is <b>metered</b> (a live Solar Analytics
  * reading). When it isn't (feed offline, or gated off at low solar), consumption simply stops being
  * recorded and its window goes stale — which the autopilot treats as an unknown surplus (safe stop).
+ * The miner's own draw is recorded alongside each consumption sample (0 when it isn't mining) so the
+ * averaged surplus can subtract the miner out consistently even across a power change.
  */
 @Component
 public class EnergySampler {
 
     private final InverterStreamService inverter;
+    private final MinerStreamService miner;
     private final EnergyAverages energy;
 
     private volatile Instant lastSolarTs;
     private volatile Instant lastConsumptionTs;
 
-    public EnergySampler(InverterStreamService inverter, EnergyAverages energy) {
+    public EnergySampler(InverterStreamService inverter, MinerStreamService miner, EnergyAverages energy) {
         this.inverter = inverter;
+        this.miner = miner;
         this.energy = energy;
     }
 
@@ -55,8 +61,21 @@ public class EnergySampler {
         }
         if (pb.consumptionMetered() && pb.houseConsumptionKw() != null && isNew(ts, lastConsumptionTs)) {
             energy.recordConsumption(ts, pb.houseConsumptionKw() * 1000.0);
+            // Co-sample the miner's draw so surplus = avg(solar) − avg(consumption) + avg(draw)
+            // stays exact across a power change. 0 unless it is actually mining (a suspended/off
+            // miner draws ~0 and its target is not "consumed").
+            energy.recordMinerDraw(ts, currentMinerDrawW());
             lastConsumptionTs = ts;
         }
+    }
+
+    /** The miner's live draw in watts, or 0 when it isn't mining / isn't reporting one. */
+    private double currentMinerDrawW() {
+        MinerStatus m = miner.latest();
+        if (m != null && MinerStatus.MINING.equals(m.state()) && m.powerDrawW() != null) {
+            return m.powerDrawW();
+        }
+        return 0.0;
     }
 
     private static boolean isNew(Instant ts, Instant last) {

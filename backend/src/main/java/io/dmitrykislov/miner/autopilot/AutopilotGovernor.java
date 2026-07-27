@@ -65,6 +65,14 @@ public final class AutopilotGovernor {
             if (startSurplusW <= floorW) {
                 throw new IllegalArgumentException("startSurplusW must be > floorW (start/stop hysteresis)");
             }
+            // The start threshold must sit at or above the stop threshold (floor+headroom): a miner
+            // running at the floor STOPs when surplus < floor+headroom, so if it started below that
+            // it would start then immediately stop — perpetual start/stop churn.
+            if (startSurplusW < floorW + headroomW) {
+                throw new IllegalArgumentException("startSurplusW (" + startSurplusW
+                        + ") must be ≥ floorW + headroomW (" + (floorW + headroomW)
+                        + "): otherwise the miner would start below the stop threshold and churn");
+            }
             if (upMaxRungsPerCycle < 1) throw new IllegalArgumentException("upMaxRungsPerCycle must be ≥ 1");
             if (emergencyGapW <= 0) throw new IllegalArgumentException("emergencyGapW must be > 0");
             if (isNonPositive(upInterval) || isNonPositive(downInterval) || isNonPositive(longWindow)) {
@@ -81,20 +89,23 @@ public final class AutopilotGovernor {
     }
 
     /**
-     * A decision-time snapshot. {@code shortMarginW}/{@code longMarginW} are the averaged
-     * (solar − house) margins in watts, empty when unavailable/stale.
+     * A decision-time snapshot. {@code shortSurplusW}/{@code longSurplusW} are the averaged
+     * <b>miner-independent</b> surplus in watts (= avg(solar − base-house-load), the miner's own
+     * draw already added back by {@link EnergyAverages}), empty when unavailable/stale. Because the
+     * surplus already accounts for the miner, it must NOT have {@code currentPowerW} added again.
      *
      * @param currentPowerW the miner's current power target (may be null/off-grid; treated as
-     *                      floor when running and null)
+     *                      floor when running and null). Used only to pick the rung to move to and
+     *                      to gauge over-draw — never to reconstruct the surplus.
      * @param miningSince   when the miner began <em>continuously</em> mining (null if not mining)
      * @param lastChangeAt  when the autopilot last changed the miner (null if never)
      * @param dataFresh     both energy feeds have a recent sample. Distinguishes a <em>stale</em>
      *                      feed (blind → stop) from a merely <em>sparse</em> window (an empty
-     *                      margin while fresh → hold, e.g. right after boot)
+     *                      surplus while fresh → hold, e.g. right after boot)
      */
     public record Input(Instant now, boolean reachable, boolean running, boolean suspended,
                         Integer currentPowerW, Instant miningSince, Instant lastChangeAt,
-                        boolean dataFresh, OptionalDouble shortMarginW, OptionalDouble longMarginW) {}
+                        boolean dataFresh, OptionalDouble shortSurplusW, OptionalDouble longSurplusW) {}
 
     private final Config cfg;
     private final int[] rungs;
@@ -129,10 +140,12 @@ public final class AutopilotGovernor {
         }
         // Fresh feed but the window isn't covered enough yet (e.g. just after boot): don't act on a
         // sparse average — hold so a healthy miner isn't disrupted, and an off one waits for data.
-        if (in.shortMarginW().isEmpty()) {
+        if (in.shortSurplusW().isEmpty()) {
             return none("insufficient recent data → holding");
         }
-        double sShort = in.shortMarginW().getAsDouble() + cur;
+        // Surplus is already miner-independent (the miner's own draw was added back when averaged),
+        // so it is NOT re-adjusted by cur. cur is used only for the rung/over-draw comparisons below.
+        double sShort = in.shortSurplusW().getAsDouble();
 
         // ---- protection (bypasses the up dampening) ----
         if (running) {
@@ -159,10 +172,10 @@ public final class AutopilotGovernor {
         if (!elapsed(in.lastChangeAt(), in.now(), cfg.upInterval())) {
             return none("within up dampening window → holding");
         }
-        if (in.longMarginW().isEmpty()) {
+        if (in.longSurplusW().isEmpty()) {
             return none("no long-window average yet → holding");
         }
-        double sLong = in.longMarginW().getAsDouble() + cur;
+        double sLong = in.longSurplusW().getAsDouble();
 
         if (!running) {
             if (sLong >= cfg.startSurplusW()) {

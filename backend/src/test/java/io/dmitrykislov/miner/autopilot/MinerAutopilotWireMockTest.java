@@ -128,9 +128,10 @@ class MinerAutopilotWireMockTest {
         solar.clearRequests();       // count only this tick's consumption API calls
         solarAnalyticsClient.poll(); // 2) fetch consumption iff solar > threshold
         inverterPoller.poll();       // 3) rebuild the snapshot with solar + fresh consumption
-        energySampler.sample();      // 4) feed the rolling windows from that snapshot
+        minerService.refresh();      // 4) publish current miner status so the sampler sees its draw
+        energySampler.sample();      // 5) feed the rolling windows (solar + consumption + miner draw)
         miner.clearRequests();       // count only the tick's miner calls
-        autopilot.tick();            // 5) decide + act
+        autopilot.tick();            // 6) decide + act
     }
 
     // ---------------------------------------------------------------- start
@@ -281,5 +282,33 @@ class MinerAutopilotWireMockTest {
         inverter.offline(); solar.consumption(500); miner.unreachable();
         tick();
         miner.verifyNoMutations();
+    }
+
+    // ------------------------------------------- multi-tick sequences (temporal behaviour)
+    @Test void stepsDownThenHoldsWithoutASpuriousStop() {
+        // Regression for the post-power-change spurious STOP: after the autopilot steps the miner
+        // down, the NEXT tick's short window still holds the old (higher) draw. With the averaged-draw
+        // surplus that no longer under-states the surplus, so the miner HOLDS instead of being killed.
+        // Tick 1 — mining at 3600, true surplus ~2100 → emergency step-down.
+        inverter.solar(2.1); solar.consumption(3600); miner.mining(3600); // surplus 2100−3600+3600
+        tick();
+        miner.verifyPowerSetTo(1600);   // stepped down to the rung the surplus holds
+        miner.verifyNoStartOrStop();
+        // Tick 2 — miner now at 1600; the window still carries the 3600-draw sample from tick 1.
+        inverter.solar(2.1); solar.consumption(1600); miner.mining(1600);
+        tick();
+        miner.verifyNoMutations();      // MUST hold — the old margin+cur estimate would have STOPPED here
+    }
+
+    @Test void restartsAfterAStopWhenSurplusReturns() {
+        // Tick 1 — a deep deficit stops the miner.
+        inverter.solar(0.9); solar.consumption(3600); miner.mining(3600); // surplus 900 < floor+headroom
+        tick();
+        miner.verifyStopped();
+        // Tick 2 — surplus is comfortably back and the miner reads stopped → it is restarted.
+        inverter.solar(4.0); solar.consumption(500); miner.stopped(1200);
+        tick();
+        miner.verifyStarted();
+        miner.verifyPowerSetTo(1200);
     }
 }
