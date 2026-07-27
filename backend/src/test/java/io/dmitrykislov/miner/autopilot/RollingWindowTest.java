@@ -88,6 +88,31 @@ class RollingWindowTest {
         assertThat(w.average(at(30), Duration.ofSeconds(10))).isEmpty();
     }
 
+    @Test void minCoverageRejectsATooSparseWindow() {
+        RollingWindow w = window();
+        // Two fresh samples but only spanning the last 10s — a 3-min window needs ≥60s of coverage.
+        w.add(at(0), 1000);
+        w.add(at(10), 1100);
+        assertThat(w.average(at(10), Duration.ofMinutes(3), Duration.ofSeconds(60))).isEmpty();
+        // without the coverage requirement, the same query returns the mean
+        assertThat(w.average(at(10), Duration.ofMinutes(3)).getAsDouble()).isCloseTo(1050, within(1e-6));
+    }
+
+    @Test void minCoverageAcceptsAWellSpannedWindow() {
+        RollingWindow w = window();
+        for (int s = 0; s <= 120; s += 15) w.add(at(s), 1000); // 120s of data
+        // query at 130 (fresh: newest 10s old); needs ≥60s coverage → oldest in 3-min window is 130-180.. at 0 → covered
+        assertThat(w.average(at(130), Duration.ofMinutes(3), Duration.ofSeconds(60)).getAsDouble())
+                .isCloseTo(1000, within(1e-6));
+    }
+
+    @Test void minCoverageStillEmptyWhenStaleEvenIfWellSpanned() {
+        RollingWindow w = window();
+        for (int s = 0; s <= 120; s += 15) w.add(at(s), 1000);
+        // 120 + 61 = newest is 61s old → stale → empty regardless of coverage
+        assertThat(w.average(at(181), Duration.ofMinutes(3), Duration.ofSeconds(60))).isEmpty();
+    }
+
     @Test void clearEmptiesTheWindow() {
         RollingWindow w = window();
         w.add(at(0), 1000);

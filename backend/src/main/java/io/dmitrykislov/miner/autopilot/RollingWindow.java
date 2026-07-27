@@ -15,6 +15,16 @@ import java.util.OptionalDouble;
  * returns the mean of samples within {@code [now − window, now]}, or empty when there is
  * nothing in the window <b>or</b> the newest sample is older than {@link #freshWithin}
  * (the feed has gone stale — the caller must treat this as "unknown", never zero).
+ *
+ * <p><b>Why a simple mean, not a step-hold time-weighted average:</b> step-hold carries the
+ * last value forward across gaps, so a missed run of polls would hold a stale reading across
+ * the gap (e.g. a pre-cloud high solar value) and dominate the window — over-estimating surplus,
+ * which is unsafe. A simple mean of the samples actually present degrades gracefully on gaps.
+ * Sampling here is regular (~10–15 s), so for the normal case the two are equivalent anyway.
+ *
+ * <p>The {@code minCoverage} overload additionally requires the samples to span back at least
+ * {@code minCoverage} from {@code now}, so a too-sparse window (just after boot, or right after a
+ * gap) reports empty rather than a misleading average of a recent sliver.
  */
 public class RollingWindow {
 
@@ -53,21 +63,34 @@ public class RollingWindow {
      * (older than {@code freshWithin}) or no sample falls inside the window.
      */
     public synchronized OptionalDouble average(Instant now, Duration window) {
+        return average(now, window, Duration.ZERO);
+    }
+
+    /**
+     * Like {@link #average(Instant, Duration)} but also requires the in-window samples to span
+     * back at least {@code minCoverage} from {@code now} — otherwise (a too-sparse window) it
+     * returns empty rather than an average of only the most-recent sliver.
+     */
+    public synchronized OptionalDouble average(Instant now, Duration window, Duration minCoverage) {
         if (samples.isEmpty()) return OptionalDouble.empty();
         Instant newest = samples.peekLast().at();
         if (Duration.between(newest, now).compareTo(freshWithin) > 0) {
             return OptionalDouble.empty(); // feed stale → unknown
         }
         Instant from = now.minus(window);
+        Instant coverageBy = now.minus(minCoverage); // need an in-window sample at or before here
+        boolean needCoverage = !minCoverage.isZero() && !minCoverage.isNegative();
+        boolean covered = !needCoverage;
         double sum = 0;
         int n = 0;
         for (Sample s : samples) {
             if (!s.at().isBefore(from) && !s.at().isAfter(now)) {
                 sum += s.value();
                 n++;
+                if (needCoverage && !s.at().isAfter(coverageBy)) covered = true;
             }
         }
-        return n == 0 ? OptionalDouble.empty() : OptionalDouble.of(sum / n);
+        return (n == 0 || !covered) ? OptionalDouble.empty() : OptionalDouble.of(sum / n);
     }
 
     /** True if the feed is fresh (newest sample within {@code freshWithin} of {@code now}). */

@@ -34,40 +34,54 @@ class AutopilotGovernorTest {
     private Input running(int cur, double S, Instant lastChange, Instant miningSince) {
         double margin = S - cur;
         return new Input(NOW, true, true, false, cur, miningSince, lastChange,
-                OptionalDouble.of(margin), OptionalDouble.of(margin));
+                true, OptionalDouble.of(margin), OptionalDouble.of(margin));
     }
 
     /** Off miner with available surplus {@code S}. */
     private Input off(double S, Instant lastChange) {
         return new Input(NOW, true, false, false, null, null, lastChange,
-                OptionalDouble.of(S), OptionalDouble.of(S));
+                true, OptionalDouble.of(S), OptionalDouble.of(S));
     }
 
     // ---------------------------------------------------------------- guards
     @Test void unreachableSkips() {
         Input in = new Input(NOW, false, true, false, 2000, MINED_LONG, LONG_AGO,
-                OptionalDouble.of(0), OptionalDouble.of(0));
+                true, OptionalDouble.of(0), OptionalDouble.of(0));
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
         assertThat(gov.decide(in).reason()).contains("unreachable");
     }
 
     @Test void suspendedSkips() {
         Input in = new Input(NOW, true, true, true, 3600, MINED_LONG, LONG_AGO,
-                OptionalDouble.of(2000), OptionalDouble.of(2000));
+                true, OptionalDouble.of(2000), OptionalDouble.of(2000));
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
         assertThat(gov.decide(in).reason()).contains("suspended");
     }
 
-    @Test void blindStopsRunningMiner() {
+    @Test void staleFeedStopsRunningMiner() {
         Input in = new Input(NOW, true, true, false, 3600, MINED_LONG, LONG_AGO,
-                OptionalDouble.empty(), OptionalDouble.empty());
+                false, OptionalDouble.empty(), OptionalDouble.empty()); // dataFresh = false
         assertThat(gov.decide(in).action()).isEqualTo(Action.STOP);
         assertThat(gov.decide(in).reason()).contains("no fresh");
     }
 
-    @Test void blindLeavesOffMinerAlone() {
+    @Test void staleFeedLeavesOffMinerAlone() {
         Input in = new Input(NOW, true, false, false, null, null, LONG_AGO,
-                OptionalDouble.empty(), OptionalDouble.empty());
+                false, OptionalDouble.empty(), OptionalDouble.empty());
+        assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
+    }
+
+    @Test void freshButSparseHoldsRunningMinerInsteadOfStopping() {
+        // Just booted: feed is fresh but the short window isn't covered yet → hold, don't stop.
+        Input in = new Input(NOW, true, true, false, 3600, MINED_SHORT, LONG_AGO,
+                true, OptionalDouble.empty(), OptionalDouble.empty());
+        assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
+        assertThat(gov.decide(in).reason()).contains("insufficient recent data");
+    }
+
+    @Test void freshButSparseLeavesOffMinerOff() {
+        Input in = new Input(NOW, true, false, false, null, null, LONG_AGO,
+                true, OptionalDouble.empty(), OptionalDouble.empty());
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
     }
 
@@ -117,7 +131,7 @@ class AutopilotGovernorTest {
 
     @Test void doesNotRampUpWithoutLongWindowAverage() {
         Input in = new Input(NOW, true, true, false, 1200, MINED_LONG, LONG_AGO,
-                OptionalDouble.of(2600), OptionalDouble.empty()); // short only
+                true, OptionalDouble.of(2600), OptionalDouble.empty()); // short only
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
         assertThat(gov.decide(in).reason()).contains("long-window");
     }
@@ -183,7 +197,7 @@ class AutopilotGovernorTest {
 
     @Test void nullCurrentPowerWhileRunningTreatedAsFloor() {
         Input in = new Input(NOW, true, true, false, null, MINED_LONG, LONG_AGO,
-                OptionalDouble.of(400), OptionalDouble.of(400)); // S = 400 + floor(1200) = 1600
+                true, OptionalDouble.of(400), OptionalDouble.of(400)); // S = 400 + floor(1200) = 1600
         assertThatCode(() -> gov.decide(in)).doesNotThrowAnyException();
         assertThat(gov.decide(in).action()).isIn(Action.NONE, Action.STEP_UP, Action.STEP_DOWN, Action.STOP);
     }

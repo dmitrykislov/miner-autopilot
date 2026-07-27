@@ -79,10 +79,13 @@ public final class AutopilotGovernor {
      *                      floor when running and null)
      * @param miningSince   when the miner began <em>continuously</em> mining (null if not mining)
      * @param lastChangeAt  when the autopilot last changed the miner (null if never)
+     * @param dataFresh     both energy feeds have a recent sample. Distinguishes a <em>stale</em>
+     *                      feed (blind → stop) from a merely <em>sparse</em> window (an empty
+     *                      margin while fresh → hold, e.g. right after boot)
      */
     public record Input(Instant now, boolean reachable, boolean running, boolean suspended,
                         Integer currentPowerW, Instant miningSince, Instant lastChangeAt,
-                        OptionalDouble shortMarginW, OptionalDouble longMarginW) {}
+                        boolean dataFresh, OptionalDouble shortMarginW, OptionalDouble longMarginW) {}
 
     private final Config cfg;
     private final int[] rungs;
@@ -103,11 +106,17 @@ public final class AutopilotGovernor {
 
         int cur = in.running() ? (in.currentPowerW() != null ? in.currentPowerW() : cfg.floorW()) : 0;
 
-        // No fresh recent data → we're blind. A running miner is stopped for safety; an off one holds.
-        if (in.shortMarginW().isEmpty()) {
+        // Blind: a feed has gone stale/dead → we can't know the surplus. Stop a running miner for
+        // safety; leave an off one off.
+        if (!in.dataFresh()) {
             return in.running()
                     ? decision(Action.STOP, 0, "no fresh solar/consumption data — stopping for safety")
                     : none("no fresh data and miner off — nothing to do");
+        }
+        // Fresh feed but the window isn't covered enough yet (e.g. just after boot): don't act on a
+        // sparse average — hold so a healthy miner isn't disrupted, and an off one waits for data.
+        if (in.shortMarginW().isEmpty()) {
+            return none("insufficient recent data → holding");
         }
         double sShort = in.shortMarginW().getAsDouble() + cur;
 
