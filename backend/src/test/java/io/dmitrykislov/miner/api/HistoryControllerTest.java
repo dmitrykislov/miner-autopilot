@@ -25,8 +25,8 @@ class HistoryControllerTest {
     @BeforeEach
     void setup() {
         store = mock(TelemetryStore.class);
-        when(store.eventsSince(any())).thenReturn(List.of());
-        when(store.samplesSince(any())).thenReturn(List.of());
+        when(store.eventsBetween(any(), any())).thenReturn(List.of());
+        when(store.samplesBetween(any(), any())).thenReturn(List.of());
         controller = new HistoryController(store, new HistoryProperties(true, "data", 60_000, 31));
     }
 
@@ -34,45 +34,73 @@ class HistoryControllerTest {
         return Duration.between(r.from(), r.to()).toHours();
     }
 
-    @Test void defaultsToA24hWindow() {
-        HistoryResponse r = controller.history(24);
-        assertThat(windowHours(r)).isEqualTo(24);
+    @Test void hoursGivesTheLastNHoursEndingNow() {
+        Instant before = Instant.now();
+        HistoryResponse r = controller.history(null, null, 8);
+        assertThat(windowHours(r)).isEqualTo(8);
+        assertThat(r.to()).isBetween(before, Instant.now()); // "to" is ~now
         assertThat(r.retentionDays()).isEqualTo(31);
         assertThat(r.intervalMs()).isEqualTo(60_000);
     }
 
-    @Test void clampsHoursToTheRetentionWindow() {
-        HistoryResponse r = controller.history(24 * 365); // ask for a year
-        assertThat(windowHours(r)).isEqualTo(31 * 24);    // clamped to retention (31 days)
+    @Test void defaultsTo12hWhenNothingSpecified() {
+        assertThat(windowHours(controller.history(null, null, null))).isEqualTo(12);
     }
 
-    @Test void clampsNonPositiveHoursToAtLeastOne() {
-        assertThat(windowHours(controller.history(0))).isEqualTo(1);
-        assertThat(windowHours(controller.history(-5))).isEqualTo(1);
+    @Test void nonPositiveHoursClampToOne() {
+        assertThat(windowHours(controller.history(null, null, 0))).isEqualTo(1);
+        assertThat(windowHours(controller.history(null, null, -5))).isEqualTo(1);
+    }
+
+    @Test void explicitFromToWindowIsHonoured() {
+        // millis precision — the API is epoch-millis in/out.
+        Instant to = Instant.ofEpochMilli(Instant.now().minus(Duration.ofHours(2)).toEpochMilli());
+        Instant from = to.minus(Duration.ofHours(4));
+        HistoryResponse r = controller.history(from.toEpochMilli(), to.toEpochMilli(), null);
+        assertThat(r.from()).isEqualTo(from);
+        assertThat(r.to()).isEqualTo(to);
+    }
+
+    @Test void clampsFutureToDownToNow() {
+        Instant future = Instant.now().plus(Duration.ofDays(2));
+        HistoryResponse r = controller.history(null, future.toEpochMilli(), 1);
+        assertThat(r.to()).isBeforeOrEqualTo(Instant.now());
+    }
+
+    @Test void clampsFromBackToTheRetentionWindow() {
+        Instant wayBack = Instant.now().minus(Duration.ofDays(365));
+        HistoryResponse r = controller.history(wayBack.toEpochMilli(), null, null);
+        // from can't be older than now − retention (31 days).
+        assertThat(r.from()).isAfterOrEqualTo(Instant.now().minus(Duration.ofDays(31)).minusSeconds(2));
+    }
+
+    @Test void guaranteesFromStrictlyBeforeTo() {
+        Instant t = Instant.now().minus(Duration.ofHours(1));
+        // from == to → controller must still produce from < to.
+        HistoryResponse r = controller.history(t.toEpochMilli(), t.toEpochMilli(), null);
+        assertThat(r.from()).isBefore(r.to());
     }
 
     @Test void downsamplesLargeResultSets() {
         List<TelemetrySample> many = new ArrayList<>();
-        Instant t0 = Instant.now().minus(Duration.ofDays(7));
+        Instant t0 = Instant.now().minus(Duration.ofHours(20));
         for (int i = 0; i < 5000; i++) {
-            many.add(new TelemetrySample(t0.plusSeconds(i * 60L), (double) i, null, null, null, "MINING"));
+            many.add(new TelemetrySample(t0.plusSeconds(i * 12L), (double) i, null, null, null, "MINING"));
         }
-        when(store.samplesSince(any())).thenReturn(many);
-
-        HistoryResponse r = controller.history(24 * 7);
-        assertThat(r.samples()).hasSizeLessThanOrEqualTo(1500); // capped by the controller
-        assertThat(r.samples()).isNotEmpty();
+        when(store.samplesBetween(any(), any())).thenReturn(many);
+        HistoryResponse r = controller.history(null, null, 20);
+        assertThat(r.samples()).hasSizeLessThanOrEqualTo(1500).isNotEmpty();
     }
 
     @Test void passesEventsThroughUnchanged() {
         var e = new PowerChangeEvent(Instant.now(), "STOP", 2400, null, "cloud");
-        when(store.eventsSince(any())).thenReturn(List.of(e));
-        assertThat(controller.history(24).events()).containsExactly(e);
+        when(store.eventsBetween(any(), any())).thenReturn(List.of(e));
+        assertThat(controller.history(null, null, 24).events()).containsExactly(e);
     }
 
     @Test void queriesTheStoreForTheComputedWindow() {
-        controller.history(6);
-        verify(store).samplesSince(any());
-        verify(store).eventsSince(any());
+        controller.history(null, null, 6);
+        verify(store).samplesBetween(any(), any());
+        verify(store).eventsBetween(any(), any());
     }
 }

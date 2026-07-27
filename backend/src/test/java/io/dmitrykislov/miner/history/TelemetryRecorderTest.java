@@ -98,6 +98,20 @@ class TelemetryRecorderTest {
         assertThat(s.minerState()).isEqualTo("STOPPED");
     }
 
+    @Test void suspendedMinerChartsNoPowerOrDraw() {
+        // SUSPENDED = service up but ~0 W draw → the miner line must not plot its target.
+        when(inverter.latest()).thenReturn(snap(true, true, 3.0, 1.0));
+        when(miner.latest()).thenReturn(miner(true, false, MinerStatus.SUSPENDED, 2400, null));
+        when(autopilot.latest()).thenReturn(null);
+
+        recorder.record();
+
+        TelemetrySample s = recordedSample();
+        assertThat(s.minerState()).isEqualTo("SUSPENDED");
+        assertThat(s.minerPowerW()).isNull(); // not MINING → no power charted
+        assertThat(s.minerDrawW()).isNull();
+    }
+
     @Test void recordsEachAutopilotChangeExactlyOnce() {
         when(inverter.latest()).thenReturn(snap(true, true, 3.0, 1.0));
         when(miner.latest()).thenReturn(miner(true, true, MinerStatus.MINING, 2400, 2350));

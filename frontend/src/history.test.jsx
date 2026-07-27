@@ -2,18 +2,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import HistoryChart from './HistoryChart.jsx'
 
-const T0 = Date.parse('2026-07-27T00:00:00Z')
+const T0 = Date.parse('2026-07-27T06:00:00Z')
 
 function payload(over = {}) {
   const samples = []
   for (let i = 0; i < 30; i++) {
+    // Miner off before i=8 (pre-mining) and again in [18,22) (a mid-window suspension) → the miner
+    // line has an interior gap (two drawn segments), which is what the line-break test checks.
+    const off = i < 8 || (i >= 18 && i < 22)
     samples.push({
       at: new Date(T0 + i * 60_000).toISOString(),
-      solarW: 3000 + i * 20,
+      solarW: 3000 + i * 20,                 // always above the daylight threshold
       consumptionW: 1500,
-      minerPowerW: i < 10 ? null : 2400, // miner off for the first 10 samples → a line gap
-      minerDrawW: i < 10 ? null : 2350,
-      minerState: i < 10 ? 'STOPPED' : 'MINING',
+      minerPowerW: off ? null : 2400,
+      minerDrawW: off ? null : 2350,
+      minerState: off ? (i < 8 ? 'STOPPED' : 'SUSPENDED') : 'MINING',
     })
   }
   return {
@@ -29,54 +32,87 @@ function payload(over = {}) {
   }
 }
 
-/** A token-aware fetch stub that returns the given payload (or a per-URL map). */
 function fakeFetch(data) {
-  return vi.fn((url) => Promise.resolve({ ok: true, json: () => Promise.resolve(
-    typeof data === 'function' ? data(url) : data) }))
+  return vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(
+    typeof data === 'function' ? data() : data) }))
+}
+
+/** Parse the {from,to,span} of the most recent /api/history request. */
+function lastRange(mock) {
+  const url = mock.mock.calls.at(-1)[0]
+  const q = new URL(url, 'http://x').searchParams
+  const from = Number(q.get('from')), to = Number(q.get('to'))
+  return { from, to, span: to - from, url }
 }
 
 describe('HistoryChart', () => {
   beforeEach(() => vi.restoreAllMocks())
 
-  it('fetches the 24h window on mount and draws the three series', async () => {
+  it('defaults to Today and requests an explicit from/to range (not ?hours)', async () => {
     const authFetch = fakeFetch(payload())
     render(<HistoryChart authFetch={authFetch} />)
+    await screen.findByTestId('history-line-solarW')
 
-    expect(authFetch).toHaveBeenCalledWith('/api/history?hours=24')
-    await waitFor(() => expect(screen.getByTestId('history-line-solarW')).toBeInTheDocument())
+    const { url } = lastRange(authFetch)
+    expect(url).toMatch(/\/api\/history\?from=\d+&to=\d+$/)
+    expect(url).not.toContain('hours=')
+    expect(screen.getByTestId('history-range').textContent).toContain('Today')
+  })
+
+  it('draws the three series', async () => {
+    render(<HistoryChart authFetch={fakeFetch(payload())} />)
+    await screen.findByTestId('history-line-solarW')
     expect(screen.getByTestId('history-line-consumptionW')).toBeInTheDocument()
     expect(screen.getByTestId('history-line-minerPowerW')).toBeInTheDocument()
-    // each line has a non-empty path
     expect(screen.getByTestId('history-line-solarW').getAttribute('d')).toBeTruthy()
   })
 
   it('breaks the miner line where the miner was off (null segment)', async () => {
     render(<HistoryChart authFetch={fakeFetch(payload())} />)
     const miner = await screen.findByTestId('history-line-minerPowerW')
-    // d3 line().defined(...) inserts a gap (path restart) → the path has an "M" after the first move
-    expect(miner.getAttribute('d')).toContain('M')
+    // d3 line().defined(...) restarts the path after the gap → a second "M" command.
+    expect((miner.getAttribute('d').match(/M/g) || []).length).toBeGreaterThan(1)
   })
 
-  it('renders a marker per power-change event and reveals its details on hover', async () => {
+  it('reveals power-change details on marker hover', async () => {
     render(<HistoryChart authFetch={fakeFetch(payload())} />)
     const marker = await screen.findByTestId('history-event')
-    fireEvent.mouseEnter(marker.parentNode) // hovering the marker group
+    fireEvent.mouseEnter(marker.parentNode)
     const tip = await screen.findByTestId('history-event-tooltip')
     expect(within(tip).getByText(/START/)).toBeInTheDocument()
     expect(tip.textContent).toContain('off → 1200 W')
     expect(tip.textContent).toContain('start at floor')
   })
 
-  it('switches window and refetches when a range button is clicked', async () => {
+  it('selecting 1h requests a one-hour range', async () => {
     const authFetch = fakeFetch(payload())
     render(<HistoryChart authFetch={authFetch} />)
     await screen.findByTestId('history-line-solarW')
 
-    fireEvent.click(screen.getByRole('tab', { name: '7d' }))
-    await waitFor(() => expect(authFetch).toHaveBeenCalledWith('/api/history?hours=168'))
+    fireEvent.click(screen.getByRole('tab', { name: '1h' }))
+    await waitFor(() => expect(lastRange(authFetch).span).toBeCloseTo(3600e3, -3)) // ~1h
+  })
 
-    fireEvent.click(screen.getByRole('tab', { name: '30d' }))
-    await waitFor(() => expect(authFetch).toHaveBeenCalledWith('/api/history?hours=720'))
+  it('steps back in time and returns to live with "Now"', async () => {
+    const authFetch = fakeFetch(payload())
+    render(<HistoryChart authFetch={authFetch} />)
+    await screen.findByTestId('history-line-solarW')
+
+    // A fixed span makes the step deterministic.
+    fireEvent.click(screen.getByRole('tab', { name: '4h' }))
+    await waitFor(() => expect(lastRange(authFetch).span).toBeCloseTo(4 * 3600e3, -3))
+    const liveTo = lastRange(authFetch).to
+
+    // "Later" is disabled while live; stepping earlier moves the window one whole span back.
+    expect(screen.getByLabelText('Later')).toBeDisabled()
+    fireEvent.click(screen.getByLabelText('Earlier'))
+    await waitFor(() => expect(lastRange(authFetch).to).toBeLessThan(liveTo))
+    expect(lastRange(authFetch).span).toBeCloseTo(4 * 3600e3, -3) // same span, shifted back
+    expect(screen.getByLabelText('Later')).not.toBeDisabled()      // can now go forward
+
+    // "Now" jumps back to the live edge.
+    fireEvent.click(screen.getByText('Now'))
+    await waitFor(() => expect(lastRange(authFetch).to).toBeGreaterThanOrEqual(liveTo))
   })
 
   it('shows a legend for all series plus the power-change marker', async () => {
@@ -85,12 +121,11 @@ describe('HistoryChart', () => {
     expect(screen.getByText('Home')).toBeInTheDocument()
     expect(screen.getByText('Miner')).toBeInTheDocument()
     expect(screen.getByText('Power change')).toBeInTheDocument()
-    await screen.findByTestId('history-line-solarW') // let the async load settle inside the test
+    await screen.findByTestId('history-line-solarW')
   })
 
-  it('shows an empty-state message when there are no samples yet', async () => {
+  it('shows an empty-state message when the window has no data', async () => {
     render(<HistoryChart authFetch={fakeFetch(payload({ samples: [], events: [] }))} />)
-    await waitFor(() =>
-      expect(screen.getByText(/Collecting data/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/No solar recorded yet today|No data recorded/)).toBeInTheDocument())
   })
 })

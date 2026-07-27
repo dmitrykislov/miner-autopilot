@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fmt, flow, formatUptime, formatDuration, minerView } from './logic.js'
+import { fmt, flow, formatUptime, formatDuration, minerView, historyWindow, daylightExtent } from './logic.js'
 
 describe('fmt', () => {
   it('renders "--" for non-numeric / missing values', () => {
@@ -113,5 +113,92 @@ describe('minerView', () => {
   it('unknown state falls back sensibly by reachability', () => {
     expect(minerView({ reachable: true, state: 'WEIRD' }).statusText).toBe('Unknown')
     expect(minerView({ reachable: false, state: 'WEIRD' }).statusText).toBe('Offline')
+  })
+})
+
+describe('historyWindow', () => {
+  const H = 3600e3
+  const NOW = Date.parse('2026-07-27T15:30:00') // local
+
+  it('span window: offset 0 ends at now and spans the requested hours', () => {
+    const w = historyWindow({ hours: 4 }, 0, NOW)
+    expect(w.toMs).toBe(NOW)
+    expect(w.fromMs).toBe(NOW - 4 * H)
+  })
+
+  it('span window: each offset steps one whole span back', () => {
+    const w1 = historyWindow({ hours: 8 }, 1, NOW)
+    expect(w1.toMs).toBe(NOW - 8 * H)
+    expect(w1.fromMs).toBe(NOW - 16 * H)
+    const w2 = historyWindow({ hours: 1 }, 3, NOW)
+    expect(w2.toMs).toBe(NOW - 3 * H)
+    expect(w2.fromMs).toBe(NOW - 4 * H)
+  })
+
+  it('span window: negative/fractional offsets clamp to a whole ≥ 0 step', () => {
+    expect(historyWindow({ hours: 2 }, -5, NOW)).toEqual(historyWindow({ hours: 2 }, 0, NOW))
+  })
+
+  it('today: offset 0 runs from local midnight to now', () => {
+    const w = historyWindow({ today: true }, 0, NOW)
+    const mid = new Date(w.fromMs)
+    expect(mid.getHours()).toBe(0)
+    expect(mid.getMinutes()).toBe(0)
+    expect(mid.getSeconds()).toBe(0)
+    expect(new Date(w.fromMs).getDate()).toBe(new Date(NOW).getDate()) // same calendar day
+    expect(w.toMs).toBe(NOW) // capped at now (still daytime)
+  })
+
+  it('today: offset 1 is the whole previous local day (midnight→midnight)', () => {
+    const today = historyWindow({ today: true }, 0, NOW)
+    const prev = historyWindow({ today: true }, 1, NOW)
+    expect(prev.toMs).toBe(today.fromMs)            // ends exactly at today's midnight
+    expect(new Date(prev.fromMs).getHours()).toBe(0) // starts at a local midnight
+    const gapH = (prev.toMs - prev.fromMs) / H
+    expect(gapH).toBeGreaterThanOrEqual(23)          // ~24h (DST-tolerant)
+    expect(gapH).toBeLessThanOrEqual(25)
+  })
+})
+
+describe('daylightExtent', () => {
+  const iso = (h) => new Date(Date.parse('2026-07-27T00:00:00Z') + h * 3600e3).toISOString()
+
+  it('returns first→last sample above the solar threshold', () => {
+    const samples = [
+      { at: iso(5), solarW: 0 },      // night
+      { at: iso(6), solarW: 30 },     // below threshold (dawn noise)
+      { at: iso(7), solarW: 400 },    // first real solar
+      { at: iso(12), solarW: 6000 },
+      { at: iso(18), solarW: 200 },   // last real solar
+      { at: iso(20), solarW: 0 },     // night
+    ]
+    const ext = daylightExtent(samples, 50)
+    expect(ext).toEqual([Date.parse(iso(7)), Date.parse(iso(18))])
+  })
+
+  it('accepts epoch-ms timestamps too', () => {
+    const t0 = Date.parse('2026-07-27T07:00:00Z')
+    const ext = daylightExtent([{ at: t0, solarW: 500 }, { at: t0 + 3600e3, solarW: 800 }], 50)
+    expect(ext).toEqual([t0, t0 + 3600e3])
+  })
+
+  it('returns null when there is no solar (all night / below threshold)', () => {
+    expect(daylightExtent([{ at: iso(2), solarW: 0 }, { at: iso(3), solarW: 10 }], 50)).toBeNull()
+    expect(daylightExtent([], 50)).toBeNull()
+    expect(daylightExtent(null, 50)).toBeNull()
+  })
+
+  it('returns null for a single instant of solar (no span to draw)', () => {
+    expect(daylightExtent([{ at: iso(12), solarW: 5000 }], 50)).toBeNull()
+  })
+
+  it('ignores null solar and malformed timestamps', () => {
+    const samples = [
+      { at: iso(7), solarW: null },
+      { at: 'not-a-date', solarW: 500 },
+      { at: iso(9), solarW: 500 },
+      { at: iso(11), solarW: 500 },
+    ]
+    expect(daylightExtent(samples, 50)).toEqual([Date.parse(iso(9)), Date.parse(iso(11))])
   })
 })

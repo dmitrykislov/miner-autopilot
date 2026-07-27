@@ -173,6 +173,7 @@ All streams are **Server-Sent Events** (`text/event-stream`).
 | `POST /api/miner/power?watts=&apply=` | Set autotuning power target (clamped to the hard [min,max]) |
 | `GET /api/autopilot` · `/stream` | Autopilot status: enabled, last decision, and last change (action, from→to, time) |
 | `POST /api/autopilot/enable` · `/disable` | Turn the autopilot on/off at runtime; returns the new status |
+| `GET /api/history?from=&to=` | Recorded telemetry samples + power-change events for an epoch-ms window (or `?hours=n`); downsampled |
 | `GET /api/system` | App version, start time, and uptime (for the UI footer) |
 | `POST /api/auth/login` | Exchange `{password}` for a bearer token (the one open endpoint) |
 
@@ -234,7 +235,7 @@ from step 1. To change the password later, regenerate the hash and restart. `htp
 
 - **Live Power Flow** hero: Solar → Home → Grid with animated connectors, and a side panel with a **self-sufficiency ring** and the **surplus margin** (`solar − house`). House consumption is measured by Solar Analytics and updates live (with a sparkline). When Solar Analytics isn't reporting, house and the margin show as **unavailable** (no assumed value).
 - **KPI row:** Today / Lifetime yield, grid frequency, inverter temperature. These promoted values are **not repeated** in the detail sections below (de-duplicated).
-- **History chart** (under the KPIs): interactive D3 trend of solar / house / miner power over **24h / 7d / 30d** with hover readouts and markers at every autopilot power change — see [History & trends chart](#history--trends-chart).
+- **History chart** (under the KPIs): interactive D3 trend of solar / house / miner power — **Today** (zoomed to the solar-active part of the day) or a **1h / 4h / 8h / 12h** span, with **‹ ›** to step back and forward in time, hover readouts, and markers at every autopilot power change — see [History & trends chart](#history--trends-chart).
 - **Miner card:** honest state — **Mining / Suspended / Stopped / Offline** with reason (e.g. "no active pool"), live hashrate, power draw, **fan RPM**, uptime, pool count, editable **power target** + Apply, and **Start/Stop**.
 - **Inverter detail sections:** Energy, Power, Grid & AC, DC/PV, Device Status, Per-phase — every reading with an info tooltip (excludes the values already shown as KPIs / in the hero).
 - **Autopilot card:** On/Off badge, an Enable/Disable button, the last decision, and the last change it made (action, from→to power, time) — live over SSE.
@@ -303,7 +304,7 @@ A lightweight, **file-backed** telemetry log feeds an interactive **D3 chart** u
 
 - **What's recorded** (`io.dmitrykislov.miner.history`): once a minute the `TelemetryRecorder` appends one sample — solar (W), house consumption (W), miner power target + live draw (W), miner state — read from the same in-memory snapshots the SSE streams already serve (no extra device I/O). Every autopilot power change is recorded as a discrete **event** (action, from→to, reason).
 - **Storage is deliberately tiny** — no database. Append-only text files, one per UTC day, under `HISTORY_DIR` (default `data/history`): `samples-YYYY-MM-DD.log` (comma-separated) and `events-YYYY-MM-DD.log` (tab-separated). A month at one sample/minute is ~5 MB on disk and a few MB in heap — fine for a Raspberry Pi. Files (and in-memory rows) older than `HISTORY_RETENTION_DAYS` (default **31**) are discarded automatically; the store reloads on restart.
-- **The chart** (`GET /api/history?hours=`): pick **24h / 7d / 30d**. Three lines — Solar, Home, Miner — with the miner line breaking to a gap when it's off. Server-side **downsampling** caps each request to ~1500 points so even a month draws smoothly. **Hover the plot** for a readout at that instant (solar / home / miner / surplus); **hover a change marker** (the dashed verticals) to see the autopilot action, the from→to power, and the reason. It refreshes every minute.
+- **The chart** (`GET /api/history?from=<ms>&to=<ms>`): choose **Today** or a **1h / 4h / 8h / 12h** span, and step **back/forward in time** with the **‹ ›** arrows (bounded by the retention window; **Now** jumps back to live). *Today* auto-zooms the x-axis to the **solar-active window** — from the moment solar first appears to now (or last light) — so night is trimmed away. Three lines — Solar, Home, Miner (only while actually mining, so it lines up with the Home load) — with the miner line breaking to a gap when it's off. Server-side **downsampling** caps each request to ~1500 points. **Hover the plot** for a readout at that instant (solar / home / miner / surplus); **hover a change marker** (the dashed verticals) to see the autopilot action, the from→to power, and the reason. While live it refreshes every minute; a historical view is frozen.
 - **Turn it off** with `HISTORY_ENABLED=false` (nothing is recorded and the chart shows an empty state).
 
 ## Notable device details

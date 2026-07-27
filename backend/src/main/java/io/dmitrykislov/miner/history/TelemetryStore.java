@@ -92,14 +92,28 @@ public class TelemetryStore {
     // ---- reads (web thread) -------------------------------------------------
 
     public synchronized List<TelemetrySample> samplesSince(Instant from) {
-        List<TelemetrySample> out = new ArrayList<>();
-        for (TelemetrySample s : samples) if (!s.at().isBefore(from)) out.add(s);
-        return out;
+        return samplesBetween(from, Instant.MAX);
     }
 
     public synchronized List<PowerChangeEvent> eventsSince(Instant from) {
+        return eventsBetween(from, Instant.MAX);
+    }
+
+    /** Samples with {@code from ≤ at ≤ to}, time-ascending. */
+    public synchronized List<TelemetrySample> samplesBetween(Instant from, Instant to) {
+        List<TelemetrySample> out = new ArrayList<>();
+        for (TelemetrySample s : samples) {
+            if (!s.at().isBefore(from) && !s.at().isAfter(to)) out.add(s);
+        }
+        return out;
+    }
+
+    /** Events with {@code from ≤ at ≤ to}, time-ascending. */
+    public synchronized List<PowerChangeEvent> eventsBetween(Instant from, Instant to) {
         List<PowerChangeEvent> out = new ArrayList<>();
-        for (PowerChangeEvent e : events) if (!e.at().isBefore(from)) out.add(e);
+        for (PowerChangeEvent e : events) {
+            if (!e.at().isBefore(from) && !e.at().isAfter(to)) out.add(e);
+        }
         return out;
     }
 

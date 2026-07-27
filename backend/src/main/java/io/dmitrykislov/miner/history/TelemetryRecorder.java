@@ -63,8 +63,12 @@ public class TelemetryRecorder {
         MinerStatus m = miner.latest();
         if (m != null) {
             minerState = m.reachable() ? m.state() : MinerStatus.OFFLINE;
-            minerPowerW = (m.running() && m.powerTargetW() != null) ? m.powerTargetW() : null;
-            minerDrawW = m.powerDrawW();
+            // Chart the miner's power only while it is actually MINING. A SUSPENDED miner is
+            // "running" (service up) but draws ~0 W, so plotting its target would overstate
+            // consumption and not line up with the (miner-inclusive) Home line.
+            boolean mining = MinerStatus.MINING.equals(m.state());
+            minerPowerW = (mining && m.powerTargetW() != null) ? m.powerTargetW() : null;
+            minerDrawW = mining ? m.powerDrawW() : null;
         }
         return new TelemetrySample(now, solarW, consumptionW, minerPowerW, minerDrawW, minerState);
     }

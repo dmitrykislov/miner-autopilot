@@ -48,6 +48,23 @@ class TelemetryStoreTest {
                 });
     }
 
+    @Test void samplesAndEventsBetweenAreInclusiveOfBothBounds() {
+        TelemetryStore s = store(31);
+        Instant now = Instant.now();
+        Instant a = now.minusSeconds(300), b = now.minusSeconds(200), c = now.minusSeconds(100);
+        s.recordSample(sample(a, 1000.0, 1200, "MINING"));
+        s.recordSample(sample(b, 2000.0, 1600, "MINING"));
+        s.recordSample(sample(c, 3000.0, 2000, "MINING"));
+        s.recordEvent(new PowerChangeEvent(b, "STEP_UP", 1200, 1600, "up"));
+
+        // [a, b] includes both endpoints, excludes c.
+        assertThat(s.samplesBetween(a, b)).extracting(TelemetrySample::solarW)
+                .containsExactly(1000.0, 2000.0);
+        assertThat(s.eventsBetween(a, c)).singleElement()
+                .satisfies(e -> assertThat(e.at()).isEqualTo(b));
+        assertThat(s.eventsBetween(c, now)).isEmpty(); // event at b is before the window
+    }
+
     @Test void pruneDropsInMemoryAndDeletesStaleDayFiles() throws IOException {
         TelemetryStore s = store(31);
         Instant now = Instant.now();

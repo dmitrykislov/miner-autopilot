@@ -45,6 +45,47 @@ export function formatDuration(seconds) {
   return `${sec}s`
 }
 
+/**
+ * The [fromMs, toMs] window for the history chart.
+ * @param win    a fixed span `{ hours }` or a calendar day `{ today: true }`
+ * @param offset how many windows/days back from the latest (0 = current/live; clamped to ≥ 0)
+ * @param nowMs  reference "now" (epoch ms)
+ * For a span: the window is `offset` whole spans back from now. For a day: local-midnight to the
+ * next local midnight (DST-correct), with the end capped at `now` for today.
+ */
+export function historyWindow(win, offset, nowMs) {
+  const off = Math.max(0, Math.floor(offset || 0))
+  if (win.today) {
+    const start = new Date(nowMs)
+    start.setHours(0, 0, 0, 0)
+    start.setDate(start.getDate() - off)      // midnight of the target local day
+    const end = new Date(start)
+    end.setDate(end.getDate() + 1)            // next local midnight (handles DST-length days)
+    return { fromMs: start.getTime(), toMs: Math.min(nowMs, end.getTime()) }
+  }
+  const span = win.hours * 3600e3
+  const toMs = nowMs - off * span
+  return { fromMs: toMs - span, toMs }
+}
+
+/**
+ * The solar-active span within a set of samples: [firstMs, lastMs] of the samples whose solar
+ * exceeds `thresholdW` — i.e. "from the moment solar appears to the moment it disappears". Returns
+ * null when there is no (or only a single instant of) solar, so callers can fall back to the full
+ * window. `at` may be epoch ms or an ISO string.
+ */
+export function daylightExtent(samples, thresholdW = 50) {
+  let first = null, last = null
+  for (const s of samples || []) {
+    if (!s || s.solarW == null || !(s.solarW > thresholdW)) continue
+    const t = typeof s.at === 'number' ? s.at : Date.parse(s.at)
+    if (!Number.isFinite(t)) continue
+    if (first === null) first = t
+    last = t
+  }
+  return first !== null && last > first ? [first, last] : null
+}
+
 const MINER_LABELS = { MINING: 'Mining', SUSPENDED: 'Suspended', STOPPED: 'Stopped', OFFLINE: 'Offline' }
 
 /**

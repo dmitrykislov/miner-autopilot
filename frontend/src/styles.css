@@ -373,3 +373,14 @@ body {
 .history-tip .tip-row.surplus { border-top: 1px solid rgba(255,255,255,0.15); margin-top: 3px; padding-top: 3px; }
 .history-tip.event .tip-action { margin-bottom: 2px; }
 .history-tip.event .tip-reason { opacity: 0.8; max-width: 220px; white-space: normal; }
+
+/* history: time navigation */
+.history-nav { display: flex; align-items: center; gap: 10px; margin: 2px 2px 8px; }
+.hnav { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border-soft);
+  background: var(--surface-2); color: var(--text); font-size: 18px; line-height: 1; cursor: pointer; }
+.hnav:hover:not(:disabled) { background: var(--surface); }
+.hnav:disabled { opacity: 0.35; cursor: default; }
+.history-range { display: inline-flex; align-items: center; gap: 7px; font-size: 0.85rem;
+  font-weight: 600; color: var(--text); min-width: 150px; }
+.history-range .live-dot { background: var(--good); }
+.hbtn.hnow { border: 1px solid var(--border-soft); }
