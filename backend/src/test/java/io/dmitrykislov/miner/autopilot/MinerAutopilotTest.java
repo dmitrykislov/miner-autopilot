@@ -84,19 +84,29 @@ class MinerAutopilotTest {
                 powerTargetW, true, 0, 1, null, null, List.of(), 600L, Instant.now(), null);
     }
 
-    /**
-     * Publish a valid live inverter snapshot (→ feed valid) and feed the energy engine two
-     * timestamped samples spanning the coverage, so the governor sees a trusted surplus
-     * {@code availSurplusW} for a miner currently drawing {@code minerDrawW}.
-     */
-    private void liveFeed(double availSurplusW, int minerDrawW) {
+    /** Publish an inverter snapshot with the given liveness/metered flags and timestamp. */
+    private void publishSnapshot(boolean online, boolean metered, Instant ts) {
+        PowerBalance pb = metered ? PowerBalance.metered(2.0, 1.0) : PowerBalance.unmetered(2.0);
+        inverterStream.publish(new InverterSnapshot(online, "SG10RS", "SN",
+                online ? "Running" : "Offline", ts, Map.of(), pb, List.of(), List.of(), null));
+    }
+
+    /** Feed the energy engine two timestamped samples spanning the coverage → trusted averages. */
+    private void feedEnergy(double availSurplusW, int minerDrawW) {
         Instant now = Instant.now();
-        inverterStream.publish(new InverterSnapshot(true, "SG10RS", "SN", "Running", now,
-                Map.of(), PowerBalance.metered(2.0, 1.0), List.of(), List.of(), null));
         for (Instant at : List.of(now.minusSeconds(20), now)) {
             energy.recordSolar(at, availSurplusW);      // solar − consumption = margin
             energy.recordConsumption(at, minerDrawW);   // S = margin + minerDraw = availSurplus
         }
+    }
+
+    /**
+     * A fully valid live feed: a fresh online+metered snapshot AND fresh, well-covered windows, so
+     * the governor sees a trusted surplus {@code availSurplusW} for a miner drawing {@code minerDrawW}.
+     */
+    private void liveFeed(double availSurplusW, int minerDrawW) {
+        publishSnapshot(true, true, Instant.now());
+        feedEnergy(availSurplusW, minerDrawW);
     }
 
     private void neverActs() {
@@ -136,6 +146,26 @@ class MinerAutopilotTest {
         when(miner.refresh()).thenReturn(status(true, false, null));
         autopilot(true).tick();
         neverActs();
+    }
+
+    @Test void staleSnapshotStopsRunningMiner() {
+        // Windows are fresh, but the live snapshot is older than 4× the inverter poll interval
+        // (40 s) → the poller stalled → surplus unknown → stop.
+        when(miner.refresh()).thenReturn(status(true, true, 2800));
+        publishSnapshot(true, true, Instant.now().minusSeconds(120));
+        feedEnergy(3000, 2800);
+        autopilot(true).tick();
+        verify(miner).stop();
+    }
+
+    @Test void unmeteredSnapshotStopsRunningMiner() {
+        // Snapshot is online and fresh but consumption is not metered (Solar Analytics gated/stale)
+        // → the surplus can't be computed → stop, even though the windows still hold old samples.
+        when(miner.refresh()).thenReturn(status(true, true, 2800));
+        publishSnapshot(true, false, Instant.now());
+        feedEnergy(3000, 2800);
+        autopilot(true).tick();
+        verify(miner).stop();
     }
 
     // ------------------------------------------- suspended: skip (draws ~0 W)
@@ -201,6 +231,22 @@ class MinerAutopilotTest {
         liveFeed(3800, 1200);
         autopilot(true).tick();
         verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+    }
+
+    @Test void doesNotRampImmediatelyAfterResumingFromSuspension() {
+        // Guard against ramping on a surplus that was inflated while the miner was suspended (drawing
+        // ~0 W): once we've OBSERVED a suspension, a resume must re-arm the "mined long enough" clock
+        // rather than trusting the (unreset) service uptime.
+        var ap = autopilot(true);
+        when(miner.refresh()).thenReturn(suspended(2000));
+        liveFeed(4000, 2000);
+        ap.tick();                       // observe the suspension
+        clearInvocations(miner);
+        when(miner.refresh()).thenReturn(status(true, true, 2000, 600L)); // uptime says "long"
+        liveFeed(4000, 2000);
+        ap.tick();                       // resume — must NOT ramp yet
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+        verify(miner, never()).start();
     }
 
     // ---------------------------------------------------------------- step down

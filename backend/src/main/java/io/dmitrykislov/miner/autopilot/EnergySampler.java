@@ -37,7 +37,11 @@ public class EnergySampler {
         this.energy = energy;
     }
 
-    @Scheduled(fixedDelayString = "${house.inverter.poll-interval-ms:10000}", initialDelayString = "2000")
+    // Same cadence and initial delay as the inverter poller (there's nothing to sample until it has
+    // published a snapshot); keying the initial delay to the interval — rather than a fixed short
+    // value — also keeps the sampler quiet during fast manually-driven tests.
+    @Scheduled(fixedDelayString = "${house.inverter.poll-interval-ms:10000}",
+               initialDelayString = "${house.inverter.poll-interval-ms:10000}")
     public void sample() {
         InverterSnapshot snap = inverter.latest();
         if (snap == null || snap.timestamp() == null) return;

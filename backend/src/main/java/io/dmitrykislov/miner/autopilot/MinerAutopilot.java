@@ -55,9 +55,13 @@ public class MinerAutopilot {
     private volatile Instant evaluatedAt;
     private volatile String lastDecision;
     // When the miner began continuously mining (null when not mining). Drives the governor's
-    // "mined long enough for a valid up-average" guard; seeded from the miner's uptime on first
-    // observation so a long-running miner can ramp immediately after a controller restart.
+    // "mined long enough for a valid up-average" guard; seeded from the miner's uptime on the FIRST
+    // observation (so a long-running miner can ramp soon after a controller restart), but reset to
+    // "now" on an observed resume from a non-mining state — see trackMiningSince.
     private volatile Instant miningSince;
+    // The miner state observed on the previous tick (null before the first). Lets us tell a
+    // first-observation (trust uptime) from an observed resume (mining truly just (re)started).
+    private volatile String lastObservedState;
 
     public MinerAutopilot(EnergyAverages energy, InverterStreamService inverter,
                           MinerService minerService, HouseProperties props,
@@ -157,12 +161,23 @@ public class MinerAutopilot {
     private void trackMiningSince(MinerStatus st, Instant now) {
         if (MinerStatus.MINING.equals(st.state())) {
             if (miningSince == null) {
-                Long up = st.uptimeSeconds();
-                miningSince = (up != null && up > 0) ? now.minusSeconds(up) : now;
+                if (lastObservedState != null) {
+                    // We observed a non-mining state and now see mining → it truly just (re)started
+                    // (e.g. resume from SUSPENDED). Start the clock now so the up-average guard makes
+                    // the long window refill with real mining samples before any ramp — the window
+                    // was contaminated while the miner drew ~0 W.
+                    miningSince = now;
+                } else {
+                    // First observation after a controller restart: trust the miner's own uptime, so a
+                    // long-running miner isn't made to wait a whole long-window before it can ramp.
+                    Long up = st.uptimeSeconds();
+                    miningSince = (up != null && up > 0) ? now.minusSeconds(up) : now;
+                }
             }
         } else {
             miningSince = null; // suspended/stopped/offline breaks continuous mining
         }
+        lastObservedState = st.state();
     }
 
     private Instant lastChangeAt() {

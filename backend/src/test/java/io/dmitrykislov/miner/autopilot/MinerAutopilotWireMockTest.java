@@ -17,6 +17,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -39,6 +40,9 @@ import java.time.Instant;
  * snapshot yields a trusted average — otherwise a window would need 60 s of wall-clock data.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+// This context has live @Scheduled pollers (inverter/consumption/sampler/autopilot). Close it after
+// the class instead of leaving it cached, so those background tasks can't perturb later tests.
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class MinerAutopilotWireMockTest {
 
     static final MockMiner miner = new MockMiner();
@@ -220,6 +224,18 @@ class MinerAutopilotWireMockTest {
         solar.verifyNotFetched();     // gated off
         miner.verifyStopped();        // stale reading NOT reused → surplus unknown → safe stop
         miner.verifyNoPowerChange();  // did not step down on an optimistic stale surplus
+    }
+
+    @Test void starvedEnergyWindowsStopRunningMinerEvenWithLiveFeed() {
+        // Live feed is valid (online + metered + fresh) but the energy sampler never ran, so the
+        // rolling windows are empty → no trusted surplus → stop (a dead sampler must not look healthy).
+        inverter.solar(3.0); solar.consumption(1000); miner.mining(2800);
+        inverterPoller.poll(); solarAnalyticsClient.poll(); inverterPoller.poll();
+        // deliberately skip energySampler.sample()
+        miner.clearRequests();
+        autopilot.tick();
+        miner.verifyStopped();
+        miner.verifyNoPowerChange();
     }
 
     // ------------------------------------------- safety: feed unavailable → stop
