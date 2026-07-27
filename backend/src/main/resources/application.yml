@@ -20,9 +20,9 @@ spring:
     scheduling:
       pool:
         # One thread per @Scheduled task (inverter poll, consumption poll, energy sampler,
-        # autopilot tick, miner) so a blocked I/O poller can never delay the safety-critical
-        # autopilot tick.
-        size: ${SCHEDULING_POOL_SIZE:5}
+        # autopilot tick, miner poll, history recorder) so a blocked I/O poller can never delay
+        # the safety-critical autopilot tick.
+        size: ${SCHEDULING_POOL_SIZE:6}
   web:
     resources:
       # UI (built React app) is bundled here and served at "/"
@@ -86,6 +86,15 @@ house:
     fresh-within-ms: ${AUTOPILOT_FRESH_WITHIN_MS:90000}    # a feed older than this → surplus unknown
     short-coverage-ms: ${AUTOPILOT_SHORT_COVERAGE_MS:60000} # min span for a trusted short average
     long-coverage-ms: ${AUTOPILOT_LONG_COVERAGE_MS:300000}  # min span for a trusted long average
+
+  # --- Telemetry history: records solar/consumption/miner samples + autopilot changes ---
+  # A tiny file-backed store (append-only day-files under `dir`) for the UI trend chart. Keeps at
+  # most retention-days; older data is discarded from memory and disk.
+  history:
+    enabled: ${HISTORY_ENABLED:true}
+    dir: ${HISTORY_DIR:data/history}
+    record-interval-ms: ${HISTORY_RECORD_INTERVAL_MS:60000}  # one sample per minute
+    retention-days: ${HISTORY_RETENTION_DAYS:31}
 
 logging:
   level:

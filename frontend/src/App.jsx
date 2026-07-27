@@ -5,6 +5,7 @@ import { fmt, flow, minerView, formatDuration } from './logic.js'
 import { useEventSource } from './hooks.js'
 import { isAuthed, clearToken, authHeaders, withToken } from './auth.js'
 import Login from './Login.jsx'
+import HistoryChart from './HistoryChart.jsx'
 
 // ---------------------------------------------------------------- primitives
 
@@ -470,6 +471,8 @@ function Dashboard({ onLogout }) {
             <Kpi icon="thermometer" label="Inverter Temp" value={fmt(hl.temperatureC, 1)} unit="℃"
               info="Air temperature inside the inverter enclosure." />
           </div>
+
+          <HistoryChart authFetch={authFetch} />
 
           <section className="section">
             <div className="section-head">

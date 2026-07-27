@@ -8,6 +8,7 @@ A single, self-contained app that monitors a home solar setup and controls a Bit
 - **☀ Solar** — Sungrow **SG10RS** inverter via the WiNet-S local WebSocket API
 - **🏠 House consumption** — measured whole-home load from **Solar Analytics** (their CT monitoring) via their cloud API
 - **⚡ Autopilot** — optional smoothed control loop that ladder-tracks the **time-averaged** solar surplus to auto **start / step / stop** the miner, never importing from the grid; toggle it live from the UI
+- **📈 History** — a light, file-backed 1-month telemetry log drawn as an interactive **D3 chart** (solar / house / miner power over time) with hover-for-detail markers at every autopilot power change
 - **🔒 Access control** — a single password (stored only as a bcrypt hash) gates every endpoint with a bearer token
 
 The React UI and the Spring Boot backend build into **one runnable jar** (~22 MB). Everything is configured from `.env` — no hardcoded IPs, accounts, or secrets in the source. Lean enough to run on a **416 MB Raspberry Pi** (~140 MB RSS).
@@ -102,7 +103,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `SERVER_PORT` | `8080` | Backend + bundled UI |
 | `FRONTEND_PORT` | `5173` | Vite dev server (dev mode only) |
 | `LOG_LEVEL` | `INFO` | `io.dmitrykislov.miner` log level |
-| `SCHEDULING_POOL_SIZE` | `5` | One thread per scheduled task (inverter poll / consumption poll / energy sampler / autopilot tick / miner) so none blocks the others |
+| `SCHEDULING_POOL_SIZE` | `6` | One thread per scheduled task (inverter poll / consumption poll / energy sampler / autopilot tick / miner poll / history recorder) so none blocks the others |
 | `JAVA_OPTS` | _(blank)_ | Extra JVM flags. On a small Pi use the heap/footprint caps in `.env.example` (`-Xmx128m` + SerialGC + …) → ~140 MB RSS, no OOM |
 | **Inverter** | | Sungrow SG10RS / WiNet-S |
 | `INVERTER_HOST` | — | dongle LAN IP (required) |
@@ -143,6 +144,11 @@ All environment-specific values are driven by env vars — the source and `appli
 | `AUTOPILOT_FRESH_WITHIN_MS` | `90000` | a feed older than this ⇒ surplus unknown |
 | `AUTOPILOT_SHORT_COVERAGE_MS` | `60000` | min span for a trusted short average |
 | `AUTOPILOT_LONG_COVERAGE_MS` | `300000` | min span for a trusted long average |
+| **History** | | Telemetry log for the trend chart (see [History & trends](#history--trends-chart)) |
+| `HISTORY_ENABLED` | `true` | record telemetry + serve the chart |
+| `HISTORY_DIR` | `data/history` | append-only day-files live here (created if absent) |
+| `HISTORY_RECORD_INTERVAL_MS` | `60000` | how often a sample is appended |
+| `HISTORY_RETENTION_DAYS` | `31` | keep ~1 month, then discard (memory + disk) |
 | **Access control** | | Password gate (see [Access control](#access-control)) |
 | `AUTH_ENABLED` | `true` | when off, all endpoints are open (dev only) |
 | `AUTH_PASSWORD_HASH` | — | bcrypt hash of the UI password; blank ⇒ fail-closed (everything rejected) |
@@ -228,6 +234,7 @@ from step 1. To change the password later, regenerate the hash and restart. `htp
 
 - **Live Power Flow** hero: Solar → Home → Grid with animated connectors, and a side panel with a **self-sufficiency ring** and the **surplus margin** (`solar − house`). House consumption is measured by Solar Analytics and updates live (with a sparkline). When Solar Analytics isn't reporting, house and the margin show as **unavailable** (no assumed value).
 - **KPI row:** Today / Lifetime yield, grid frequency, inverter temperature. These promoted values are **not repeated** in the detail sections below (de-duplicated).
+- **History chart** (under the KPIs): interactive D3 trend of solar / house / miner power over **24h / 7d / 30d** with hover readouts and markers at every autopilot power change — see [History & trends chart](#history--trends-chart).
 - **Miner card:** honest state — **Mining / Suspended / Stopped / Offline** with reason (e.g. "no active pool"), live hashrate, power draw, **fan RPM**, uptime, pool count, editable **power target** + Apply, and **Start/Stop**.
 - **Inverter detail sections:** Energy, Power, Grid & AC, DC/PV, Device Status, Per-phase — every reading with an info tooltip (excludes the values already shown as KPIs / in the hero).
 - **Autopilot card:** On/Off badge, an Enable/Disable button, the last decision, and the last change it made (action, from→to power, time) — live over SSE.
@@ -238,6 +245,28 @@ from step 1. To change the password later, regenerate the hash and restart. `htp
 ---
 
 ## Smoothed solar-surplus autopilot
+
+### In plain terms
+
+The goal: **run the miner on spare solar you'd otherwise export, and never pay the grid to mine.**
+
+Think of the miner's power as a dial with fixed notches — `1200, 1600, 2000, … 3600 W` (the *ladder*). The autopilot's whole job is to keep that dial at the highest notch your **spare solar** can pay for, leaving a small safety buffer so you never import.
+
+"Spare solar" = how much the sun is making minus what the *rest of the house* is using (fridge, aircon, etc.). Solar Analytics measures the whole house — miner included — so the autopilot adds the miner's own draw back to work out the house-without-the-miner figure, and that's what's genuinely free for mining.
+
+Because clouds come and go, it doesn't react to the instantaneous number — it looks at **averages**:
+
+- **Turning up (or on) is slow and cautious.** It uses a **15-minute average** and only nudges up once that average has clearly been high for a while — at most **2 notches at a time, once every ~15 minutes**. Ramping gently avoids thermal shock to the miner and stops it chasing a sunny patch that won't last.
+- **Turning down (or off) is fast.** It watches a **3-minute average**, and if a real drop means the miner is now pulling more than the spare solar, it drops however many notches it takes — in one go. If it's pulling *a lot* more (≥ 800 W over), it reacts immediately instead of waiting.
+- **In between it just holds.** A little 50–100 W wobble never moves the dial, because the notches are 400 W apart — that spacing *is* the deadband.
+- **Start/stop don't flap.** It only starts when the 15-min spare is ≥ 1600 W, but keeps running down to a lower floor — so it can't rapidly toggle on/off around one threshold.
+- **If it can't see, it stops.** Inverter offline (night), the meter stops reporting, or a poller stalls → the true surplus is unknown → it safely stops a running miner rather than guess. (Right after a restart it *holds* a healthy miner for a minute while its averages fill, instead of stopping it.)
+
+Net effect: on a clear day it walks the miner up to full power and back down as the sun fades, ignores passing clouds, and the moment the maths says you'd import, it backs off — dropping straight to a safe notch (or off) in a single step.
+
+The knobs (all in `.env`): `FLOOR_W`, `STEP_W`, `HEADROOM_W` (the buffer), `START_SURPLUS_W`, the two averaging windows and intervals, and `EMERGENCY_GAP_W`. Defaults are tuned for the S19k Pro; the rest of this section is the precise mechanism.
+
+### The mechanism
 
 Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default**) that soaks up surplus solar by driving the miner across a fixed **power ladder** (`FLOOR_W .. MINER_MAX_POWER_W` by `STEP_W`, e.g. `1200, 1600, … 3600`). Rather than reacting to instantaneous readings, it tracks the **time-averaged** surplus so brief clouds are ridden through. Every `AUTOPILOT_INTERVAL_MS` (30 s) it reads the miner state and the averaged surplus, then decides via a pure, exhaustively-tested governor.
 
@@ -268,6 +297,15 @@ The engine lives in `RollingWindow` / `EnergyAverages` / `AutopilotGovernor` (al
 
 ---
 
+## History & trends chart
+
+A lightweight, **file-backed** telemetry log feeds an interactive **D3 chart** under the KPI row, so you can see how solar, house load and miner power moved together and exactly when the autopilot changed things.
+
+- **What's recorded** (`io.dmitrykislov.miner.history`): once a minute the `TelemetryRecorder` appends one sample — solar (W), house consumption (W), miner power target + live draw (W), miner state — read from the same in-memory snapshots the SSE streams already serve (no extra device I/O). Every autopilot power change is recorded as a discrete **event** (action, from→to, reason).
+- **Storage is deliberately tiny** — no database. Append-only text files, one per UTC day, under `HISTORY_DIR` (default `data/history`): `samples-YYYY-MM-DD.log` (comma-separated) and `events-YYYY-MM-DD.log` (tab-separated). A month at one sample/minute is ~5 MB on disk and a few MB in heap — fine for a Raspberry Pi. Files (and in-memory rows) older than `HISTORY_RETENTION_DAYS` (default **31**) are discarded automatically; the store reloads on restart.
+- **The chart** (`GET /api/history?hours=`): pick **24h / 7d / 30d**. Three lines — Solar, Home, Miner — with the miner line breaking to a gap when it's off. Server-side **downsampling** caps each request to ~1500 points so even a month draws smoothly. **Hover the plot** for a readout at that instant (solar / home / miner / surplus); **hover a change marker** (the dashed verticals) to see the autopilot action, the from→to power, and the reason. It refreshes every minute.
+- **Turn it off** with `HISTORY_ENABLED=false` (nothing is recorded and the chart shows an empty state).
+
 ## Notable device details
 
 - **Sungrow SG10RS / WiNet-S** — real-time data comes from the dongle's local WebSocket API (`wss://…/ws/home/overview`): `connect` → `login` → `devicelist` → `real`/`direct`. (Modbus TCP :502 exists but is firewalled while you're on the dongle's own WiFi AP.) The dongle's self-signed cert has no SAN, so hostname verification is disabled for these LAN clients (set once in `main()`).
@@ -284,7 +322,7 @@ mvn clean install     # 182 backend + 57 UI tests (UI tests run as part of the b
 cd backend && mvn test # backend only (182)
 ```
 
-Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, divergent short/long windows, emergency + stop boundaries, never-import property sweep, config guards) — the autopilot **orchestration** (live-state re-verification, feed validity), and an **end-to-end WireMock** test that boots the full Spring context and drives the real surplus chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.
+Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, divergent short/long windows, emergency + stop boundaries, never-import property sweep, config guards) — the autopilot **orchestration** (live-state re-verification, feed validity), and an **end-to-end WireMock** test that boots the full Spring context and drives the real surplus chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. The **history** layer is covered too — the file-backed `TelemetryStore` (record/query, retention pruning of memory + day-files, restart persistence, line (de)serialization incl. corrupt-line skipping), the `TelemetryRecorder` (building a sample from the cached streams, once-only event capture), `Downsampling`, and the `HistoryController` (window clamping + downsampling); the React D3 chart has its own Vitest suite (series, event markers + hover detail, window switching, empty state). **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.
 
 ---
 
