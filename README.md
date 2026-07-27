@@ -1,12 +1,16 @@
 # House Energy Monitor & Miner Controller
 
-A single, self-contained app that monitors a home solar setup and controls a Bitcoin miner, in real time:
+A single, self-contained app that monitors a home solar setup and controls a Bitcoin miner in real time — and can **automatically run the miner on surplus solar**.
+
+![Dashboard](screenshot.png)
 
 - **⛏ Miner** — **Braiins OS+** (Antminer S19k Pro) via its local GraphQL API — start/stop, set power target, live status & fans
 - **☀ Solar** — Sungrow **SG10RS** inverter via the WiNet-S local WebSocket API
 - **🏠 House consumption** — measured whole-home load from **Solar Analytics** (their CT monitoring) via their cloud API
+- **⚡ Autopilot** — optional solar-margin control loop that auto **starts / steps / stops** the miner to soak up surplus solar, never importing from the grid; toggle it live from the UI
+- **🔒 Access control** — a single password (stored only as a bcrypt hash) gates every endpoint with a bearer token
 
-The React UI and the Spring Boot backend build into **one runnable jar**. Everything is configured from `.env` — no hardcoded IPs, accounts, or secrets in the source.
+The React UI and the Spring Boot backend build into **one runnable jar** (~22 MB). Everything is configured from `.env` — no hardcoded IPs, accounts, or secrets in the source. Lean enough to run on a **416 MB Raspberry Pi** (~140 MB RSS).
 
 ---
 
@@ -52,11 +56,11 @@ miner-controller/
 Prerequisites: **Java 21+, Maven, Node/npm**, and a `.env` file (copy from `.env.example`).
 
 ```bash
-cp .env.example .env      # then edit with your device IPs / credentials
+cp .env.example .env      # then edit: device IPs/credentials + set the UI password hash (see Access control)
 ./start.sh                # build UI + backend into the jar, then run
 ```
 
-Open **http://localhost:8080** (or whatever `SERVER_PORT` you set).
+Open **http://localhost:8899** (the `SERVER_PORT` in `.env.example`; the app's built-in default is `8080`) and log in with the password whose hash you put in `.env`.
 
 ### `start.sh` modes
 
@@ -71,11 +75,20 @@ Open **http://localhost:8080** (or whatever `SERVER_PORT` you set).
 
 ### Deploy to a remote host (`deploy.sh`)
 
-`./deploy.sh` builds the jar locally (UI + tests) and deploys it over SSH: copies a staged jar, stops the running app, swaps it in, starts it detached, and waits for it to serve. The remote `.env` is left untouched (device config + `AUTOPILOT_ENABLED` are managed there). Connection settings come from env vars (with sensible defaults):
+`./deploy.sh` builds the jar locally and swaps it onto the remote host over SSH, safely:
+
+1. preflight the SSH connection, build (UI + tests unless `SKIP_TESTS=1`), and `scp` a staged `<jar>.new`;
+2. **verify the jar's sha256** on the remote before touching anything;
+3. stop the old app, **free `SERVER_PORT`** (kills whatever still listens on it), keep the previous jar as `<jar>.bak`;
+4. start the new jar detached with the `.env`'s `JAVA_OPTS`, then health-check `/api/system` (a `401` counts as "up" — auth is on);
+5. **auto-roll-back** to `.bak` if the new jar doesn't become healthy.
+
+The remote `.env` is **not** modified — device config, `AUTOPILOT_ENABLED`, the auth hash, and `JAVA_OPTS` are managed on the device (copy your `.env` there once). Connection settings come from the local (git-ignored) `.env` or env vars:
 
 ```bash
+# put these in .env, or pass inline:
 DEPLOY_HOST=<ip> DEPLOY_PORT=<port> DEPLOY_USER=<user> DEPLOY_KEY=<path.pem> ./deploy.sh
-SKIP_TESTS=1 ./deploy.sh   # build without re-running tests
+SKIP_TESTS=1 ./deploy.sh   # build without re-running the test suites
 ```
 
 ---
@@ -90,6 +103,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `FRONTEND_PORT` | `5173` | Vite dev server (dev mode only) |
 | `LOG_LEVEL` | `INFO` | `io.dmitrykislov.miner` log level |
 | `SCHEDULING_POOL_SIZE` | `4` | One thread per scheduled task (inverter/consumption/miner/autopilot) so none blocks the others |
+| `JAVA_OPTS` | _(blank)_ | Extra JVM flags. On a small Pi use the heap/footprint caps in `.env.example` (`-Xmx128m` + SerialGC + …) → ~140 MB RSS, no OOM |
 | **Inverter** | | Sungrow SG10RS / WiNet-S |
 | `INVERTER_HOST` | — | dongle LAN IP (required) |
 | `INVERTER_PORT` | `443` | |
@@ -156,17 +170,34 @@ Every endpoint except `/api/auth/login` (and static assets) requires the token �
 All endpoints are protected by a single shared password. The password is never stored or
 committed in plaintext — only its **bcrypt** hash lives in `.env` (`AUTH_PASSWORD_HASH`).
 
-**Generate the hash** for your chosen password (the single quotes matter — a bcrypt hash
-contains `$`, which the shell would otherwise try to expand):
+### Configure the password (3 steps)
+
+**1 — Generate a bcrypt hash** of your chosen password. The single quotes matter: a bcrypt
+hash contains `$`, which the shell would otherwise expand.
 
 ```bash
-# prints the $2y$… hash; paste it into .env, single-quoted
+# with Apache htpasswd (-B = bcrypt, C 10 = cost factor 10); prints just the $2y$… hash
 htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n'
-# .env →  AUTH_PASSWORD_HASH='$2y$10$....'
+
+# no htpasswd? any bcrypt tool works, e.g. Python:
+python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(10)).decode())"
 ```
 
-(`-B` = bcrypt, `C 10` = cost factor 10. No `htpasswd`? Any bcrypt tool works, e.g.
-`python3 -c "import bcrypt;print(bcrypt.hashpw(b'your-password',bcrypt.gensalt(10)).decode())"`.)
+**2 — Put it in `.env`, single-quoted** (so `source .env` doesn't mangle the `$`):
+
+```bash
+AUTH_ENABLED=true
+AUTH_PASSWORD_HASH='$2y$10$Xa9....(the hash from step 1)....'
+AUTH_TOKEN_TTL_DAYS=30           # how long a login lasts
+```
+
+**3 — Restart the app** (or redeploy). Open the UI and log in with the *plaintext* password
+from step 1. To change the password later, regenerate the hash and restart. `htpasswd`'s
+`$2y$` hashes are accepted (Spring's `BCryptPasswordEncoder` handles `$2a/$2b/$2y`).
+
+> Set `AUTH_ENABLED=false` only for local dev — it opens every endpoint. In production keep it
+> `true` and always set a hash (a blank hash while enabled is **fail-closed**: all requests are
+> rejected, so a misconfig can never leave the app open).
 
 **How it works:**
 - The UI shows a password page until you log in. `POST /api/auth/login` checks the password
@@ -243,15 +274,21 @@ Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jac
 
 ## Resource usage
 
-Bundled jar (backend + UI), idle at steady state (pollers every 10 s):
+Bundled jar (backend + UI), idle at steady state, running with the Pi footprint caps
+(`JAVA_OPTS` from `.env.example`: `-Xmx128m` + SerialGC + capped metaspace/stacks +
+`TieredStopAtLevel=1` + lazy-init):
 
 | Metric | Value |
 |---|---|
-| Resident memory (RSS) | ~210 MB |
-| JVM heap used / committed | ~38 MB / ~69 MB (G1) |
+| Resident memory (RSS) | **~140 MB** (measured on the Pi) |
+| JVM heap | 128 MB cap; only a few MB live at idle (SerialGC, 1 GC thread) |
 | CPU (idle) | ~0% |
-| Jar size | ~34 MB |
-| Startup | ~1–2 s |
+| Jar size | **~22 MB** (HTTP/3 QUIC native libs excluded) |
+| Startup | ~1–2 s on a laptop; ~25 s on a 416 MB Pi (weak CPU + lazy-init) |
+
+Without those caps the JVM's default ergonomic heap + startup JIT spike can OOM a 416 MB Pi;
+the `JAVA_OPTS` in `.env.example` keep it at ~140 MB RSS with ~140 MB headroom. See
+[Configuration](#configuration-env).
 
 ---
 
@@ -259,6 +296,8 @@ Bundled jar (backend + UI), idle at steady state (pollers every 10 s):
 
 - **Miner needs a live pool to actually mine.** With no reachable pool configured, BOSMiner starts but sits **Suspended** ("dead pools"). There is no API to force hashing without a pool. On an isolated IoT network the miner also can't resolve `stratum.braiins.com` (no DNS/internet), which keeps pools "dead".
 - Several devices are cloud/internet-isolated on the LAN (Eero), which is why cloud paths and pool/NTP connectivity fail — a network concern, not an app one.
+- **No TLS.** The UI and login are served over plain HTTP, so the password crosses the network in cleartext — fine on a trusted LAN, but put it behind a TLS reverse proxy if you expose it beyond your network.
+- **No auto-start on boot.** `start.sh`/`deploy.sh` launch the jar detached (not a systemd service), so it won't survive a device reboot. Add a small `systemd` unit (running `java $JAVA_OPTS -jar …` with `Restart=always`) if you need it to come back automatically.
 
 ---
 
