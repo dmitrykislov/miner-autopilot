@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { scaleTime, scaleLinear } from 'd3-scale'
-import { line } from 'd3-shape'
+import { line, area } from 'd3-shape'
 import { max, bisector } from 'd3-array'
 import { timeFormat } from 'd3-time-format'
-import { historyWindow, daylightExtent } from './logic.js'
+import { historyWindow, daylightExtent, pointerToSvgX } from './logic.js'
 
 // Selectable windows. Fixed spans, plus "Today" (the solar-active part of the current day).
 const WINDOWS = [
@@ -117,11 +117,29 @@ export default function HistoryChart({ authFetch }) {
     d: line().defined((p) => p[s.key] != null).x((p) => x(p.date)).y((p) => y(p[s.key]))(samples),
   })), [samples, x, y])
 
+  // Sign-coloured fill of the Solar↔Home difference: green where solar ≥ home (surplus), red where
+  // solar < home (deficit). The band between the two lines is drawn once, then clipped to the region
+  // above the Home line (→ surplus only) and again to the region below it (→ deficit only). The clip
+  // geometry splits at each crossing automatically, so no manual crossing interpolation is needed.
+  const fills = useMemo(() => {
+    const hasBoth = (p) => p.solarW != null && p.consumptionW != null
+    const hasHouse = (p) => p.consumptionW != null
+    const px = (p) => x(p.date)
+    const top = M.top, bottom = M.top + plotH
+    return {
+      band: area().defined(hasBoth).x(px).y0((p) => y(p.consumptionW)).y1((p) => y(p.solarW))(samples),
+      aboveHouse: area().defined(hasHouse).x(px).y0(() => top).y1((p) => y(p.consumptionW))(samples),
+      belowHouse: area().defined(hasHouse).x(px).y0(() => bottom).y1((p) => y(p.consumptionW))(samples),
+    }
+  }, [samples, x, y, plotH])
+
   const onMove = (e) => {
     if (!samples.length) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const date = x.invert(e.clientX - rect.left)
-    const sample = samples[Math.max(0, Math.min(samples.length - 1, bisectDate(samples, date)))]
+    const svg = e.currentTarget.ownerSVGElement
+    if (!svg) return
+    const r = svg.getBoundingClientRect()
+    const svgX = pointerToSvgX(e.clientX, r.left, r.width, w)   // cursor → internal SVG x (scale-correct)
+    const sample = samples[Math.max(0, Math.min(samples.length - 1, bisectDate(samples, x.invert(svgX))))]
     if (sample) setHover({ sample, x: x(sample.date) })
   }
 
@@ -164,6 +182,8 @@ export default function HistoryChart({ authFetch }) {
             <span className="hleg-dot" style={{ background: s.color }} /> {s.label}
           </span>
         ))}
+        <span className="hleg"><span className="hleg-fill surplus" /> Surplus</span>
+        <span className="hleg"><span className="hleg-fill deficit" /> Deficit</span>
         <span className="hleg hleg-event"><span className="hleg-mark" /> Power change</span>
       </div>
 
@@ -189,6 +209,16 @@ export default function HistoryChart({ authFetch }) {
             {xTicks.map((t, i) => (
               <text key={`x${i}`} x={x(t)} y={H - 8} textAnchor="middle" className="axis-label">{fmtTick(t)}</text>
             ))}
+
+            {/* solar-vs-home difference, coloured by sign (surplus green / deficit red) */}
+            <defs>
+              <clipPath id="hist-clip-surplus"><path d={fills.aboveHouse || ''} /></clipPath>
+              <clipPath id="hist-clip-deficit"><path d={fills.belowHouse || ''} /></clipPath>
+            </defs>
+            <path d={fills.band || ''} className="surplus-fill" clipPath="url(#hist-clip-surplus)"
+              data-testid="history-surplus-fill" />
+            <path d={fills.band || ''} className="deficit-fill" clipPath="url(#hist-clip-deficit)"
+              data-testid="history-deficit-fill" />
 
             {events.map((ev, i) => (
               <g key={`ev${i}`} className="hevent"

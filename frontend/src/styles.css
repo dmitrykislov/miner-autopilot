@@ -384,3 +384,10 @@ body {
   font-weight: 600; color: var(--text); min-width: 150px; }
 .history-range .live-dot { background: var(--good); }
 .hbtn.hnow { border: 1px solid var(--border-soft); }
+
+/* history: solar-vs-home difference fill */
+.history-svg .surplus-fill { fill: var(--export); fill-opacity: 0.16; }
+.history-svg .deficit-fill { fill: var(--import); fill-opacity: 0.20; }
+.hleg-fill { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.hleg-fill.surplus { background: var(--export); opacity: 0.55; }
+.hleg-fill.deficit { background: var(--import); opacity: 0.6; }

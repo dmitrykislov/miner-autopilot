@@ -69,6 +69,17 @@ export function historyWindow(win, offset, nowMs) {
 }
 
 /**
+ * Convert a mouse `clientX` into the chart's internal SVG x-coordinate, correcting for the SVG's
+ * on-screen scale (its rendered width vs its internal coordinate width). Using the SVG's own
+ * bounding box — not the inner plot rect — keeps the crosshair exactly under the cursor regardless
+ * of container width / browser zoom, and never forces the pointer outside the plot to reach an edge.
+ */
+export function pointerToSvgX(clientX, rectLeft, rectWidth, svgWidth) {
+  if (!rectWidth) return 0
+  return ((clientX - rectLeft) / rectWidth) * svgWidth
+}
+
+/**
  * The solar-active span within a set of samples: [firstMs, lastMs] of the samples whose solar
  * exceeds `thresholdW` — i.e. "from the moment solar appears to the moment it disappears". Returns
  * null when there is no (or only a single instant of) solar, so callers can fall back to the full

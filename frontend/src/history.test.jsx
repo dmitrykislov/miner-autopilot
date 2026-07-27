@@ -74,6 +74,27 @@ describe('HistoryChart', () => {
     expect((miner.getAttribute('d').match(/M/g) || []).length).toBeGreaterThan(1)
   })
 
+  it('renders the sign-coloured solar↔home difference fill', async () => {
+    render(<HistoryChart authFetch={fakeFetch(payload())} />)
+    const surplus = await screen.findByTestId('history-surplus-fill')
+    const deficit = screen.getByTestId('history-deficit-fill')
+    // both are the same band path, clipped to above/below the home line respectively
+    expect(surplus.getAttribute('d')).toBeTruthy()
+    expect(deficit.getAttribute('d')).toBeTruthy()
+    expect(surplus.getAttribute('clip-path')).toContain('surplus')
+    expect(deficit.getAttribute('clip-path')).toContain('deficit')
+  })
+
+  it('shows a plot readout on hover (solar / home / surplus)', async () => {
+    render(<HistoryChart authFetch={fakeFetch(payload())} />)
+    const overlay = await screen.findByTestId('history-overlay')
+    fireEvent.mouseMove(overlay, { clientX: 400 })
+    const tip = await screen.findByTestId('history-tooltip')
+    expect(tip.textContent).toMatch(/Solar/)
+    expect(tip.textContent).toMatch(/Home/)
+    expect(tip.textContent).toMatch(/Surplus/)
+  })
+
   it('reveals power-change details on marker hover', async () => {
     render(<HistoryChart authFetch={fakeFetch(payload())} />)
     const marker = await screen.findByTestId('history-event')
@@ -120,6 +141,8 @@ describe('HistoryChart', () => {
     expect(screen.getByText('Solar')).toBeInTheDocument()
     expect(screen.getByText('Home')).toBeInTheDocument()
     expect(screen.getByText('Miner')).toBeInTheDocument()
+    expect(screen.getByText('Surplus')).toBeInTheDocument()
+    expect(screen.getByText('Deficit')).toBeInTheDocument()
     expect(screen.getByText('Power change')).toBeInTheDocument()
     await screen.findByTestId('history-line-solarW')
   })

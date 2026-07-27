@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fmt, flow, formatUptime, formatDuration, minerView, historyWindow, daylightExtent } from './logic.js'
+import { fmt, flow, formatUptime, formatDuration, minerView, historyWindow, daylightExtent, pointerToSvgX } from './logic.js'
 
 describe('fmt', () => {
   it('renders "--" for non-numeric / missing values', () => {
@@ -200,5 +200,21 @@ describe('daylightExtent', () => {
       { at: iso(11), solarW: 500 },
     ]
     expect(daylightExtent(samples, 50)).toEqual([Date.parse(iso(9)), Date.parse(iso(11))])
+  })
+})
+
+describe('pointerToSvgX', () => {
+  it('maps the cursor into internal SVG coordinates', () => {
+    // SVG rendered at 200px wide starting at x=100 on screen; internal coord width 400.
+    expect(pointerToSvgX(100, 100, 200, 400)).toBe(0)     // at the left edge → 0
+    expect(pointerToSvgX(300, 100, 200, 400)).toBe(400)   // at the right edge → svgWidth
+    expect(pointerToSvgX(150, 100, 200, 400)).toBe(100)   // 25% across → 25% of 400
+    expect(pointerToSvgX(200, 100, 200, 400)).toBe(200)   // halfway (scaled) → svgWidth/2
+  })
+  it('is scale-correct: when render width == internal width it is a plain offset', () => {
+    expect(pointerToSvgX(250, 50, 800, 800)).toBe(200) // 250-50 = 200, no scaling
+  })
+  it('guards against a zero-width rect (pre-layout / jsdom)', () => {
+    expect(pointerToSvgX(123, 0, 0, 960)).toBe(0)
   })
 })
