@@ -3,69 +3,81 @@ package io.dmitrykislov.miner.autopilot;
 import io.dmitrykislov.miner.braiins.MinerService;
 import io.dmitrykislov.miner.braiins.MinerStatus;
 import io.dmitrykislov.miner.config.HouseProperties;
+import io.dmitrykislov.miner.inverter.InverterStreamService;
+import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.util.OptionalDouble;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Solar-margin autopilot. Every {@code house.autopilot.interval-ms} (default 30 s)
- * it reads a <b>fresh</b> miner state and the current power margin, asks the pure
- * {@link MinerAutopilotPlanner} what to do, and applies it via {@link MinerService}.
- * Off by default (it drives real mining hardware); can be toggled at runtime via the UI.
+ * Smoothed solar-surplus autopilot. Every {@code house.autopilot.interval-ms} (default 30 s) it
+ * reads a <b>fresh</b> miner state and the time-averaged surplus signals, asks the pure
+ * {@link AutopilotGovernor} what to do, and applies it via {@link MinerService}. Off by default
+ * (it drives real mining hardware); can be toggled at runtime via the UI.
+ *
+ * <p>The averaging engine ({@link EnergyAverages}, fed by {@link EnergySampler}) rides through brief
+ * clouds; the governor quantizes power onto a ladder, dampens ramp-up, and reacts fast on drops. See
+ * {@link AutopilotGovernor} for the decision model.
  *
  * <p>State handling is deliberately conservative:
  * <ul>
- *   <li>every tick starts with a <b>live</b> {@link MinerService#refresh()} — never a
- *       cached status — so decisions use the miner's actual on/off state and power target;</li>
- *   <li>each mutating operation <b>re-verifies</b> the miner state immediately before it
- *       runs (start only if still off, step only if still mining, stop only if still
- *       running), so a state change between decision and action can't cause a wrong op.</li>
+ *   <li>every tick starts with a <b>live</b> {@link MinerService#refresh()} — never a cached
+ *       status — so decisions use the miner's actual on/off state and power target;</li>
+ *   <li>the surplus is trusted only when the live feed is valid <em>now</em> (inverter online,
+ *       consumption metered, snapshot fresh) <b>and</b> the rolling windows are fresh — otherwise
+ *       the governor is told {@code dataFresh = false} and stops a running miner for safety;</li>
+ *   <li>each mutating operation <b>re-verifies</b> the miner state immediately before it runs
+ *       (start only if still off, step only if still mining, stop only if still running), so a
+ *       state change between decision and action can't cause a wrong op.</li>
  * </ul>
- *
- * <p>It also tracks a UI-facing {@link AutopilotStatus}: the last decision and the details
- * of the last change it actually made, published to {@link AutopilotStreamService}.
  */
 @Service
 public class MinerAutopilot {
 
     private static final Logger log = LoggerFactory.getLogger(MinerAutopilot.class);
 
-    private final MarginSource marginSource;
+    private final EnergyAverages energy;
+    private final InverterStreamService inverter;
     private final MinerService minerService;
-    private final HouseProperties.Autopilot cfg;
     private final HouseProperties.Miner minerCfg;
-    private final MinerAutopilotPlanner planner;
+    private final AutopilotGovernor governor;
     private final AutopilotStreamService statusStream;
+    private final Duration maxSnapshotAge;
 
     private final AtomicBoolean enabled = new AtomicBoolean(false);
     private final AtomicReference<AutopilotStatus.Change> lastChange = new AtomicReference<>();
     private volatile Instant evaluatedAt;
     private volatile String lastDecision;
+    // When the miner began continuously mining (null when not mining). Drives the governor's
+    // "mined long enough for a valid up-average" guard; seeded from the miner's uptime on first
+    // observation so a long-running miner can ramp immediately after a controller restart.
+    private volatile Instant miningSince;
 
-    public MinerAutopilot(MarginSource marginSource, MinerService minerService,
-                          HouseProperties props, AutopilotStreamService statusStream) {
-        this.marginSource = marginSource;
+    public MinerAutopilot(EnergyAverages energy, InverterStreamService inverter,
+                          MinerService minerService, HouseProperties props,
+                          AutopilotStreamService statusStream) {
+        this.energy = energy;
+        this.inverter = inverter;
         this.minerService = minerService;
-        this.cfg = props.autopilot();
         this.minerCfg = props.miner();
         this.statusStream = statusStream;
-        this.planner = new MinerAutopilotPlanner(
-                minerCfg.minPowerW(), minerCfg.maxPowerW(),
-                cfg.startMarginW(), cfg.lowMarginW(), cfg.stepW());
+        HouseProperties.Autopilot cfg = props.autopilot();
+        this.governor = new AutopilotGovernor(new AutopilotGovernor.Config(
+                cfg.floorW(), minerCfg.maxPowerW(), cfg.stepW(), cfg.headroomW(), cfg.startSurplusW(),
+                Duration.ofMillis(cfg.upIntervalMs()), Duration.ofMillis(cfg.downIntervalMs()),
+                Duration.ofMillis(cfg.longWindowMs()), cfg.upMaxRungsPerCycle(), cfg.emergencyGapW()));
+        // Tolerate a few missed/slow inverter polls, but treat a longer gap as "no longer known":
+        // a stalled poller keeps handing back its last snapshot, so without this the surplus could
+        // be piloted on stale data. 4× the poll interval rides out transient GC/scheduling jitter.
+        this.maxSnapshotAge = Duration.ofMillis(Math.max(1L, props.inverter().pollIntervalMs()) * 4);
         this.enabled.set(cfg.enabled());
         this.lastDecision = cfg.enabled() ? "enabled — awaiting first evaluation" : "disabled";
-        if (cfg.enabled()
-                && !MinerAutopilotPlanner.isStableConfig(cfg.startMarginW(), cfg.lowMarginW(), cfg.stepW())) {
-            log.warn("Autopilot thresholds may oscillate: deadzone {}W < step {}W. "
-                            + "Set start-margin ≥ low-margin + step (e.g. {}W) to stabilise.",
-                    cfg.startMarginW() - cfg.lowMarginW(), cfg.stepW(), cfg.lowMarginW() + cfg.stepW());
-        }
         statusStream.publish(status());
     }
 
@@ -104,6 +116,7 @@ public class MinerAutopilot {
     }
 
     private void evaluate() {
+        Instant now = Instant.now();
         // Always start from a fresh, live miner state.
         MinerStatus st = minerService.refresh();
         if (st == null || !st.reachable()) {
@@ -112,37 +125,49 @@ public class MinerAutopilot {
             return;
         }
 
-        OptionalDouble margin = marginSource.currentMarginWatts();
-        if (margin.isEmpty()) {
-            // The margin is unknowable: either solar is unavailable (inverter offline →
-            // treat as no generation) or house consumption is unavailable (Solar Analytics
-            // stale/offline → draw could be anything). It is unsafe to keep mining on a
-            // guess, so stop the miner if it is running.
-            if (st.running()) {
-                lastDecision = "margin unknown (solar or consumption unavailable) — stopping miner for safety";
-                log.info("autopilot: {}", lastDecision);
-                stopIfRunning(lastDecision);
-            } else {
-                lastDecision = "margin unknown and miner already off — nothing to do";
-                log.debug("autopilot: {}", lastDecision);
-            }
-            return;
-        }
-        // While SUSPENDED the service is up but draws ~0 W, so its draw is NOT reflected in
-        // the margin — the planner's "margin already includes the miner" assumption breaks
-        // and it would ramp on phantom surplus. Skip: autopilot can't fix a suspension anyway.
-        if (MinerStatus.SUSPENDED.equals(st.state())) {
-            lastDecision = "miner suspended (draw not in margin) — skipping";
-            log.debug("autopilot: {}", lastDecision);
-            return;
-        }
+        trackMiningSince(st, now);
 
-        boolean mining = MinerStatus.MINING.equals(st.state());
-        int current = st.powerTargetW() != null ? st.powerTargetW() : minerCfg.minPowerW();
-        AutopilotDecision d = planner.decide(margin.getAsDouble(), mining, current);
+        // The surplus is trustworthy only if the live feed is valid right now AND the rolling
+        // windows are fresh. feedValid catches an offline/unmetered/stalled inverter immediately
+        // (a stronger, instantaneous signal than window staleness); energy.dataFresh catches a
+        // dead sampler. Either failing → the governor treats the surplus as unknown.
+        boolean dataFresh = feedValid(now) && energy.dataFresh(now);
+        EnergyAverages.Signals sig = energy.signals(now);
+
+        AutopilotGovernor.Input input = new AutopilotGovernor.Input(
+                now, st.reachable(), st.running(), MinerStatus.SUSPENDED.equals(st.state()),
+                st.powerTargetW(), miningSince, lastChangeAt(), dataFresh,
+                sig.shortMarginW(), sig.longMarginW());
+
+        AutopilotDecision d = governor.decide(input);
         lastDecision = d.reason();
         log.info("autopilot: {}", d.reason());
         apply(d);
+    }
+
+    /** True when the latest inverter snapshot is online, consumption-metered, and fresh. */
+    private boolean feedValid(Instant now) {
+        InverterSnapshot snap = inverter.latest();
+        return snap != null && snap.online()
+                && snap.powerBalance() != null && snap.powerBalance().consumptionMetered()
+                && snap.timestamp() != null
+                && Duration.between(snap.timestamp(), now).compareTo(maxSnapshotAge) <= 0;
+    }
+
+    private void trackMiningSince(MinerStatus st, Instant now) {
+        if (MinerStatus.MINING.equals(st.state())) {
+            if (miningSince == null) {
+                Long up = st.uptimeSeconds();
+                miningSince = (up != null && up > 0) ? now.minusSeconds(up) : now;
+            }
+        } else {
+            miningSince = null; // suspended/stopped/offline breaks continuous mining
+        }
+    }
+
+    private Instant lastChangeAt() {
+        AutopilotStatus.Change c = lastChange.get();
+        return c != null ? c.at() : null;
     }
 
     private void apply(AutopilotDecision d) {
@@ -163,7 +188,7 @@ public class MinerAutopilot {
             log.info("autopilot: miner already running — skipping start");
             return;
         }
-        minerService.setPowerTarget(target, true); // start at the min power target
+        minerService.setPowerTarget(target, true); // start at the floor power target
         minerService.start();
         recordChange("START", null, target, reason);
     }

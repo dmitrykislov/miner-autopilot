@@ -14,26 +14,45 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.time.Duration;
 import java.time.Instant;
 
 /**
- * End-to-end autopilot test that boots the <b>entire Spring Boot context</b> and drives
- * the real margin chain — solar (inverter) − house consumption (Solar Analytics) →
- * {@code PowerBalance} → {@link LiveMarginSource} → {@link MinerAutopilot} — against
- * simulated devices ({@link MockMiner}, {@link MockSolarAnalytics}, {@link MockInverter}).
+ * End-to-end autopilot test that boots the <b>entire Spring Boot context</b> and drives the real
+ * chain — solar (inverter) + house consumption (Solar Analytics) → {@code PowerBalance} →
+ * {@link EnergySampler} → {@link EnergyAverages} → {@link AutopilotGovernor} → {@link MinerAutopilot}
+ * — against simulated devices ({@link MockMiner}, {@link MockSolarAnalytics}, {@link MockInverter}).
  *
- * <p>Each test reads as: arrange solar / consumption / miner state, run one tick, assert
- * the exact miner API calls. Limits: min 800, max 3600, start 1000, low 100, step 1000.
+ * <p>Each test reads as: arrange solar / consumption / miner state, run one tick, assert the exact
+ * miner API calls. Ladder config: floor 1200, ceil 3600, step 400, headroom 200, start-surplus 1600,
+ * up-max-rungs 2, emergency-gap 800. The governor's decision logic is unit-tested in
+ * {@link AutopilotGovernorTest}; here we assert the wiring end to end.
+ *
+ * <p>The energy engine is overridden with a zero-coverage instance (below) so a single sampled
+ * snapshot yields a trusted average — otherwise a window would need 60 s of wall-clock data.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class MinerAutopilotWireMockTest {
 
     static final MockMiner miner = new MockMiner();
     static final MockSolarAnalytics solar = new MockSolarAnalytics();
+
+    @TestConfiguration
+    static class ZeroCoverageEnergy {
+        /** Generous windows + zero coverage so one sampled snapshot is enough (no 60 s wait). */
+        @Bean @Primary
+        EnergyAverages testEnergyAverages() {
+            return new EnergyAverages(Duration.ofMinutes(5), Duration.ofMinutes(5),
+                    Duration.ofMinutes(5), Duration.ZERO, Duration.ZERO);
+        }
+    }
 
     @DynamicPropertySource
     static void wire(DynamicPropertyRegistry r) {
@@ -50,9 +69,23 @@ class MinerAutopilotWireMockTest {
         r.add("auth.enabled", () -> false);              // no HTTP here; keep the context quiet
         r.add("house.autopilot.enabled", () -> true);    // never fires on its own — we call tick()
         r.add("house.autopilot.interval-ms", () -> 3_600_000);
-        r.add("house.autopilot.start-margin-w", () -> 1000);
-        r.add("house.autopilot.low-margin-w", () -> 100);
-        r.add("house.autopilot.step-w", () -> 1000);
+        // Ladder shape:
+        r.add("house.autopilot.floor-w", () -> 1200);
+        r.add("house.autopilot.step-w", () -> 400);
+        r.add("house.autopilot.headroom-w", () -> 200);
+        r.add("house.autopilot.start-surplus-w", () -> 1600);
+        r.add("house.autopilot.up-max-rungs-per-cycle", () -> 2);
+        r.add("house.autopilot.emergency-gap-w", () -> 800);
+        // Timing gates off (1 ms): the wiring/surplus math is what's under test here, not the
+        // dampening cadence (that is covered in AutopilotGovernorTest). Any real gap between ticks
+        // exceeds 1 ms, so a change in a prior test can't suppress this one.
+        r.add("house.autopilot.up-interval-ms", () -> 1);
+        r.add("house.autopilot.down-interval-ms", () -> 1);
+        r.add("house.autopilot.long-window-ms", () -> 1);   // governor "mined long enough" (uptime 600 s ≫ 1 ms)
+        r.add("house.autopilot.short-window-ms", () -> 1);   // (only the overridden bean's windows are used)
+        r.add("house.autopilot.fresh-within-ms", () -> 1);
+        r.add("house.autopilot.short-coverage-ms", () -> 1);
+        r.add("house.autopilot.long-coverage-ms", () -> 1);
     }
 
     @AfterAll
@@ -64,6 +97,8 @@ class MinerAutopilotWireMockTest {
     @Autowired MinerAutopilot autopilot;
     @Autowired InverterPoller inverterPoller;
     @Autowired SolarAnalyticsClient solarAnalyticsClient;
+    @Autowired EnergySampler energySampler;
+    @Autowired EnergyAverages energy;
     @Autowired MinerService minerService;
     @Autowired HouseConsumptionState consumption;
 
@@ -71,103 +106,87 @@ class MinerAutopilotWireMockTest {
     void arrange() {
         miner.reset();
         solar.reset();
+        energy.clear(); // EnergyAverages is a shared singleton — isolate each test
         inverter = new MockInverter(winet);
-        // Start each test with consumption "unknown" (unmetered) so a tick that gates off
-        // the API leaves the margin genuinely unavailable rather than reusing a stale value.
+        // Start each test with consumption "unknown" (unmetered) so a tick that gates off the API
+        // leaves the surplus genuinely unavailable rather than reusing a stale value.
         consumption.update(new HousePower(0, 0, null, null, false, Instant.now()));
     }
 
     /**
-     * Run one autopilot tick against the live chain. Order matters: the Solar Analytics
-     * poll is gated on live solar, so the inverter must publish solar first; then the
-     * consumption poll runs; then the inverter re-publishes a snapshot that now folds in
-     * the fresh consumption, which the autopilot reads.
+     * Run one autopilot tick against the live chain. Order matters: the Solar Analytics poll is
+     * gated on live solar, so the inverter must publish solar first; then consumption is fetched;
+     * then the inverter re-publishes a snapshot folding in the fresh consumption; then the energy
+     * sampler records it; then the autopilot decides and acts.
      */
     private void tick() {
         inverterPoller.poll();       // 1) publish solar (the gate input for Solar Analytics)
         solar.clearRequests();       // count only this tick's consumption API calls
         solarAnalyticsClient.poll(); // 2) fetch consumption iff solar > threshold
         inverterPoller.poll();       // 3) rebuild the snapshot with solar + fresh consumption
+        energySampler.sample();      // 4) feed the rolling windows from that snapshot
         miner.clearRequests();       // count only the tick's miner calls
-        autopilot.tick();            // 4) decide + act
+        autopilot.tick();            // 5) decide + act
     }
 
     // ---------------------------------------------------------------- start
-    @Test void startsAtMinWhenOffAndMarginAtThreshold() {
-        inverter.solar(2.0); solar.consumption(1000); miner.stopped(800); // margin = 1000 W (== start)
+    @Test void startsAtFloorWhenSurplusMeetsStart() {
+        inverter.solar(2.0); solar.consumption(400); miner.stopped(1200); // surplus 1600 (== start)
         tick();
-        miner.verifyPowerSetTo(800); // starts at the floor
+        miner.verifyPowerSetTo(1200); // starts at the floor
         miner.verifyStarted();
     }
 
-    @Test void doesNotStartBelowStartMargin() {
-        inverter.solar(1.2); solar.consumption(500); miner.stopped(800); // margin = 700 W < 1000
+    @Test void doesNotStartBelowStartSurplus() {
+        inverter.solar(1.5); solar.consumption(200); miner.stopped(1200); // surplus 1300 < 1600
         tick();
         miner.verifyNoMutations();
     }
 
     // ---------------------------------------------------------------- step up
-    @Test void stepsUpWhenMiningAndSurplus() {
-        inverter.solar(3.0); solar.consumption(1500); miner.mining(800); // margin = 1500 W
+    @Test void rampsUpCappedToTwoRungsWhenMiningSurplus() {
+        inverter.solar(4.0); solar.consumption(1200); miner.mining(1200); // surplus = 2800+1200 = 4000
         tick();
-        miner.verifyPowerSetTo(1800); // 800 + step 1000
+        miner.verifyPowerSetTo(2000); // 1200 + 2·400, not straight to 3600
         miner.verifyNoStartOrStop();
     }
 
-    @Test void stepsUpFromOffLadderTarget() {
-        inverter.solar(3.0); solar.consumption(1500); miner.mining(1200); // margin 1500, target off the ladder
-        tick();
-        miner.verifyPowerSetTo(2200); // 1200 + 1000
-    }
-
-    @Test void stepUpCapsAtMaxPower() {
-        inverter.solar(5.0); solar.consumption(500); miner.mining(3100); // big margin
-        tick();
-        miner.verifyPowerSetTo(3600); // 3100 + 1000 capped at max
-    }
-
     @Test void holdsAtMaxNoPowerChange() {
-        inverter.solar(6.0); solar.consumption(500); miner.mining(3600); // already at max
+        inverter.solar(6.0); solar.consumption(500); miner.mining(3600); // already at the ceiling
         tick();
         miner.verifyNoPowerChange();
     }
 
     // ---------------------------------------------------------------- step down
-    @Test void stepsDownWhenMarginLow() {
-        inverter.solar(1.0); solar.consumption(950); miner.mining(1800); // margin = 50 W < low
+    @Test void stepsDownWhenOverDrawingSurplus() {
+        // cur 3600, surplus = (2000−3600)+3600 = 2000 → over-drawing by 1600 ≥ emergency gap.
+        inverter.solar(2.0); solar.consumption(3600); miner.mining(3600);
         tick();
-        miner.verifyPowerSetTo(800); // drops to the floor, stays running
+        miner.verifyPowerSetTo(1600); // rung ≤ surplus−headroom (1800)
         miner.verifyNoStartOrStop();
     }
 
-    @Test void stepsDownOffLadderTargetToFloor() {
-        inverter.solar(1.0); solar.consumption(950); miner.mining(1500); // margin 50, off-ladder target
-        tick();
-        miner.verifyPowerSetTo(800);
-    }
-
     // ---------------------------------------------------------------- stop
-    @Test void stopsAtFloorWhenMarginLow() {
-        inverter.solar(1.0); solar.consumption(950); miner.mining(800); // margin 50, already at floor
+    @Test void stopsWhenSurplusCannotHoldFloor() {
+        // cur 1600, surplus = (1000−1600)+1600 = 1000 → surplus−headroom 800 < floor 1200 → stop.
+        inverter.solar(1.0); solar.consumption(1600); miner.mining(1600);
         tick();
         miner.verifyStopped();
         miner.verifyNoPowerChange();
     }
 
-    @Test void stopsWhenDeepDeficitEvenAboveFloor() {
-        // solar 0.9 kW (above the 800 W gate, so consumption IS fetched), house 3.6 kW →
-        // margin −2700 W; even the 800 W floor exceeds the available surplus (300 W) →
-        // stop rather than step down.
-        inverter.solar(0.9); solar.consumption(3600); miner.mining(3000);
+    // ---------------------------------------------------------------- deadband
+    @Test void holdsWhenSurplusMatchesCurrentRung() {
+        // cur 2000, surplus = (300)+2000 = 2300 → surplus−headroom 2100 → rung 2000 = current → hold.
+        inverter.solar(2.3); solar.consumption(2000); miner.mining(2000);
         tick();
-        miner.verifyStopped();
-        miner.verifyNoPowerChange();
+        miner.verifyNoMutations();
     }
 
     // ------------------------------------------- solar gate: skip the API when solar is low
     @Test void lowSolarSkipsConsumptionFetchAndStopsMiner() {
-        // Solar 0.5 kW ≤ 800 W gate: no usable surplus is possible, so the consumption API
-        // must NOT be called; the margin goes unavailable → the running miner is stopped.
+        // Solar 0.5 kW ≤ 800 W gate: the consumption API must NOT be called; consumption goes
+        // unavailable → surplus unknown → the running miner is stopped.
         inverter.solar(0.5); solar.consumption(400); miner.mining(1800);
         tick();
         solar.verifyNotFetched();
@@ -176,8 +195,7 @@ class MinerAutopilotWireMockTest {
     }
 
     @Test void solarAboveGateDoesFetchConsumption() {
-        // Solar 2.0 kW > 800 W gate: the consumption API IS queried and the margin is used.
-        inverter.solar(2.0); solar.consumption(1000); miner.stopped(800);
+        inverter.solar(2.0); solar.consumption(400); miner.stopped(1200); // surplus 1600 → start
         tick();
         solar.verifyFetched();
         miner.verifyStarted();
@@ -192,50 +210,42 @@ class MinerAutopilotWireMockTest {
     }
 
     @Test void solarDipBelowGateClearsStaleConsumptionAndStops() {
-        // Regression guard for the import window: establish a fresh METERED reading while solar
-        // is high, then drop solar below the gate. The gate must mark consumption UNAVAILABLE
-        // (not reuse the now-stale reading that omits the miner's draw) → margin unknown → stop.
+        // Regression guard: establish a fresh METERED reading while solar is high, then drop solar
+        // below the gate. Consumption must go UNAVAILABLE (not reuse the stale reading that omits
+        // the miner's draw) → surplus unknown → stop.
         inverter.solar(3.0); solar.consumption(1000);
-        inverterPoller.poll(); solarAnalyticsClient.poll(); inverterPoller.poll(); // consumption now metered
+        inverterPoller.poll(); solarAnalyticsClient.poll(); inverterPoller.poll(); energySampler.sample();
         inverter.solar(0.5); miner.mining(1800);
         tick();
         solar.verifyNotFetched();     // gated off
-        miner.verifyStopped();        // stale reading NOT reused → margin unknown → safe stop
-        miner.verifyNoPowerChange();  // did not step down on an optimistic stale margin
+        miner.verifyStopped();        // stale reading NOT reused → surplus unknown → safe stop
+        miner.verifyNoPowerChange();  // did not step down on an optimistic stale surplus
     }
 
-    // ---------------------------------------------------------------- deadzone
-    @Test void holdsInDeadzone() {
-        inverter.solar(2.3); solar.consumption(1800); miner.mining(1800); // margin = 500 W → deadzone
-        tick();
-        miner.verifyNoMutations();
-    }
-
-    // ------------------------------------------- safety: margin unavailable → stop
+    // ------------------------------------------- safety: feed unavailable → stop
     @Test void stopsRunningMinerWhenInverterOffline() {
         inverter.offline(); solar.consumption(1000); miner.mining(1800);
         tick();
-        solar.verifyNotFetched();   // offline → solar unknown (0) → gate also skips the fetch
+        solar.verifyNotFetched();   // offline → solar unknown (0) → gate skips the fetch
         miner.verifyStopped();
         miner.verifyNoPowerChange();
     }
 
     @Test void leavesStoppedMinerAloneWhenInverterOffline() {
-        inverter.offline(); solar.consumption(1000); miner.stopped(800);
+        inverter.offline(); solar.consumption(1000); miner.stopped(1200);
         tick();
         miner.verifyNoMutations();
     }
 
-    @Test void stopsSuspendedMinerWhenInverterOffline() {
-        // suspended still counts as "running" (service up) → stopped for safety.
+    // ------------------------------------------- suspended: skip (draws ~0 W), never stop/ramp
+    @Test void suspendedMinerIsSkippedWhenInverterOffline() {
         inverter.offline(); solar.consumption(1000); miner.suspended(1800);
         tick();
-        miner.verifyStopped();
+        miner.verifyNoMutations(); // suspended draws ~0 W → nothing to protect against → skip
     }
 
-    // ------------------------------------------- suspended (known margin): never ramp
     @Test void suspendedWithSurplusDoesNotRamp() {
-        inverter.solar(3.0); solar.consumption(500); miner.suspended(1800); // margin 2500 W, but suspended
+        inverter.solar(3.0); solar.consumption(500); miner.suspended(1800);
         tick();
         miner.verifyNoMutations();
     }

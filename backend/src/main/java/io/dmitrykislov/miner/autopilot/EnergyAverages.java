@@ -66,6 +66,12 @@ public class EnergyAverages {
         consumption.add(at, watts);
     }
 
+    /** Drop all recorded samples (both feeds). Used by tests to isolate the shared instance. */
+    public void clear() {
+        solar.clear();
+        consumption.clear();
+    }
+
     /** Averaged margin (solar − consumption) over {@code window} with the given coverage; empty if either feed is unavailable. */
     public OptionalDouble marginAvg(Instant now, Duration window, Duration minCoverage) {
         OptionalDouble s = solar.average(now, window, minCoverage);

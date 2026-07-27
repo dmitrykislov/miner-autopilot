@@ -24,31 +24,42 @@ public record HouseProperties(
         if (inverter == null) inverter = new Inverter(null, 0, null, null, null, 0, 0);
         if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0, 0);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
-        if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0);
-        // The consumption gate must sit below where the autopilot still cares about the margin,
-        // or it would mark consumption unavailable (→ margin unknown → stop) while the miner could
-        // still (re)start or keep running on solar — stranding it OFF. The binding ceiling is the
-        // lower of:
-        //   • startMarginW           — a start needs margin ≥ this, i.e. solar ≥ this;
-        //   • minPowerW + lowMarginW — a running miner (draw ≥ minPowerW) only holds while
-        //                              margin ≥ lowMarginW, i.e. solar ≥ minPowerW + lowMarginW.
-        // Only enforced when the autopilot is enabled: with it off nothing auto-(re)starts the
-        // miner, so a high gate merely hides consumption at low solar (a UI concern, not stranding).
+        if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        // These cross-cutting checks only matter when the autopilot is enabled: with it off nothing
+        // auto-(re)starts the miner, so a mis-sized gate merely hides consumption at low solar (a UI
+        // concern, not stranding).
         if (autopilot.enabled()) {
-            // The autopilot's margin is solar − measured house consumption, and Solar Analytics is
+            // The autopilot's surplus is solar − measured house consumption, and Solar Analytics is
             // the only consumption source (the SG10RS has no whole-home meter). With it disabled the
-            // margin is always unknown, so the autopilot would permanently stop / never start the
+            // surplus is always unknown, so the autopilot would permanently stop / never start the
             // miner. Require the consumption source when the autopilot is on.
             if (!solarAnalytics.enabled()) {
                 throw new IllegalArgumentException("autopilot.enabled requires solar-analytics.enabled:"
-                        + " the autopilot needs measured house consumption to compute the margin;"
-                        + " without it the margin is always unknown and the miner is stranded OFF");
+                        + " the autopilot needs measured house consumption to compute the surplus;"
+                        + " without it the surplus is always unknown and the miner is stranded OFF");
             }
-            int gateCeiling = Math.min(autopilot.startMarginW(), miner.minPowerW() + autopilot.lowMarginW());
+            // The autopilot ladder runs floorW..maxPowerW; the floor can't be below the miner's
+            // hardware minimum, and the ceiling must sit strictly above the floor.
+            if (autopilot.floorW() < miner.minPowerW()) {
+                throw new IllegalArgumentException("autopilot.floor-w (" + autopilot.floorW()
+                        + ") must be ≥ miner.min-power-w (" + miner.minPowerW() + ")");
+            }
+            if (miner.maxPowerW() <= autopilot.floorW()) {
+                throw new IllegalArgumentException("miner.max-power-w (" + miner.maxPowerW()
+                        + ") must be > autopilot.floor-w (" + autopilot.floorW() + ")");
+            }
+            // The consumption gate (solar-analytics.min-solar-w) marks consumption unavailable below
+            // it (→ surplus unknown → stop). It must sit below the solar level at which the miner
+            // could still run, or it would strand a runnable miner OFF. The lower bound on that
+            // solar is:
+            //   • floorW + headroomW — a running miner needs surplus ≥ floor+headroom, i.e. (base
+            //                          load ≥ 0) solar ≥ floor+headroom;
+            //   • startSurplusW      — a (re)start needs surplus ≥ this, i.e. solar ≥ startSurplus.
+            int gateCeiling = Math.min(autopilot.startSurplusW(), autopilot.floorW() + autopilot.headroomW());
             if (solarAnalytics.minSolarWatts() >= gateCeiling) {
                 throw new IllegalArgumentException("solar-analytics.min-solar-w ("
                         + solarAnalytics.minSolarWatts() + ") must be < " + gateCeiling
-                        + " (min of autopilot.start-margin-w and miner.min-power-w + autopilot.low-margin-w):"
+                        + " (min of autopilot.start-surplus-w and autopilot.floor-w + headroom-w):"
                         + " otherwise the consumption gate would strand the miner OFF while it could"
                         + " still run on solar");
             }
@@ -169,28 +180,66 @@ public record HouseProperties(
     }
 
     /**
-     * Solar-margin autopilot: automatically starts/stops the miner and steps its
-     * power target up/down to soak up surplus solar. All thresholds are in watts.
+     * Smoothed solar-surplus autopilot (see {@link io.dmitrykislov.miner.autopilot.AutopilotGovernor}).
+     * Drives the miner across a fixed power ladder ({@code floorW..maxPowerW} by {@code stepW}) to
+     * track the <b>time-averaged</b> solar surplus, so brief clouds are ridden through. The ceiling
+     * of the ladder is {@link Miner#maxPowerW()} (not configured here). All powers are watts, all
+     * durations milliseconds.
      */
     public record Autopilot(
             // Master switch. Disabled by default — it controls real mining hardware.
             boolean enabled,
-            // How often (ms) to evaluate the margin and act.
+            // How often (ms) the control loop evaluates and acts. Much finer than the up/down
+            // intervals below (the governor does its own dampening), so emergencies react fast.
             long intervalMs,
-            // Start the miner (and step it up) when margin ≥ this (W).
-            int startMarginW,
-            // Back the miner off (step down / stop) when margin < this (W).
-            int lowMarginW,
-            // Power increment/decrement per step (W).
-            int stepW) {
+            // Lowest power the autopilot runs the miner at (W); below this it stops. Must be ≥
+            // miner.min-power-w. Kept above the hardware floor to avoid extreme-minimum operation.
+            int floorW,
+            // Ladder rung spacing (W) — the granularity of power changes.
+            int stepW,
+            // Anti-import buffer (W): the target is always ladder-rung ≤ (surplus − headroom), so a
+            // running miner never draws more than the surplus.
+            int headroomW,
+            // Long-window surplus (W) required to (re)start from off. Must be > floorW so start and
+            // stop have hysteresis and can't flap.
+            int startSurplusW,
+            // Cap on how many rungs a single up-move may climb (smooth ramp).
+            int upMaxRungsPerCycle,
+            // If the miner is over-drawing the surplus by at least this (W), a down-step bypasses
+            // the down interval (fast import protection).
+            int emergencyGapW,
+            // Min time (ms) between up/start commands — the up dampener. Must be ≥ longWindowMs so a
+            // just-made change can't contaminate the average that drives the next up-move.
+            long upIntervalMs,
+            // Min time (ms) between routine down commands (emergency protection bypasses it).
+            long downIntervalMs,
+            // Short averaging window (ms) — drives down/stop protection (fast reaction).
+            long shortWindowMs,
+            // Long averaging window (ms) — drives up/start (conservative). Also the "mined long
+            // enough" guard before the long average is trusted.
+            long longWindowMs,
+            // A feed with no sample newer than this (ms) is stale → the surplus is unknown.
+            long freshWithinMs,
+            // Minimum span (ms) an averaging window must cover to be trusted (else it reports empty:
+            // a too-sparse window right after boot/gap must not be acted on).
+            long shortCoverageMs,
+            long longCoverageMs) {
 
         public Autopilot {
-            if (intervalMs == 0) intervalMs = 30000;
-            if (startMarginW == 0) startMarginW = 1000;
-            if (lowMarginW == 0) lowMarginW = 100;
-            // 800 keeps the deadzone (start − low = 900) ≥ one step, so a single step
-            // can't carry the margin across the band and oscillate. See isStableConfig.
-            if (stepW == 0) stepW = 800;
+            if (intervalMs == 0) intervalMs = 30_000;
+            if (floorW == 0) floorW = 1200;
+            if (stepW == 0) stepW = 400;
+            if (headroomW == 0) headroomW = 200;
+            if (startSurplusW == 0) startSurplusW = 1600;
+            if (upMaxRungsPerCycle == 0) upMaxRungsPerCycle = 2;
+            if (emergencyGapW == 0) emergencyGapW = 800;
+            if (upIntervalMs == 0) upIntervalMs = 900_000;   // 15 min
+            if (downIntervalMs == 0) downIntervalMs = 300_000; // 5 min
+            if (shortWindowMs == 0) shortWindowMs = 180_000;   // 3 min
+            if (longWindowMs == 0) longWindowMs = 900_000;     // 15 min
+            if (freshWithinMs == 0) freshWithinMs = 90_000;    // 90 s
+            if (shortCoverageMs == 0) shortCoverageMs = 60_000; // 60 s
+            if (longCoverageMs == 0) longCoverageMs = 300_000;  // 5 min
         }
     }
 }

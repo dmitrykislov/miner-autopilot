@@ -19,9 +19,10 @@ spring:
   task:
     scheduling:
       pool:
-        # One thread per @Scheduled task (inverter, consumption, miner, autopilot poll/tick)
-        # so a blocked I/O poller can never delay the safety-critical autopilot tick.
-        size: ${SCHEDULING_POOL_SIZE:4}
+        # One thread per @Scheduled task (inverter poll, consumption poll, energy sampler,
+        # autopilot tick, miner) so a blocked I/O poller can never delay the safety-critical
+        # autopilot tick.
+        size: ${SCHEDULING_POOL_SIZE:5}
   web:
     resources:
       # UI (built React app) is bundled here and served at "/"
@@ -66,13 +67,25 @@ house:
     # Hard power-target limits (W) — the miner can't run below min; never exceed max.
     min-power-w: ${MINER_MIN_POWER_W:800}
     max-power-w: ${MINER_MAX_POWER_W:3600}
-  # --- Solar-margin autopilot: auto start/stop + step miner power to soak surplus ---
+  # --- Smoothed solar-surplus autopilot: ladder-tracks the time-averaged surplus ---
+  # Drives the miner across a power ladder (floor-w .. miner.max-power-w by step-w) to follow the
+  # averaged surplus, riding through brief clouds. Ceiling = miner.max-power-w. See AutopilotGovernor.
   autopilot:
-    enabled: ${AUTOPILOT_ENABLED:false}          # off by default (controls real hardware)
-    interval-ms: ${AUTOPILOT_INTERVAL_MS:30000}  # evaluate the margin every 30s
-    start-margin-w: ${AUTOPILOT_START_MARGIN_W:1000}
-    low-margin-w: ${AUTOPILOT_LOW_MARGIN_W:100}
-    step-w: ${AUTOPILOT_STEP_W:800}
+    enabled: ${AUTOPILOT_ENABLED:false}              # off by default (controls real hardware)
+    interval-ms: ${AUTOPILOT_INTERVAL_MS:30000}      # evaluate + act cadence
+    floor-w: ${AUTOPILOT_FLOOR_W:1200}               # lowest run power (≥ miner.min-power-w); below → stop
+    step-w: ${AUTOPILOT_STEP_W:400}                  # ladder rung spacing
+    headroom-w: ${AUTOPILOT_HEADROOM_W:200}          # anti-import buffer (target ≤ surplus − headroom)
+    start-surplus-w: ${AUTOPILOT_START_SURPLUS_W:1600} # surplus to (re)start from off (> floor → hysteresis)
+    up-max-rungs-per-cycle: ${AUTOPILOT_UP_MAX_RUNGS:2} # rungs a single up-move may climb
+    emergency-gap-w: ${AUTOPILOT_EMERGENCY_GAP_W:800}   # over-draw that bypasses the down interval
+    up-interval-ms: ${AUTOPILOT_UP_INTERVAL_MS:900000}    # dampening between up/start (≥ long-window-ms)
+    down-interval-ms: ${AUTOPILOT_DOWN_INTERVAL_MS:300000} # between routine down steps
+    short-window-ms: ${AUTOPILOT_SHORT_WINDOW_MS:180000}   # avg window for down/stop (fast)
+    long-window-ms: ${AUTOPILOT_LONG_WINDOW_MS:900000}     # avg window for up/start (conservative)
+    fresh-within-ms: ${AUTOPILOT_FRESH_WITHIN_MS:90000}    # a feed older than this → surplus unknown
+    short-coverage-ms: ${AUTOPILOT_SHORT_COVERAGE_MS:60000} # min span for a trusted short average
+    long-coverage-ms: ${AUTOPILOT_LONG_COVERAGE_MS:300000}  # min span for a trusted long average
 
 logging:
   level:

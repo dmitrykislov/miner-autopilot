@@ -3,8 +3,16 @@ package io.dmitrykislov.miner.config;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class HousePropertiesTest {
+
+    /** Build an Autopilot with the given guard-relevant fields; everything else takes its default. */
+    private static HouseProperties.Autopilot ap(boolean enabled, int floorW, int headroomW, int startSurplusW) {
+        return new HouseProperties.Autopilot(enabled, 0, floorW, 0, headroomW, startSurplusW,
+                0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
 
     @Test
     void nestedGroupsDefaultWhenAbsent() {
@@ -33,68 +41,77 @@ class HousePropertiesTest {
         assertThat(new HouseProperties.Miner(true, "h", 0, 0, "tok", 0, 0).hasAuth()).isTrue();
     }
 
-    // min-solar-w must be < min(start-margin-w, min-power-w + low-margin-w) when the autopilot
-    // is enabled, else the gate would strand the miner OFF (can't start, or a running hold stopped).
-    // Helper: min 800, low 100, step 800 → ceiling = min(start, 900).
-    private static HouseProperties withGate(boolean autopilotEnabled, int minSolarW, int startMarginW) {
+    // When the autopilot is enabled, min-solar-w must be < min(start-surplus-w, floor-w + headroom-w),
+    // else the consumption gate would strand the miner OFF. Helper: floor 1200, headroom 200 →
+    // floor+headroom = 1400, so the ceiling is min(start-surplus, 1400).
+    private static HouseProperties withGate(boolean enabled, int minSolarW, int floorW, int headroomW, int startSurplusW) {
         return new HouseProperties(null,
                 new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, minSolarW),
                 new HouseProperties.Miner(true, "h", 0, 0, "", 0, 0),               // min 800 / max 3600
-                new HouseProperties.Autopilot(autopilotEnabled, 0, startMarginW, 100, 800));
+                ap(enabled, floorW, headroomW, startSurplusW));
     }
 
     @Test
     void rejectsSolarGateThatWouldStrandTheMiner() {
-        // Above the start threshold → can't start.
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 1500, 1000))
+        // floor+headroom (1400) is the binding arm here (start-surplus 2000 is higher).
+        assertThatThrownBy(() -> withGate(true, 1500, 1200, 200, 2000))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("min-solar-w");
-        // Between minPower+low (900) and start (1000): passes the old start-only check but would
-        // stop a validly-running miner — must still be rejected by the tighter ceiling.
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 950, 1000))
+        assertThatThrownBy(() -> withGate(true, 1400, 1200, 200, 2000))
+                .isInstanceOf(IllegalArgumentException.class); // exactly at the ceiling → still rejected
+        // start-surplus (1300) is the smaller arm → ceiling = min(1300, 1400) = 1300.
+        assertThatThrownBy(() -> withGate(true, 1350, 1200, 200, 1300))
                 .isInstanceOf(IllegalArgumentException.class);
-        // Exactly at the ceiling (900) is rejected too (gate must be strictly below).
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 900, 1000))
-                .isInstanceOf(IllegalArgumentException.class);
-        // When start-margin-w is the smaller arm it binds: ceiling = min(850, 900) = 850.
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 875, 850))
-                .isInstanceOf(IllegalArgumentException.class);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> withGate(true, 850, 850))
+        assertThatThrownBy(() -> withGate(true, 1300, 1200, 200, 1300))
                 .isInstanceOf(IllegalArgumentException.class); // equality at the start arm
     }
 
     @Test
+    void rejectsFloorBelowMinerMinimum() {
+        // autopilot floor can't be below the miner's hardware minimum (800).
+        assertThatThrownBy(() -> withGate(true, 700, 700, 200, 1600))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("floor-w");
+    }
+
+    @Test
+    void rejectsCeilingNotAboveFloor() {
+        // miner max-power-w must exceed the autopilot floor (there'd be no ladder otherwise).
+        assertThatThrownBy(() -> new HouseProperties(null,
+                new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, 800),
+                new HouseProperties.Miner(true, "h", 0, 0, "", 0, 1000),   // max 1000 ≤ floor 1200
+                ap(true, 1200, 200, 1600)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("max-power-w");
+    }
+
+    @Test
     void rejectsAutopilotEnabledWithoutSolarAnalytics() {
-        // The autopilot's only consumption source is Solar Analytics; with it disabled the margin
+        // The autopilot's only consumption source is Solar Analytics; with it disabled the surplus
         // is always unknown → the miner would be permanently stranded OFF. Reject at startup.
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new HouseProperties(null,
+        assertThatThrownBy(() -> new HouseProperties(null,
                 new HouseProperties.SolarAnalytics(false, null, null, null, null, 0, 0, 0, 0),
                 null,
-                new HouseProperties.Autopilot(true, 0, 1000, 100, 800)))
+                ap(true, 1200, 200, 1600)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("solar-analytics");
         // Autopilot off + Solar Analytics off is fine (nothing auto-drives the miner).
-        org.assertj.core.api.Assertions.assertThatCode(() -> new HouseProperties(null,
+        assertThatCode(() -> new HouseProperties(null,
                 new HouseProperties.SolarAnalytics(false, null, null, null, null, 0, 0, 0, 0),
                 null,
-                new HouseProperties.Autopilot(false, 0, 1000, 100, 800)))
+                ap(false, 1200, 200, 1600)))
                 .doesNotThrowAnyException();
     }
 
     @Test
     void acceptsSolarGateBelowCeiling() {
-        // Shipped defaults: gate 800 < ceiling 900 → valid.
-        org.assertj.core.api.Assertions.assertThatCode(() -> new HouseProperties(null, null, null, null))
-                .doesNotThrowAnyException();
-        org.assertj.core.api.Assertions.assertThatCode(() -> withGate(true, 899, 1000))
-                .doesNotThrowAnyException();
+        // Shipped defaults: gate 800 < ceiling 1400 → valid.
+        assertThatCode(() -> new HouseProperties(null, null, null, null)).doesNotThrowAnyException();
+        assertThatCode(() -> withGate(true, 1399, 1200, 200, 1600)).doesNotThrowAnyException();
     }
 
     @Test
     void solarGateGuardDoesNotFireWhenAutopilotDisabled() {
         // Autopilot off → nothing auto-(re)starts the miner, so a high gate can't strand it;
         // the guard must not crash startup for an unused threshold.
-        org.assertj.core.api.Assertions.assertThatCode(() -> withGate(false, 5000, 800))
-                .doesNotThrowAnyException();
+        assertThatCode(() -> withGate(false, 5000, 1200, 200, 1600)).doesNotThrowAnyException();
     }
 
     @Test
@@ -111,14 +128,25 @@ class HousePropertiesTest {
 
     @Test
     void autopilotDefaultsAreStable() {
-        var a = new HouseProperties.Autopilot(false, 0, 0, 0, 0);
-        assertThat(a.intervalMs()).isEqualTo(30000);
-        assertThat(a.startMarginW()).isEqualTo(1000);
-        assertThat(a.lowMarginW()).isEqualTo(100);
-        assertThat(a.stepW()).isEqualTo(800);   // was 1000 — narrowed so the deadzone ≥ step
-        // The shipped thresholds must not be oscillation-prone: deadzone ≥ one step.
-        assertThat(io.dmitrykislov.miner.autopilot.MinerAutopilotPlanner
-                .isStableConfig(a.startMarginW(), a.lowMarginW(), a.stepW())).isTrue();
+        var a = new HouseProperties.Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        assertThat(a.intervalMs()).isEqualTo(30_000);
+        assertThat(a.floorW()).isEqualTo(1200);
+        assertThat(a.stepW()).isEqualTo(400);
+        assertThat(a.headroomW()).isEqualTo(200);
+        assertThat(a.startSurplusW()).isEqualTo(1600);
+        assertThat(a.upMaxRungsPerCycle()).isEqualTo(2);
+        assertThat(a.emergencyGapW()).isEqualTo(800);
+        assertThat(a.upIntervalMs()).isEqualTo(900_000);
+        assertThat(a.downIntervalMs()).isEqualTo(300_000);
+        assertThat(a.shortWindowMs()).isEqualTo(180_000);
+        assertThat(a.longWindowMs()).isEqualTo(900_000);
+        assertThat(a.freshWithinMs()).isEqualTo(90_000);
+        assertThat(a.shortCoverageMs()).isEqualTo(60_000);
+        assertThat(a.longCoverageMs()).isEqualTo(300_000);
+        // Start/stop hysteresis: start-surplus must sit above the floor so they can't flap.
+        assertThat(a.startSurplusW()).isGreaterThan(a.floorW());
+        // Up dampening must be ≥ the long window (no post-change contamination of the up-average).
+        assertThat(a.upIntervalMs()).isGreaterThanOrEqualTo(a.longWindowMs());
     }
 
     @Test

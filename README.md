@@ -7,7 +7,7 @@ A single, self-contained app that monitors a home solar setup and controls a Bit
 - **⛏ Miner** — **Braiins OS+** (Antminer S19k Pro) via its local GraphQL API — start/stop, set power target, live status & fans
 - **☀ Solar** — Sungrow **SG10RS** inverter via the WiNet-S local WebSocket API
 - **🏠 House consumption** — measured whole-home load from **Solar Analytics** (their CT monitoring) via their cloud API
-- **⚡ Autopilot** — optional solar-margin control loop that auto **starts / steps / stops** the miner to soak up surplus solar, never importing from the grid; toggle it live from the UI
+- **⚡ Autopilot** — optional smoothed control loop that ladder-tracks the **time-averaged** solar surplus to auto **start / step / stop** the miner, never importing from the grid; toggle it live from the UI
 - **🔒 Access control** — a single password (stored only as a bcrypt hash) gates every endpoint with a bearer token
 
 The React UI and the Spring Boot backend build into **one runnable jar** (~22 MB). Everything is configured from `.env` — no hardcoded IPs, accounts, or secrets in the source. Lean enough to run on a **416 MB Raspberry Pi** (~140 MB RSS).
@@ -102,7 +102,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `SERVER_PORT` | `8080` | Backend + bundled UI |
 | `FRONTEND_PORT` | `5173` | Vite dev server (dev mode only) |
 | `LOG_LEVEL` | `INFO` | `io.dmitrykislov.miner` log level |
-| `SCHEDULING_POOL_SIZE` | `4` | One thread per scheduled task (inverter/consumption/miner/autopilot) so none blocks the others |
+| `SCHEDULING_POOL_SIZE` | `5` | One thread per scheduled task (inverter poll / consumption poll / energy sampler / autopilot tick / miner) so none blocks the others |
 | `JAVA_OPTS` | _(blank)_ | Extra JVM flags. On a small Pi use the heap/footprint caps in `.env.example` (`-Xmx128m` + SerialGC + …) → ~140 MB RSS, no OOM |
 | **Inverter** | | Sungrow SG10RS / WiNet-S |
 | `INVERTER_HOST` | — | dongle LAN IP (required) |
@@ -117,7 +117,7 @@ All environment-specific values are driven by env vars — the source and `appli
 | `SOLARANALYTICS_USER` / `SOLARANALYTICS_PASSWORD` | — | account email + password (HTTP Basic) |
 | `SOLARANALYTICS_SITE_ID` | _(blank)_ | blank = auto-detect the first active site |
 | `SOLARANALYTICS_POLL_INTERVAL_MS` | `15000` | how often consumption is polled |
-| `SOLARANALYTICS_STALE_AFTER_SECONDS` | `60` | reading older than this ⇒ consumption (and margin) unavailable |
+| `SOLARANALYTICS_STALE_AFTER_SECONDS` | `60` | reading older than this ⇒ consumption (and surplus) unavailable |
 | `SOLARANALYTICS_MIN_SOLAR_W` | `800` | only call the consumption API when solar generation exceeds this (no usable surplus below it) |
 | **Miner** | | Braiins OS+ |
 | `MINER_ENABLED` | `true` | |
@@ -127,12 +127,22 @@ All environment-specific values are driven by env vars — the source and `appli
 | `MINER_AUTH_TOKEN` | _(blank)_ | only if the miner API requires a bearer token |
 | `MINER_MIN_POWER_W` | `800` | hard floor — miner can't run below this |
 | `MINER_MAX_POWER_W` | `3600` | hard ceiling — never exceed |
-| **Autopilot** | | Solar-margin control loop (see below) |
+| **Autopilot** | | Smoothed surplus control loop (see below) |
 | `AUTOPILOT_ENABLED` | `false` | off by default (drives real hardware) |
-| `AUTOPILOT_INTERVAL_MS` | `30000` | how often the margin is evaluated |
-| `AUTOPILOT_START_MARGIN_W` | `1000` | start / step-up when margin ≥ this |
-| `AUTOPILOT_LOW_MARGIN_W` | `100` | back off (step down / stop) when margin < this |
-| `AUTOPILOT_STEP_W` | `800` | power step (kept ≤ deadzone `start−low`=900 so it can't oscillate) |
+| `AUTOPILOT_INTERVAL_MS` | `30000` | how often it evaluates + acts |
+| `AUTOPILOT_FLOOR_W` | `1200` | lowest run power (≥ `MINER_MIN_POWER_W`); below → stop |
+| `AUTOPILOT_STEP_W` | `400` | ladder rung spacing |
+| `AUTOPILOT_HEADROOM_W` | `200` | anti-import buffer (target ≤ surplus − headroom) |
+| `AUTOPILOT_START_SURPLUS_W` | `1600` | surplus to (re)start from off (> floor → hysteresis) |
+| `AUTOPILOT_UP_MAX_RUNGS` | `2` | rungs a single up-move may climb |
+| `AUTOPILOT_EMERGENCY_GAP_W` | `800` | over-draw that bypasses the down interval |
+| `AUTOPILOT_UP_INTERVAL_MS` | `900000` | dampening between up/start steps (≥ long window) |
+| `AUTOPILOT_DOWN_INTERVAL_MS` | `300000` | between routine down steps |
+| `AUTOPILOT_SHORT_WINDOW_MS` | `180000` | averaging window for down/stop (fast) |
+| `AUTOPILOT_LONG_WINDOW_MS` | `900000` | averaging window for up/start (conservative) |
+| `AUTOPILOT_FRESH_WITHIN_MS` | `90000` | a feed older than this ⇒ surplus unknown |
+| `AUTOPILOT_SHORT_COVERAGE_MS` | `60000` | min span for a trusted short average |
+| `AUTOPILOT_LONG_COVERAGE_MS` | `300000` | min span for a trusted long average |
 | **Access control** | | Password gate (see [Access control](#access-control)) |
 | `AUTH_ENABLED` | `true` | when off, all endpoints are open (dev only) |
 | `AUTH_PASSWORD_HASH` | — | bcrypt hash of the UI password; blank ⇒ fail-closed (everything rejected) |
@@ -227,26 +237,32 @@ from step 1. To change the password later, regenerate the hash and restart. `htp
 
 ---
 
-## Solar-margin autopilot
+## Smoothed solar-surplus autopilot
 
-Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default**) that soaks up surplus solar by driving the miner. Every `AUTOPILOT_INTERVAL_MS` (30 s) it reads the **margin** (the exportable surplus = `solar − house`, W) and the miner state, then decides via a pure, fully-tested planner.
+Optional control loop (`io.dmitrykislov.miner.autopilot`, **disabled by default**) that soaks up surplus solar by driving the miner across a fixed **power ladder** (`FLOOR_W .. MINER_MAX_POWER_W` by `STEP_W`, e.g. `1200, 1600, … 3600`). Rather than reacting to instantaneous readings, it tracks the **time-averaged** surplus so brief clouds are ridden through. Every `AUTOPILOT_INTERVAL_MS` (30 s) it reads the miner state and the averaged surplus, then decides via a pure, exhaustively-tested governor.
 
-> **Assumption:** the miner is part of the Solar-Analytics-monitored home, so its draw is included in the measured house consumption and the margin already reflects it while mining. If the miner is on a separate supply, that assumption breaks (the margin won't drop as the miner ramps) — verify before enabling autopilot. With it holding:
+> **Assumption:** the miner is part of the Solar-Analytics-monitored home, so its draw is included in the measured house consumption. The **available surplus** a running miner can draw is therefore `avg(solar − house) + its own current draw` (= solar − base-house load, which is miner-independent). If the miner is on a separate supply, that assumption breaks — verify before enabling.
 
-- **Off & margin ≥ 1000 W** → **start** the miner at the 800 W floor (leaving ~200 W headroom).
-- **Mining & margin ≥ 1000 W** → **step power up** +800 W (capped at 3600 W).
-- **Mining & margin < 100 W** → **step power down** — by at least one step, but **further if a single step wouldn't bring the target under the available surplus**; **stop** if even the 800 W floor would exceed the surplus.
-- **Margin in [100, 1000)** → hold (deadzone).
+**The engine** (three pure, clock-injected pieces):
+- **`RollingWindow`** — a time-bounded rolling **mean** of samples (gap-robust: a simple mean degrades gracefully across missed polls, where a step-hold average would carry a stale pre-gap value forward and over-estimate surplus). Reports empty when stale or too sparse.
+- **`EnergyAverages`** — maintains solar and consumption windows and exposes the averaged **surplus** over a short (3 min) and a long (15 min) window, plus a freshness flag. A `EnergySampler` feeds it from each inverter snapshot.
+- **`AutopilotGovernor`** — the ladder controller. Deliberately **asymmetric**: ramps **up** slowly (long window, 15 min dampening, ≤ 2 rungs/move) only on well-established surplus; steps **down / stops** fast (short window, 5 min interval, uncapped, with an emergency bypass) to protect against import.
+
+Decision model (surplus `S`; target = highest ladder rung ≤ `S − headroom`):
+- **Off & long-window surplus ≥ `START_SURPLUS_W`** (1600) → **start** at the floor. Start/stop **hysteresis** (start 1600, stop below floor+headroom) prevents flapping.
+- **Mining & sustained surplus supports a higher rung** → **step up** (≤ 2 rungs/move, no more than once per up-interval), but only after mining ≥ the long window so the average is valid.
+- **Mining & short-window surplus dropped** → **step down** to the rung the surplus supports (uncapped — can drop several rungs at once); if the over-draw ≥ `EMERGENCY_GAP_W` (800) it bypasses the down interval; if even the floor can't be held → **stop**.
+- **Otherwise** → hold. Rung quantization is the deadband: a 50–100 W wobble never triggers a change.
 
 Safety/correctness properties:
-- **The running power never exceeds the available surplus.** The surplus a running miner can draw from is `margin + its own draw` (the meter counts the miner). On a sudden solar drop — say the miner is at 3000 W with +330 W to spare and a cloud swings the margin to −1880 W — one fixed step (→2200 W) would still import; instead the planner drops straight to ~1020 W (under the 1120 W now available) in a single tick. It never leaves the miner pulling from the grid.
-- **Stops the miner when the margin can't be computed** — if solar is unavailable (inverter offline, e.g. at night), house consumption is unavailable (Solar Analytics stale/offline), **or the last inverter reading is stale** (poller stalled, so `latest()` is older than 4× the poll interval), the true margin is unknown. It's unsafe to keep mining on a guess, so the safe fallback is to stop. The margin is only used when it is online, metered, *and* fresh.
-- **Always uses live miner state** — each tick reads a fresh miner status (never a cached one), and every mutating op (start / step / stop) re-verifies the state immediately before acting, so a change between decision and action can't cause a wrong op.
-- Acts only on **actually-mining** state, never `SUSPENDED` — a suspended miner (e.g. dead pools) draws ~0 W, so its draw is *not* in the margin; the autopilot skips it rather than ramping on phantom surplus.
+- **The running power never exceeds the available surplus** — because `headroom > 0`, the target is always strictly below the surplus. On a sudden collapse (say 3600 W and the 15-min surplus falls to 1800 W) the governor steps straight down to the highest rung the surplus holds (1600 W) in one move, never leaving the miner importing.
+- **Stops the miner when the surplus is unknown** — if solar is unavailable (inverter offline, e.g. at night), consumption is unavailable (Solar Analytics stale/offline/gated), the inverter reading is stale (poller stalled), *or* the rolling windows themselves have gone stale, the surplus can't be trusted. The safe fallback is to stop. A **stale feed** (→ stop a running miner) is distinguished from a merely **sparse window** right after boot (→ hold, don't disrupt a healthy miner before the window fills).
+- **Always uses live miner state** — each tick reads a fresh miner status (never cached), and every mutating op (start / step / stop) re-verifies the state immediately before acting.
+- Skips `SUSPENDED` — a suspended miner (e.g. dead pools) draws ~0 W, so it isn't reflected in the surplus and there's nothing to protect against; the autopilot leaves it alone.
 - Respects the miner's hard **[min, max]** power limits (also enforced in `MinerService` on every set).
-- **Safe-by-construction config:** the planner validates its thresholds at boot and refuses to start if a setting would break the never-import guarantee — `start ≥ min` (starting can't import) and `step ≤ start` (a step-up can't import). It also **warns** if the deadzone (`start − low` = 900 W) is narrower than one step (800 W), which would let a single step flap the miner across the band.
+- **Safe-by-construction config:** the governor validates its config at boot and refuses to start on any setting that would break an invariant — e.g. `start-surplus > floor` (hysteresis), `up-interval ≥ long-window` (a just-made change can't contaminate the average driving the next up-move), positive intervals/step, `floor ≥ miner-min` and `max > floor`.
 
-The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot` wires it to the live margin and `MinerService`.
+The engine lives in `RollingWindow` / `EnergyAverages` / `AutopilotGovernor` (all pure, no I/O); `MinerAutopilot` wires them to the live feed and `MinerService`, and `EnergySampler` feeds the windows.
 
 **Runtime control:** `AUTOPILOT_ENABLED` now sets the **boot state** of a runtime toggle (and still gates the boot-time config guards). Once running, the UI has an **Autopilot** card — an Enable/Disable button plus live status: whether it's on, the last decision (including "hold"/skips), and the last change it actually made (action, from→to power, time, reason). Backend: `GET /api/autopilot` (+ `/stream` SSE) and `POST /api/autopilot/enable|disable`. The env var only seeds the starting position; the toggle overrides it at runtime.
 
@@ -255,9 +271,9 @@ The control law lives in `MinerAutopilotPlanner` (pure, no I/O); `MinerAutopilot
 ## Notable device details
 
 - **Sungrow SG10RS / WiNet-S** — real-time data comes from the dongle's local WebSocket API (`wss://…/ws/home/overview`): `connect` → `login` → `devicelist` → `real`/`direct`. (Modbus TCP :502 exists but is firewalled while you're on the dongle's own WiFi AP.) The dongle's self-signed cert has no SAN, so hostname verification is disabled for these LAN clients (set once in `main()`).
-- **Solar Analytics** — polls `GET /api/v3/live_site_data` (HTTP Basic auth with the account email/password) every ~15 s and reads `consumed` (watts) as whole-home consumption. Their CT hardware measures the load directly, so — unlike the SG10RS, which has no energy meter — this yields true house consumption. Margin = `solar − consumed` (see `PowerBalance`). The poll is **gated on live solar**: it only calls the cloud API while the inverter is generating more than `SOLARANALYTICS_MIN_SOLAR_W` (default 800 W) — below that no surplus is possible, so the call is skipped and consumption is marked **unavailable** — the autopilot then treats the margin as unknown and safely stops a running miner (rather than holding it on a now-stale reading that omits the miner's own draw, which would import from the grid). The gate reads the latest inverter snapshot (a lock-free in-memory value), so it never blocks the poll or introduces a dependency cycle.
+- **Solar Analytics** — polls `GET /api/v3/live_site_data` (HTTP Basic auth with the account email/password) every ~15 s and reads `consumed` (watts) as whole-home consumption. Their CT hardware measures the load directly, so — unlike the SG10RS, which has no energy meter — this yields true house consumption. Margin = `solar − consumed` (see `PowerBalance`). The poll is **gated on live solar**: it only calls the cloud API while the inverter is generating more than `SOLARANALYTICS_MIN_SOLAR_W` (default 800 W) — below that no surplus is possible, so the call is skipped and consumption is marked **unavailable** — the autopilot then treats the surplus as unknown and safely stops a running miner (rather than holding it on a now-stale reading that omits the miner's own draw, which would import from the grid). The gate reads the latest inverter snapshot (a lock-free in-memory value), so it never blocks the poll or introduces a dependency cycle.
 - **Braiins OS+ miner** — GraphQL at `/graphql`. Declarative `@HttpExchange` client. `bosminer.start`/`stop` control the BOSMiner **service**; the miner only **hashes** ("Mining") when a live pool is connected — otherwise it self-pauses ("dead pools") and shows **Suspended**. Fans/hashrate are only reported while the service is up.
-- **Fans ramp on every power change** because Braiins runs them in **automatic (target-temperature) mode** — more power ⇒ more heat ⇒ higher RPM (and vice-versa). Braiins also offers a **manual fixed-speed** mode (fans hold a set %) and an **immersion** mode, but manual mode disables thermal protection and is [not recommended](https://academy.braiins.com/os/plus-en/Configuration/index_configuration.html) unless set high (≈100%). The better mitigation is to change power **less often** — the autopilot's deadzone/step/interval already limit this; widening them (or raising the target temperature) reduces fan transients without losing thermal safety. There is no separate fan-throttle-on-change knob.
+- **Fans ramp on every power change** because Braiins runs them in **automatic (target-temperature) mode** — more power ⇒ more heat ⇒ higher RPM (and vice-versa). Braiins also offers a **manual fixed-speed** mode (fans hold a set %) and an **immersion** mode, but manual mode disables thermal protection and is [not recommended](https://academy.braiins.com/os/plus-en/Configuration/index_configuration.html) unless set high (≈100%). The better mitigation is to change power **less often** — the autopilot's averaging windows, rung step, and up/down intervals already limit this; widening them (or raising the target temperature) reduces fan transients without losing thermal safety. There is no separate fan-throttle-on-change knob.
 
 ---
 
@@ -268,7 +284,7 @@ mvn clean install     # 182 backend + 57 UI tests (UI tests run as part of the b
 cd backend && mvn test # backend only (182)
 ```
 
-Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot planner** (exhaustive start/step/stop/deadzone/surplus-invariant/config-guard cases), the **live margin source** (including staleness), and an **end-to-end WireMock** test that boots the full Spring context and drives the real margin chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.
+Covers config binding/defaults, power-balance math, i18n label mapping, DTO (Jackson 3) deserialization, snapshot mapping, the WebSocket client's frame correlation, all pollers/services (mocked clients), every controller (`@WebFluxTest`), the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, divergent short/long windows, emergency + stop boundaries, never-import property sweep, config guards) — the autopilot **orchestration** (live-state re-verification, feed validity), and an **end-to-end WireMock** test that boots the full Spring context and drives the real surplus chain against simulated devices (`MockMiner`, `MockSolarAnalytics`, `MockInverter`), asserting the exact mutations the autopilot sends. **Access control** is covered by unit tests (bcrypt verify, token issue/validate/expiry/tamper, fail-closed) and a full-context test of the filter + login flow. The React UI has its own Vitest suite (including the auth token helpers and the login/logout gate) that runs during `mvn install`.
 
 ---
 
