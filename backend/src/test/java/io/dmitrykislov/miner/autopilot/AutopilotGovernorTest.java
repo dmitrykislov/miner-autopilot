@@ -43,6 +43,12 @@ class AutopilotGovernorTest {
                 true, OptionalDouble.of(S), OptionalDouble.of(S));
     }
 
+    /** Running miner with <em>divergent</em> short- and long-window available surpluses. */
+    private Input runningSL(int cur, double sShort, double sLong, Instant lastChange, Instant miningSince) {
+        return new Input(NOW, true, true, false, cur, miningSince, lastChange,
+                true, OptionalDouble.of(sShort - cur), OptionalDouble.of(sLong - cur));
+    }
+
     // ---------------------------------------------------------------- guards
     @Test void unreachableSkips() {
         Input in = new Input(NOW, false, true, false, 2000, MINED_LONG, LONG_AGO,
@@ -222,6 +228,81 @@ class AutopilotGovernorTest {
         }
     }
 
+    // ------------------------------------------- divergent short vs long windows
+    @Test void downProtectionUsesShortWindowEvenWhenLongIsStillHigh() {
+        // Recent dip: short surplus 2300 → step down to 2000, even though the long average (3600)
+        // would say "ramp up". Protection must react to the short window.
+        var d = gov.decide(runningSL(2400, 2300, 3600, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STEP_DOWN);
+        assertThat(d.targetPowerW()).isEqualTo(2000);
+    }
+
+    @Test void upRampIgnoresAShortSpikeAndUsesLongWindow() {
+        // Brief surplus spike on the short window (3600) but the long average is only 1600.
+        // The governor must NOT chase the spike — it ramps on the long window → holds.
+        var d = gov.decide(runningSL(1600, 3600, 1600, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.NONE);
+    }
+
+    @Test void upRampFollowsLongWindowWhenShortIsLower() {
+        // Short (2000) below long (3000): down-check off short holds (2000−200→rung 1600 < cur? no,
+        // cur is 1600)… actually cur 1600, short surplus 2000 supports staying; long 3000 drives up.
+        var d = gov.decide(runningSL(1600, 2000, 3000, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STEP_UP);
+        assertThat(d.targetPowerW()).isEqualTo(2400); // long 3000−200→2800 rung, capped to +2 rungs = 2400
+    }
+
+    // ------------------------------------------- emergency-gap boundary (>= gap)
+    @Test void emergencyBypassAtExactlyTheGap() {
+        // cur 2400, short surplus 1600 → over-drawing by exactly 800 (== emergencyGap) → bypass interval.
+        var d = gov.decide(runningSL(2400, 1600, 1600, RECENT, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STEP_DOWN);
+        assertThat(d.targetPowerW()).isEqualTo(1200);
+        assertThat(d.reason()).contains("importing hard");
+    }
+
+    @Test void noEmergencyJustBelowTheGapWaitsForInterval() {
+        // over-drawing by 799 (< 800) and within the down-interval → hold.
+        var d = gov.decide(runningSL(2400, 1601, 1601, RECENT, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.NONE);
+        assertThat(d.reason()).contains("down-interval");
+    }
+
+    // ------------------------------------------- stop boundary (S−headroom vs floor)
+    @Test void exactlyFloorPlusHeadroomKeepsMinerAtFloorNotStopped() {
+        // S=1400 → S−headroom = 1200 == floor (not < floor) → don't stop; step to the floor.
+        var d = gov.decide(running(1600, 1400, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STEP_DOWN);
+        assertThat(d.targetPowerW()).isEqualTo(1200);
+    }
+
+    @Test void oneWattBelowFloorPlusHeadroomStops() {
+        // S=1399 → S−headroom = 1199 < floor 1200 → stop.
+        var d = gov.decide(running(1600, 1399, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STOP);
+    }
+
+    // ------------------------------------------- up dampening for a running miner
+    @Test void runningMinerUpRampBlockedInsideUpInterval() {
+        // Wants to climb (surplus 3800) but changed 1 min ago (< 15 min up-interval) → hold.
+        var d = gov.decide(running(1200, 3800, RECENT, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.NONE);
+        assertThat(d.reason()).contains("up dampening");
+    }
+
+    @Test void rampsUpSingleRungWhenThatIsAllTheCapAllows() {
+        // surplus 2600 → long 2400 rung is exactly one rung above cur 2000 (below the 2-rung cap).
+        var d = gov.decide(running(2000, 2600, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STEP_UP);
+        assertThat(d.targetPowerW()).isEqualTo(2400);
+    }
+
+    // ------------------------------------------- interval boundary (elapsed is inclusive)
+    @Test void startAllowedExactlyAtTheUpIntervalBoundary() {
+        var d = gov.decide(off(2000, NOW.minus(Duration.ofMinutes(15)))); // == upInterval → elapsed
+        assertThat(d.action()).isEqualTo(Action.START);
+    }
+
     // ---------------------------------------------------------------- ladder + config
     @Test void ladderIsFloorToCeilByStep() {
         assertThat(gov.ladder()).containsExactly(1200, 1600, 2000, 2400, 2800, 3200, 3600);
@@ -250,9 +331,39 @@ class AutopilotGovernorTest {
         assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1600,
                 Duration.ofMinutes(10), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800))
                 .isInstanceOf(IllegalArgumentException.class);
-        // step ≤ 0 / emergency ≤ 0 / rungs < 1
+        // step ≤ 0
         assertThatThrownBy(() -> new Config(1200, 3600, 0, 200, 1600,
                 Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800))
                 .isInstanceOf(IllegalArgumentException.class);
+        // headroom < 0
+        assertThatThrownBy(() -> new Config(1200, 3600, 400, -1, 1600,
+                Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800))
+                .isInstanceOf(IllegalArgumentException.class);
+        // emergencyGap ≤ 0
+        assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1600,
+                Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        // upMaxRungsPerCycle < 1
+        assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1600,
+                Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 0, 800))
+                .isInstanceOf(IllegalArgumentException.class);
+        // non-positive downInterval
+        assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1600,
+                Duration.ofMinutes(15), Duration.ZERO, Duration.ofMinutes(15), 2, 800))
+                .isInstanceOf(IllegalArgumentException.class);
+        // non-positive longWindow
+        assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1600,
+                Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofSeconds(-1), 2, 800))
+                .isInstanceOf(IllegalArgumentException.class);
+        // non-positive upInterval
+        assertThatThrownBy(() -> new Config(1200, 3600, 400, 200, 1600,
+                Duration.ZERO, Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test void acceptsAValidConfig() {
+        assertThatCode(() -> new Config(1200, 3600, 400, 200, 1600,
+                Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800))
+                .doesNotThrowAnyException();
     }
 }

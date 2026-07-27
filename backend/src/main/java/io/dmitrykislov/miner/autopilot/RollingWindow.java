@@ -33,6 +33,7 @@ public class RollingWindow {
     private final Deque<Sample> samples = new ArrayDeque<>();
     private final Duration retain;
     private final Duration freshWithin;
+    private Instant newest; // max sample timestamp seen (null when empty); order-independent
 
     /**
      * @param retain      drop samples older than this (should be ≥ the longest window queried)
@@ -49,13 +50,17 @@ public class RollingWindow {
         this.freshWithin = freshWithin;
     }
 
-    /** Record a sample and prune anything older than {@link #retain} relative to it. */
+    /**
+     * Record a sample and prune anything older than {@link #retain} relative to the newest
+     * timestamp seen. Tolerant of out-of-order arrivals: freshness and pruning track the
+     * maximum timestamp, not merely the last-added one, so a late sample can't make the feed
+     * look stale or shift the retention cutoff backwards.
+     */
     public synchronized void add(Instant at, double value) {
         samples.addLast(new Sample(at, value));
-        Instant cutoff = at.minus(retain);
-        while (!samples.isEmpty() && samples.peekFirst().at().isBefore(cutoff)) {
-            samples.removeFirst();
-        }
+        if (newest == null || at.isAfter(newest)) newest = at;
+        Instant cutoff = newest.minus(retain);
+        samples.removeIf(s -> s.at().isBefore(cutoff));
     }
 
     /**
@@ -73,7 +78,6 @@ public class RollingWindow {
      */
     public synchronized OptionalDouble average(Instant now, Duration window, Duration minCoverage) {
         if (samples.isEmpty()) return OptionalDouble.empty();
-        Instant newest = samples.peekLast().at();
         if (Duration.between(newest, now).compareTo(freshWithin) > 0) {
             return OptionalDouble.empty(); // feed stale → unknown
         }
@@ -96,7 +100,7 @@ public class RollingWindow {
     /** True if the feed is fresh (newest sample within {@code freshWithin} of {@code now}). */
     public synchronized boolean isFresh(Instant now) {
         if (samples.isEmpty()) return false;
-        return Duration.between(samples.peekLast().at(), now).compareTo(freshWithin) <= 0;
+        return Duration.between(newest, now).compareTo(freshWithin) <= 0;
     }
 
     public synchronized int size() {
@@ -105,5 +109,6 @@ public class RollingWindow {
 
     public synchronized void clear() {
         samples.clear();
+        newest = null;
     }
 }

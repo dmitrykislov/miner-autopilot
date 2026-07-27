@@ -113,6 +113,35 @@ class RollingWindowTest {
         assertThat(w.average(at(181), Duration.ofMinutes(3), Duration.ofSeconds(60))).isEmpty();
     }
 
+    @Test void coverageBoundaryIsInclusive() {
+        RollingWindow w = window();
+        // sample at exactly (now − minCoverage) satisfies coverage
+        w.add(at(0), 1000);   // this is exactly at coverageBy for now=60, minCoverage=60
+        w.add(at(60), 1000);
+        assertThat(w.average(at(60), Duration.ofMinutes(3), Duration.ofSeconds(60)).getAsDouble())
+                .isCloseTo(1000, within(1e-6));
+    }
+
+    @Test void outOfOrderAddKeepsFreshnessAndAverageCorrect() {
+        RollingWindow w = window();
+        w.add(at(100), 1000);
+        w.add(at(50), 2000);   // arrives late with an older timestamp
+        // newest is at(100), NOT the last-added at(50): fresh at t=120 (20s old)
+        assertThat(w.isFresh(at(120))).isTrue();
+        // both samples fall in a 3-min window at t=120 → mean 1500
+        assertThat(w.average(at(120), Duration.ofMinutes(3)).getAsDouble()).isCloseTo(1500, within(1e-6));
+        // staleness is judged from the newest timestamp (100), not the last-added (50)
+        assertThat(w.isFresh(at(200))).isFalse(); // 100s old > 60s fresh bound
+    }
+
+    @Test void outOfOrderAddStillPrunesAgainstTheNewest() {
+        RollingWindow w = window(); // retain 15 min = 900s
+        w.add(at(1000), 1);
+        w.add(at(50), 2);   // 950s before the newest → older than retain → pruned on insert
+        assertThat(w.size()).isEqualTo(1);
+        assertThat(w.average(at(1000), Duration.ofMinutes(15)).getAsDouble()).isCloseTo(1, within(1e-6));
+    }
+
     @Test void clearEmptiesTheWindow() {
         RollingWindow w = window();
         w.add(at(0), 1000);

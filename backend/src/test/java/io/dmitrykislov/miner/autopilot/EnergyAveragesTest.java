@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
@@ -142,5 +143,16 @@ class EnergyAveragesTest {
                 .isInstanceOf(IllegalArgumentException.class); // freshWithin > shortWindow
         assertThatThrownBy(() -> new EnergyAverages(SHORT, LONG, FRESH, Duration.ofMinutes(5), LONG_COV))
                 .isInstanceOf(IllegalArgumentException.class); // shortCoverage > shortWindow
+        assertThatThrownBy(() -> new EnergyAverages(SHORT, LONG, FRESH, SHORT_COV, Duration.ofMinutes(20)))
+                .isInstanceOf(IllegalArgumentException.class); // longCoverage > longWindow
+        assertThatThrownBy(() -> new EnergyAverages(SHORT, LONG, FRESH, Duration.ofSeconds(-1), LONG_COV))
+                .isInstanceOf(IllegalArgumentException.class); // negative shortCoverage
+        assertThatThrownBy(() -> new EnergyAverages(SHORT, LONG, FRESH, SHORT_COV, Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class); // negative longCoverage
+    }
+
+    @Test void validConstructionWithZeroCoverageIsAllowed() {
+        assertThatCode(() -> new EnergyAverages(SHORT, LONG, FRESH, ZERO, ZERO))
+                .doesNotThrowAnyException();
     }
 }
