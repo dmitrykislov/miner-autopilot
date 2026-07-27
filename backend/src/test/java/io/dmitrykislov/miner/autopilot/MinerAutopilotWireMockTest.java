@@ -266,9 +266,19 @@ class MinerAutopilotWireMockTest {
         miner.verifyNoMutations();
     }
 
-    // ------------------------------------------- miner unreachable → skip
-    @Test void unreachableMinerSkips() {
-        inverter.solar(3.0); solar.consumption(500); miner.unreachable();
+    // ------------------------------------------- miner unreachable → (re)start on surplus
+    @Test void unreachableMinerIsRestartedWhenSurplusReturns() {
+        // A stopped Braiins miner reports its Status query as unavailable (→ unreachable), yet the
+        // start command still works. With surplus present the autopilot must recover it.
+        inverter.solar(3.0); solar.consumption(500); miner.unreachable(); // surplus 2500 ≥ start 1600
+        tick();
+        miner.verifyPowerSetTo(1200); // aims for the floor
+        miner.verifyStarted();        // and starts despite the unreachable status query
+    }
+
+    @Test void unreachableMinerWithNoSurplusIsLeftAlone() {
+        // Unreachable AND the inverter is offline (no surplus data) → nothing to start.
+        inverter.offline(); solar.consumption(500); miner.unreachable();
         tick();
         miner.verifyNoMutations();
     }

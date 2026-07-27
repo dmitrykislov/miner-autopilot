@@ -124,11 +124,15 @@ public class MinerAutopilot {
         Instant now = Instant.now();
         // Always start from a fresh, live miner state.
         MinerStatus st = minerService.refresh();
-        if (st == null || !st.reachable()) {
-            lastDecision = "miner unreachable — skipping";
+        if (st == null) {
+            lastDecision = "miner status unavailable — skipping";
             log.debug("autopilot: {}", lastDecision);
             return;
         }
+        // NOTE: we deliberately do NOT bail when the miner is unreachable. A Braiins miner whose
+        // BOSMiner service is stopped reports its GraphQL as "unavailable" (→ unreachable), yet it
+        // can still be (re)started. The governor treats an unreachable miner as OFF and start-eligible,
+        // so it can recover the miner it previously stopped once the surplus returns.
 
         trackMiningSince(st, now);
 
@@ -199,12 +203,16 @@ public class MinerAutopilot {
 
     private void startAtMin(int target, String reason) {
         MinerStatus now = minerService.refresh();
-        if (now == null || !now.reachable()) return;
-        if (now.running()) {
+        // Re-verify to avoid double-starting: skip only if it is genuinely up (reachable AND running).
+        // We deliberately do NOT bail when unreachable — a stopped Braiins miner reports unreachable
+        // but the start command still brings it up. setPowerTarget/start each fail safely (logged, no
+        // throw) if the miner is truly gone; if the target couldn't be set while stopped, the miner
+        // comes up at its previous target and the next tick's fast down-check corrects it.
+        if (now != null && now.reachable() && now.running()) {
             log.info("autopilot: miner already running — skipping start");
             return;
         }
-        minerService.setPowerTarget(target, true); // start at the floor power target
+        minerService.setPowerTarget(target, true); // aim for the floor power target
         minerService.start();
         recordChange("START", null, target, reason);
     }

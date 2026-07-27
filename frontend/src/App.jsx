@@ -279,7 +279,9 @@ export function MinerCard({ miner, pending, onStart, onStop, onSetPower }) {
         </div>
       </div>
       <div className="miner-actions">
-        <button className="btn btn-start" disabled={pending || !reachable || running}
+        {/* Start is allowed whenever the miner isn't already up — including when it reads Offline,
+            since a stopped Braiins miner reports its API as unavailable but can still be started. */}
+        <button className="btn btn-start" disabled={pending || running || !miner}
           onClick={onStart}>Start</button>
         <button className="btn btn-stop" disabled={pending || !reachable || !running}
           onClick={onStop}>Stop</button>

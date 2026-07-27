@@ -121,10 +121,24 @@ class MinerAutopilotTest {
         verifyNoInteractions(miner);
     }
 
-    @Test void unreachableMinerSkips() {
+    @Test void unreachableMinerWithNoFeedDoesNothing() {
+        // Unreachable AND no surplus data → nothing to do (can't step/stop, no reason to start).
         when(miner.refresh()).thenReturn(status(false, false, null));
         autopilot(true).tick();
         neverActs();
+    }
+
+    @Test void unreachableMinerIsRestartedWhenSurplusReturns() {
+        // The key recovery: a stopped Braiins miner reports unreachable; with surplus back, restart it.
+        when(miner.refresh()).thenReturn(status(false, false, null)); // offline/unreachable
+        liveFeed(2000, 0);                                            // surplus 2000 ≥ start 1600
+        var ap = autopilot(true);
+        var io = inOrder(miner);
+        ap.tick();
+        io.verify(miner).setPowerTarget(1200, true); // aim for the floor
+        io.verify(miner).start();                    // and bring it up despite the unreachable status
+        assertThat(ap.status().lastChange().action()).isEqualTo("START");
+        assertThat(ap.status().lastDecision()).contains("restart");
     }
 
     @Test void nullStatusSkips() {

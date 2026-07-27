@@ -44,12 +44,21 @@ describe('MinerCard', () => {
     expect(screen.getByRole('spinbutton')).toBeDisabled()
   })
 
-  it('offline: controls disabled and the error is shown', () => {
-    const m = miner({ reachable: false, running: false, state: 'OFFLINE', error: 'connection refused' })
+  it('offline: Start stays ENABLED (a stopped Braiins miner reads offline but is startable)', () => {
+    const m = miner({ reachable: false, running: false, state: 'OFFLINE', error: 'GraphQL error: Service unavailable' })
     render(<MinerCard miner={m} pending={false} onStart={noop} onStop={noop} onSetPower={noop} />)
-    expect(screen.getByText('connection refused')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled()
+    expect(screen.getByText('GraphQL error: Service unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()   // ← the fix: can recover it
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled()   // nothing running to stop
+    expect(screen.getByRole('spinbutton')).toBeDisabled()                 // can't set power while unreachable
+  })
+
+  it('offline Start button invokes onStart', () => {
+    const onStart = vi.fn()
+    const m = miner({ reachable: false, running: false, state: 'OFFLINE', error: 'x' })
+    render(<MinerCard miner={m} pending={false} onStart={onStart} onStop={noop} onSetPower={noop} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(onStart).toHaveBeenCalledOnce()
   })
 
   it('suspended: shows the reason and hides hashrate', () => {

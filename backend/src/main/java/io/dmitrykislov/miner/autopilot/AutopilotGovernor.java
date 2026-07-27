@@ -110,17 +110,22 @@ public final class AutopilotGovernor {
     }
 
     public AutopilotDecision decide(Input in) {
-        if (!in.reachable()) return none("miner unreachable — skipping");
         if (in.suspended()) return none("miner suspended (draw not in margin) — skipping");
 
-        int cur = in.running() ? (in.currentPowerW() != null ? in.currentPowerW() : cfg.floorW()) : 0;
+        // An UNREACHABLE miner is treated as OFF. A Braiins miner whose BOSMiner service is stopped
+        // reports its GraphQL as "unavailable", i.e. unreachable — but it can still be (re)started
+        // (the start command targets the service manager). We can't step or stop something we can't
+        // reach, so the only action for an unreachable miner is the START path below — this is how it
+        // recovers after the autopilot stopped it and the surplus later returns.
+        boolean running = in.reachable() && in.running();
+        int cur = running ? (in.currentPowerW() != null ? in.currentPowerW() : cfg.floorW()) : 0;
 
         // Blind: a feed has gone stale/dead → we can't know the surplus. Stop a running miner for
-        // safety; leave an off one off.
+        // safety; leave a not-running one alone.
         if (!in.dataFresh()) {
-            return in.running()
+            return running
                     ? decision(Action.STOP, 0, "no fresh solar/consumption data — stopping for safety")
-                    : none("no fresh data and miner off — nothing to do");
+                    : none("no fresh data and miner not running — nothing to do");
         }
         // Fresh feed but the window isn't covered enough yet (e.g. just after boot): don't act on a
         // sparse average — hold so a healthy miner isn't disrupted, and an off one waits for data.
@@ -130,7 +135,7 @@ public final class AutopilotGovernor {
         double sShort = in.shortMarginW().getAsDouble() + cur;
 
         // ---- protection (bypasses the up dampening) ----
-        if (in.running()) {
+        if (running) {
             // 1) can't even sustain the floor → stop now.
             if (sShort - cfg.headroomW() < cfg.floorW()) {
                 return decision(Action.STOP, 0, String.format(
@@ -159,11 +164,12 @@ public final class AutopilotGovernor {
         }
         double sLong = in.longMarginW().getAsDouble() + cur;
 
-        if (!in.running()) {
+        if (!running) {
             if (sLong >= cfg.startSurplusW()) {
                 return decision(Action.START, cfg.floorW(), String.format(
-                        "surplus %dW ≥ start %dW → start at floor %dW",
-                        Math.round(sLong), cfg.startSurplusW(), cfg.floorW()));
+                        "surplus %dW ≥ start %dW → %s at floor %dW",
+                        Math.round(sLong), cfg.startSurplusW(),
+                        in.reachable() ? "start" : "restart (miner unreachable)", cfg.floorW()));
             }
             return none(String.format("surplus %dW < start %dW → stay off", Math.round(sLong), cfg.startSurplusW()));
         }

@@ -50,11 +50,37 @@ class AutopilotGovernorTest {
     }
 
     // ---------------------------------------------------------------- guards
-    @Test void unreachableSkips() {
-        Input in = new Input(NOW, false, true, false, 2000, MINED_LONG, LONG_AGO,
-                true, OptionalDouble.of(0), OptionalDouble.of(0));
+    /** An unreachable miner (e.g. a stopped Braiins miner: API "unavailable") — treated as OFF. */
+    private Input unreachable(double S, Instant lastChange) {
+        return new Input(NOW, false, false, false, null, null, lastChange,
+                true, OptionalDouble.of(S), OptionalDouble.of(S));
+    }
+
+    @Test void unreachableMinerWithSurplusIsRestarted() {
+        // The recovery case: the autopilot stopped it (→ unreachable), the surplus later returns.
+        var d = gov.decide(unreachable(2000, LONG_AGO)); // ≥ start 1600
+        assertThat(d.action()).isEqualTo(Action.START);
+        assertThat(d.targetPowerW()).isEqualTo(1200);       // (re)start at the floor
+        assertThat(d.reason()).contains("restart");
+    }
+
+    @Test void unreachableMinerWithoutSurplusStaysOff() {
+        var d = gov.decide(unreachable(1500, LONG_AGO));    // < start 1600
+        assertThat(d.action()).isEqualTo(Action.NONE);
+        assertThat(d.reason()).contains("stay off");
+    }
+
+    @Test void unreachableMinerWithinUpIntervalWaits() {
+        // Anti-flap: don't relaunch immediately after a recent change even with surplus.
+        var d = gov.decide(unreachable(2000, RECENT));
+        assertThat(d.action()).isEqualTo(Action.NONE);
+        assertThat(d.reason()).contains("up dampening");
+    }
+
+    @Test void unreachableMinerWithStaleFeedDoesNothing() {
+        Input in = new Input(NOW, false, false, false, null, null, LONG_AGO,
+                false, OptionalDouble.empty(), OptionalDouble.empty()); // no surplus data
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
-        assertThat(gov.decide(in).reason()).contains("unreachable");
     }
 
     @Test void suspendedSkips() {
