@@ -208,12 +208,13 @@ class AutopilotGovernorTest {
         assertThat(gov.decide(in).action()).isIn(Action.NONE, Action.STEP_UP, Action.STEP_DOWN, Action.STOP);
     }
 
-    // ---------------------------------------------- never-import invariant (property)
-    @Test void aRunningMinerIsNeverTargetedAboveTheSurplus() {
+    // ---------------------------------------------- import invariants (property)
+    // Fully settled (down-interval elapsed): the resulting draw never exceeds the surplus at all.
+    @Test void aSettledRunningMinerIsNeverTargetedAboveTheSurplus() {
         int[] surpluses = {1000, 1300, 1500, 1800, 2200, 2600, 3000, 3400, 3800, 5000};
         for (int cur : gov.ladder()) {
             for (int S : surpluses) {
-                var d = gov.decide(running(cur, S, LONG_AGO, MINED_LONG));
+                var d = gov.decide(running(cur, S, LONG_AGO, MINED_LONG)); // LONG_AGO → down never throttled
                 Integer runPower = switch (d.action()) {
                     case START, STEP_UP, STEP_DOWN -> d.targetPowerW();
                     case NONE -> cur;    // holding at the current draw
@@ -223,6 +224,23 @@ class AutopilotGovernorTest {
                     assertThat((double) runPower)
                             .as("cur=%d S=%d action=%s target=%d", cur, S, d.action(), d.targetPowerW())
                             .isLessThanOrEqualTo(S); // never draws more than the available surplus
+                }
+            }
+        }
+    }
+
+    // Within the down-interval (recent change): the guarantee is BOUNDED, not absolute — a held
+    // miner over-draws the surplus by strictly less than emergencyGapW (a larger over-draw would
+    // have bypassed the interval and stepped down). This is the intended "absorb minor dips" band.
+    @Test void aThrottledRunningMinerNeverOverDrawsBeyondTheEmergencyGap() {
+        int[] surpluses = {800, 1000, 1300, 1500, 1600, 1800, 2000, 2200, 2600, 3000, 3400, 3800, 5000};
+        for (int cur : gov.ladder()) {
+            for (int S : surpluses) {
+                var d = gov.decide(running(cur, S, RECENT, MINED_LONG)); // RECENT → down throttled
+                if (d.action() == Action.NONE) { // held at cur
+                    assertThat((double) (cur - S))
+                            .as("held at cur=%d with surplus=%d", cur, S)
+                            .isLessThan(cfg.emergencyGapW());
                 }
             }
         }

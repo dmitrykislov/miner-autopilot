@@ -150,6 +150,21 @@ class HousePropertiesTest {
     }
 
     @Test
+    void rejectsCadenceIntervalBelowItsWindow() {
+        // down-interval must be ≥ short-window (else a down-step contaminates the short average).
+        assertThatThrownBy(() -> new HouseProperties.Autopilot(false, 0, 1200, 400, 200, 1600, 2, 800,
+                900_000, 60_000, 180_000, 900_000, 90_000, 1, 1)) // down 60s < short 180s
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("down-interval-ms");
+        // up-interval must be ≥ long-window (else an up-step contaminates the long average).
+        assertThatThrownBy(() -> new HouseProperties.Autopilot(false, 0, 1200, 400, 200, 1600, 2, 800,
+                60_000, 300_000, 180_000, 900_000, 90_000, 1, 1)) // up 60s < long 900s
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("up-interval-ms");
+        // The shipped defaults satisfy both (up 900s ≥ long 900s; down 300s ≥ short 180s).
+        assertThatCode(() -> new HouseProperties.Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
     void solarAnalyticsAppliesDefaults() {
         var sa = new HouseProperties.SolarAnalytics(true, null, null, null, null, 0, 0, 0, 0);
         assertThat(sa.host()).isEqualTo("https://portal.solaranalytics.com.au/api/v3");

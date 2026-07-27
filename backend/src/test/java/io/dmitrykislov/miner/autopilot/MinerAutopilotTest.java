@@ -55,7 +55,7 @@ class MinerAutopilotTest {
                         2,       // upMaxRungsPerCycle
                         800,     // emergencyGapW
                         180_000, // upIntervalMs (== longWindow)
-                        60_000,  // downIntervalMs
+                        180_000, // downIntervalMs (≥ shortWindow)
                         180_000, // shortWindowMs
                         180_000, // longWindowMs
                         90_000,  // freshWithinMs
@@ -164,6 +164,16 @@ class MinerAutopilotTest {
         when(miner.refresh()).thenReturn(status(true, true, 2800));
         publishSnapshot(true, false, Instant.now());
         feedEnergy(3000, 2800);
+        autopilot(true).tick();
+        verify(miner).stop();
+    }
+
+    @Test void deadSamplerStopsRunningMinerEvenWithValidSnapshot() {
+        // Isolate the energy.dataFresh() arm of the gate: the live snapshot is fully valid
+        // (feedValid == true), but the rolling windows were never fed (sampler dead) → stop.
+        when(miner.refresh()).thenReturn(status(true, true, 2800));
+        publishSnapshot(true, true, Instant.now()); // feedValid true
+        // deliberately do NOT feedEnergy() → energy.dataFresh() false
         autopilot(true).tick();
         verify(miner).stop();
     }

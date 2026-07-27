@@ -240,6 +240,20 @@ public record HouseProperties(
             if (freshWithinMs == 0) freshWithinMs = 90_000;    // 90 s
             if (shortCoverageMs == 0) shortCoverageMs = 60_000; // 60 s
             if (longCoverageMs == 0) longCoverageMs = 300_000;  // 5 min
+            // Cadence invariants: a change must not be able to contaminate the average that drives
+            // the NEXT change in the same direction, so each interval must be ≥ the window it acts on.
+            // Up uses the long window, down uses the short window. (The governor re-checks the up
+            // arm, but this is the single place that sees the window sizes for the down arm too.)
+            if (upIntervalMs < longWindowMs) {
+                throw new IllegalArgumentException("autopilot.up-interval-ms (" + upIntervalMs
+                        + ") must be ≥ long-window-ms (" + longWindowMs + "): a just-made up-change"
+                        + " would otherwise contaminate the long average driving the next up-move");
+            }
+            if (downIntervalMs < shortWindowMs) {
+                throw new IllegalArgumentException("autopilot.down-interval-ms (" + downIntervalMs
+                        + ") must be ≥ short-window-ms (" + shortWindowMs + "): a just-made down-change"
+                        + " would otherwise contaminate the short average driving the next down-move");
+            }
         }
     }
 }

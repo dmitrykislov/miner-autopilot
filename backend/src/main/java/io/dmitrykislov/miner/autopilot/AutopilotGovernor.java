@@ -13,21 +13,30 @@ import java.util.OptionalDouble;
  *
  * <p>It drives the miner across a fixed <b>power ladder</b> ({@code floor, floor+step, … , ceil})
  * to track the sustained solar surplus, using <b>time-averaged</b> signals so brief clouds are
- * ridden through. Design goals: <i>safe</i> (never targets above the available surplus → never
- * imports; fast, dampening-free response down/off on a sustained drop), <i>smooth</i> (gentle,
- * rung-quantized ramp-up with a min interval; hysteresis so it can't flap), and <i>miner-friendly</i>
- * (discrete pre-tunable levels rather than continuous re-tuning).
+ * ridden through. Design goals: <i>safe</i> (every command targets below the available surplus, and
+ * a sustained over-draw is corrected quickly), <i>smooth</i> (gentle, rung-quantized ramp-up with a
+ * min interval; hysteresis so it can't flap), and <i>miner-friendly</i> (discrete pre-tunable levels
+ * rather than continuous re-tuning).
  *
  * <p>Available surplus {@code S = avg(margin) + currentPower} (= solar − base-house load, which
- * is miner-independent). Target for a window = highest ladder rung ≤ {@code S − headroom}; because
- * {@code headroom > 0} the target is always strictly below the surplus, so a running miner never
- * imports by construction.
+ * is miner-independent). Every command sets the target to the highest ladder rung ≤ {@code S − headroom};
+ * because {@code headroom > 0} a command never targets at or above the surplus.
+ *
+ * <p><b>Import bound (not "never" — bounded).</b> Between commands the surplus can drift below the
+ * miner's draw. A routine down-step is throttled by {@code downInterval} to avoid chasing noise, so a
+ * <em>mild</em> over-draw is tolerated transiently — this is the intended "ignore minor dips, let the
+ * grid/battery absorb them" behaviour. The bound is deliberate: an over-draw of at least
+ * {@code emergencyGapW} bypasses {@code downInterval} and steps down immediately, so the miner never
+ * over-draws the (short-window) surplus by {@code ≥ emergencyGapW}, and any smaller over-draw lasts at
+ * most one {@code downInterval}. Tighten {@code emergencyGapW}/{@code downInterval} for stricter import
+ * control at the cost of more frequent power changes.
  *
  * <p>Cadence is deliberately asymmetric: ramp <b>up</b> slowly (long window, {@code upInterval},
  * capped rungs/cycle) only on well-established surplus; step <b>down</b>/<b>stop</b> quickly (short
- * window, shorter {@code downInterval}, uncapped, with an emergency bypass) to protect against import.
- * The invariant {@code interval ≥ its window} guarantees the average is never contaminated by a
- * just-made power change.
+ * window, shorter {@code downInterval}, uncapped, with the emergency bypass above). The invariant
+ * {@code interval ≥ its window} (up: {@code upInterval ≥ longWindow}; down: {@code downInterval ≥
+ * shortWindow}, enforced at config binding) guarantees the average driving a change is never
+ * contaminated by the previous change in that direction.
  */
 public final class AutopilotGovernor {
 

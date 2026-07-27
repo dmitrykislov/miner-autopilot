@@ -79,8 +79,8 @@ house:
     start-surplus-w: ${AUTOPILOT_START_SURPLUS_W:1600} # surplus to (re)start from off (> floor → hysteresis)
     up-max-rungs-per-cycle: ${AUTOPILOT_UP_MAX_RUNGS:2} # rungs a single up-move may climb
     emergency-gap-w: ${AUTOPILOT_EMERGENCY_GAP_W:800}   # over-draw that bypasses the down interval
-    up-interval-ms: ${AUTOPILOT_UP_INTERVAL_MS:900000}    # dampening between up/start (≥ long-window-ms)
-    down-interval-ms: ${AUTOPILOT_DOWN_INTERVAL_MS:300000} # between routine down steps
+    up-interval-ms: ${AUTOPILOT_UP_INTERVAL_MS:900000}    # dampening between up/start (must be ≥ long-window-ms)
+    down-interval-ms: ${AUTOPILOT_DOWN_INTERVAL_MS:300000} # between routine down steps (must be ≥ short-window-ms)
     short-window-ms: ${AUTOPILOT_SHORT_WINDOW_MS:180000}   # avg window for down/stop (fast)
     long-window-ms: ${AUTOPILOT_LONG_WINDOW_MS:900000}     # avg window for up/start (conservative)
     fresh-within-ms: ${AUTOPILOT_FRESH_WITHIN_MS:90000}    # a feed older than this → surplus unknown

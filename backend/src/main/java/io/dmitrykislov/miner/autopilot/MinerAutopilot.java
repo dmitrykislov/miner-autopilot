@@ -59,9 +59,10 @@ public class MinerAutopilot {
     // observation (so a long-running miner can ramp soon after a controller restart), but reset to
     // "now" on an observed resume from a non-mining state — see trackMiningSince.
     private volatile Instant miningSince;
-    // The miner state observed on the previous tick (null before the first). Lets us tell a
-    // first-observation (trust uptime) from an observed resume (mining truly just (re)started).
-    private volatile String lastObservedState;
+    // False until the first tick has observed the miner. Lets us tell a first observation (trust the
+    // miner's uptime) from an observed resume (mining truly just (re)started). A monotonic boolean —
+    // not the last state — so a one-off null/garbled state can't be mistaken for "never observed".
+    private volatile boolean minerObserved;
 
     public MinerAutopilot(EnergyAverages energy, InverterStreamService inverter,
                           MinerService minerService, HouseProperties props,
@@ -161,11 +162,11 @@ public class MinerAutopilot {
     private void trackMiningSince(MinerStatus st, Instant now) {
         if (MinerStatus.MINING.equals(st.state())) {
             if (miningSince == null) {
-                if (lastObservedState != null) {
-                    // We observed a non-mining state and now see mining → it truly just (re)started
-                    // (e.g. resume from SUSPENDED). Start the clock now so the up-average guard makes
-                    // the long window refill with real mining samples before any ramp — the window
-                    // was contaminated while the miner drew ~0 W.
+                if (minerObserved) {
+                    // We observed a non-mining state before and now see mining → it truly just
+                    // (re)started (e.g. resume from SUSPENDED). Start the clock now so the up-average
+                    // guard makes the long window refill with real mining samples before any ramp —
+                    // the window was contaminated while the miner drew ~0 W.
                     miningSince = now;
                 } else {
                     // First observation after a controller restart: trust the miner's own uptime, so a
@@ -177,7 +178,7 @@ public class MinerAutopilot {
         } else {
             miningSince = null; // suspended/stopped/offline breaks continuous mining
         }
-        lastObservedState = st.state();
+        minerObserved = true;
     }
 
     private Instant lastChangeAt() {
