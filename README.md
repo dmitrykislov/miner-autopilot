@@ -1,4 +1,4 @@
-# House Energy Monitor & Miner Controller
+# Antminer S19k Pro Autopilot based on solar energy surplus
 
 A single, self-contained app that monitors a home solar setup and controls a Bitcoin miner in real time — and can **automatically run the miner on surplus solar**.
 
@@ -20,7 +20,7 @@ The React UI and the Spring Boot backend build into **one runnable jar** (~22 MB
                            ┌─────────────────────────────────────────────┐
    Sungrow SG10RS  ──wss──▶│ WiNetWebSocketClient  ─poll 10s→ SSE        │
    (WiNet-S :443)          │                                             │
-   Solar Analytics ─HTTPS──▶│ SolarAnalyticsClient  ─poll 15s→ SSE        │──▶ React UI
+   Solar Analytics ─HTTPS─▶│ SolarAnalyticsClient  ─poll 15s→ SSE        │──▶ React UI
    (cloud API)             │                                             │   (bundled in jar)
    Braiins miner  ─GraphQL▶│ BraiinsMinerClient    ─poll 10s→ SSE        │
    (:80 /graphql)          │  (@HttpExchange declarative client)         │
