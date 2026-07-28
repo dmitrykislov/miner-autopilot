@@ -190,6 +190,80 @@ class MinerServiceTest {
     }
 
     @Test
+    void setPowerTargetDoesNotWarnWhenMinerUnreachableAfterCommand() throws Exception {
+        // Right after starting a stopped miner, the command is accepted but the read-back can't reach
+        // the still-booting API. That is "can't confirm yet", NOT "command failed" → must not WARN.
+        Logger logger = (Logger) LoggerFactory.getLogger(MinerService.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            var client = mock(BraiinsMinerClient.class);
+            when(client.status()).thenThrow(new IllegalStateException("GraphQL error: Service unavailable"));
+            MinerStatus after = svc(client, new MinerStreamService(), true, "192.168.4.28")
+                    .setPowerTarget(1200, true);
+
+            verify(client).setPowerTarget(1200, true);
+            assertThat(after.reachable()).isFalse();
+            assertThat(appender.list).noneMatch(e ->
+                    e.getLevel() == Level.WARN && e.getFormattedMessage().contains("may not have applied"));
+            assertThat(appender.list).anyMatch(e ->
+                    e.getLevel() == Level.INFO && e.getFormattedMessage().contains("not yet reachable to confirm"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void stoppedMinerReportsCleanOffWithoutErrorOrWarning() throws Exception {
+        // A stopped BOSMiner answers its status query with GraphQL "Service unavailable". That is the
+        // miner being cleanly OFF — surface it as offline with NO error (UI shows just "Off") and
+        // don't WARN (it's expected, not a fault).
+        Logger logger = (Logger) LoggerFactory.getLogger(MinerService.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            var client = mock(BraiinsMinerClient.class);
+            when(client.status()).thenThrow(new IllegalStateException("GraphQL error: Service unavailable"));
+            MinerStatus s = svc(client, new MinerStreamService(), true, "192.168.4.28").refresh();
+
+            assertThat(s.reachable()).isFalse();
+            assertThat(s.state()).isEqualTo(MinerStatus.OFFLINE);
+            assertThat(s.error()).isNull();                    // no scary GraphQL message
+            assertThat(appender.list).noneMatch(e -> e.getLevel() == Level.WARN);
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void genuinePollErrorWarnsOnceThenStaysQuiet() throws Exception {
+        // A real transport failure (not the benign "unavailable") is logged loud once, then quietly
+        // while it persists, so it can't flood the log; a healthy poll re-arms the warning.
+        Logger logger = (Logger) LoggerFactory.getLogger(MinerService.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            var client = mock(BraiinsMinerClient.class);
+            when(client.status())
+                    .thenThrow(new RuntimeException("I/O error: connection refused"))  // → WARN (first)
+                    .thenThrow(new RuntimeException("I/O error: connection refused"));  // → DEBUG (quiet)
+            var svc = svc(client, new MinerStreamService(), true, "192.168.4.28");
+            svc.refresh();
+            svc.refresh();
+
+            long warns = appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN && e.getFormattedMessage().contains("Miner poll failed"))
+                    .count();
+            assertThat(warns).isEqualTo(1); // only the first, not every subsequent poll
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
     void setPowerTargetClampsToHardwareLimits() throws Exception {
         var client = mock(BraiinsMinerClient.class);
         when(client.status()).thenReturn(node("{\"info\":{\"modelName\":\"S\"},\"uptime\":null,\"config\":{}}"));

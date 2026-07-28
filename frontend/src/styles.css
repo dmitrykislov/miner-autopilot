@@ -393,6 +393,14 @@ body {
   font-weight: 600; color: var(--text); min-width: 150px; }
 .history-range .live-dot { background: var(--good); }
 .hbtn.hnow { border: 1px solid var(--border-soft); }
+.history-custom { display: inline-flex; align-items: center; gap: 2px; margin-left: 2px;
+  padding-left: 6px; border-left: 1px solid var(--border-soft); }
+.history-custom.active { background: var(--surface); border-radius: 8px; box-shadow: var(--shadow-sm); }
+.history-custom input { width: 42px; background: transparent; border: none; color: var(--text);
+  font: inherit; font-size: 0.82rem; text-align: right; padding: 4px 2px; -moz-appearance: textfield; }
+.history-custom input::-webkit-outer-spin-button,
+.history-custom input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.history-custom input:focus { outline: none; }
 
 /* history: solar-vs-home difference fill */
 .history-svg .surplus-fill { fill: var(--export); fill-opacity: 0.16; }

@@ -26,6 +26,12 @@ public class MinerService {
     private final MinerStreamService stream;
     private final HouseProperties.Miner cfg;
 
+    // Have we already logged the current genuine-error outage at WARN? Log a real transport failure
+    // loudly once, then quietly while it persists, so it can't flood the log with identical WARNs; a
+    // healthy poll clears the latch so the next new outage warns again. (A stopped miner's "Service
+    // unavailable" is handled separately as a clean off — it never warns at all.)
+    private volatile boolean loggedGenuineError = false;
+
     public MinerService(BraiinsMinerClient client, MinerStreamService stream, HouseProperties props) {
         this.client = client;
         this.stream = stream;
@@ -102,10 +108,26 @@ public class MinerService {
                 }
             }
 
+            loggedGenuineError = false; // healthy poll → re-arm the loud warning for a future outage
             return publish(new MinerStatus(true, running, state, reason, model, powerTarget, tunerEnabled,
                     activePools, totalPools, hashrateThs, powerDrawW, fans, uptimeS, now, null));
         } catch (Exception e) {
-            log.warn("Miner poll failed: {}", e.toString());
+            // A stopped BOSMiner answers its status query with GraphQL "Service unavailable" — that is
+            // the miner being cleanly OFF, not a fault. Surface it as off with NO error message (the
+            // UI then just shows "Off"), and keep the log quiet. Genuine transport failures
+            // (connection refused, timeout, unexpected GraphQL errors) keep their message and are
+            // logged loudly once on the transition so a real new problem is still visible.
+            String msg = e.getMessage();
+            if (msg != null && msg.toLowerCase().contains("unavailable")) {
+                log.debug("Miner service unavailable (BOSMiner stopped → off)");
+                return publish(MinerStatus.offline(now, null));
+            }
+            if (loggedGenuineError) {
+                log.debug("Miner still unreachable: {}", e.toString());
+            } else {
+                log.warn("Miner poll failed: {}", e.toString());
+                loggedGenuineError = true;
+            }
             return publish(MinerStatus.offline(now, e.getMessage()));
         }
     }
@@ -149,7 +171,12 @@ public class MinerService {
         // read-back distinguishes an accepted command from one that silently didn't apply.
         MinerStatus after = refresh();
         Integer applied = after.powerTargetW();
-        if (applied != null && applied == clamped) {
+        if (!after.reachable()) {
+            // Common right after starting a stopped miner: BOSMiner is still booting and its API is
+            // not up yet, so we simply can't confirm here (not a failure). The next poll verifies.
+            log.info("Power target set to {}W; miner not yet reachable to confirm — will verify on next poll",
+                    clamped);
+        } else if (applied != null && applied == clamped) {
             log.info("Power target set to {}W — miner confirms {}W (actual draw ramps via autotuning)",
                     clamped, applied);
         } else {

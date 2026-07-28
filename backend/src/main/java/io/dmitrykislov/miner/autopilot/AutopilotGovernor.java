@@ -18,9 +18,11 @@ import java.util.OptionalDouble;
  * min interval; hysteresis so it can't flap), and <i>miner-friendly</i> (discrete pre-tunable levels
  * rather than continuous re-tuning).
  *
- * <p>Available surplus {@code S = avg(margin) + currentPower} (= solar − base-house load, which
- * is miner-independent). Every command sets the target to the highest ladder rung ≤ {@code S − headroom};
- * because {@code headroom > 0} a command never targets at or above the surplus.
+ * <p>Available surplus {@code S} is the time-averaged, <b>miner-independent</b> surplus
+ * (= solar − base-house load; the miner's own draw is already added back by {@link EnergyAverages}),
+ * so it must never have the current power added again. Every command sets the target to the highest
+ * ladder rung ≤ {@code S − headroom}; because {@code headroom > 0} a command never targets at or
+ * above the surplus.
  *
  * <p><b>Import bound (not "never" — bounded).</b> Between commands the surplus can drift below the
  * miner's draw. A routine down-step is throttled by {@code downInterval} to avoid chasing noise, so a
@@ -37,6 +39,12 @@ import java.util.OptionalDouble;
  * {@code interval ≥ its window} (up: {@code upInterval ≥ longWindow}; down: {@code downInterval ≥
  * shortWindow}, enforced at config binding) guarantees the average driving a change is never
  * contaminated by the previous change in that direction.
+ *
+ * <p><b>Restart</b> (from off) is <em>not</em> gated by the long {@code upInterval} — that would
+ * strand a returning surplus off-grid for a whole up-interval. It is gated by the short
+ * {@code downInterval} cooldown and requires both a sustained long-window surplus ≥
+ * {@code startSurplus} <b>and</b> a short-window confirmation that the floor is sustainable now, so
+ * it recovers promptly yet never restarts straight back into a protective stop.
  */
 public final class AutopilotGovernor {
 
@@ -45,10 +53,13 @@ public final class AutopilotGovernor {
      * @param ceilW         highest power (hardware/user ceiling)
      * @param stepW         ladder rung spacing
      * @param headroomW     surplus kept unused (anti-import buffer); target = S − headroom
-     * @param startSurplusW surplus (long-window) required to (re)start from off — must be > floor
-     *                      so start/stop have hysteresis and can't flap
-     * @param upInterval    min time between up/start commands (dampening); must be ≥ longWindow
-     * @param downInterval  min time between routine down commands (protection can bypass it)
+     * @param startSurplusW long-window surplus required to (re)start from off — must be > floor so
+     *                      start/stop have hysteresis; restart additionally requires the short-window
+     *                      surplus to cover the floor, so it can't restart into an immediate stop
+     * @param upInterval    min time between up-step commands while running (dampening); must be ≥
+     *                      longWindow. Does NOT gate restart from off — that uses downInterval.
+     * @param downInterval  min time between routine down commands (protection can bypass it); also
+     *                      the cooldown before a restart from off
      * @param longWindow    averaging window used for up/start; also the "mined long enough" guard
      * @param upMaxRungsPerCycle cap on how many rungs a single up-move may climb (smooth ramp)
      * @param emergencyGapW if the miner is over-drawing the surplus by at least this, a down-step
@@ -168,7 +179,41 @@ public final class AutopilotGovernor {
             }
         }
 
-        // ---- optimization (dampened) ----
+        // ---- (re)start decision for a miner that is off/unreachable ----
+        // Evaluated BEFORE the up-dampening gate on purpose: a stopped miner has no up-step to dampen,
+        // and gating restart by the long up-interval would strand a real surplus off-grid for up to
+        // that whole interval (observed live: ~15 min of >5 kW surplus wasted after a cloud stop).
+        // Restart instead requires (a) a sustained long-window surplus ≥ startSurplus, (b) a
+        // short-window confirmation that the floor is sustainable *right now* so it never restarts
+        // straight back into a protective stop (the short vs long gap is the anti-flap hysteresis),
+        // and (c) a brief downInterval cooldown to bound power cycling for the hardware's sake.
+        if (!running) {
+            if (in.longSurplusW().isEmpty()) {
+                return none("no long-window average yet → holding");
+            }
+            double sLong = in.longSurplusW().getAsDouble();
+            if (sLong < cfg.startSurplusW()) {
+                return none(String.format("surplus %dW < start %dW → stay off",
+                        Math.round(sLong), cfg.startSurplusW()));
+            }
+            if (sShort - cfg.headroomW() < cfg.floorW()) {
+                return none(String.format(
+                        "long surplus %dW ≥ start but recent surplus %dW can't yet hold floor %dW → stay off",
+                        Math.round(sLong), Math.round(sShort), cfg.floorW()));
+            }
+            if (!elapsed(in.lastChangeAt(), in.now(), cfg.downInterval())) {
+                return none(String.format("surplus %dW ≥ start but within restart cooldown → holding",
+                        Math.round(sLong)));
+            }
+            return decision(Action.START, cfg.floorW(), String.format(
+                    "surplus %dW ≥ start %dW → %s at floor %dW",
+                    Math.round(sLong), cfg.startSurplusW(),
+                    in.reachable() ? "start" : "restart (miner unreachable)", cfg.floorW()));
+        }
+
+        // ---- running: optimization / ramp-up (dampened) ----
+        // The up-dampening gate applies to a RUNNING miner's up-steps only (the start path above is
+        // gated separately) so the miner climbs the ladder only on a well-established surplus.
         if (!elapsed(in.lastChangeAt(), in.now(), cfg.upInterval())) {
             return none("within up dampening window → holding");
         }
@@ -176,19 +221,8 @@ public final class AutopilotGovernor {
             return none("no long-window average yet → holding");
         }
         double sLong = in.longSurplusW().getAsDouble();
-
-        if (!running) {
-            if (sLong >= cfg.startSurplusW()) {
-                return decision(Action.START, cfg.floorW(), String.format(
-                        "surplus %dW ≥ start %dW → %s at floor %dW",
-                        Math.round(sLong), cfg.startSurplusW(),
-                        in.reachable() ? "start" : "restart (miner unreachable)", cfg.floorW()));
-            }
-            return none(String.format("surplus %dW < start %dW → stay off", Math.round(sLong), cfg.startSurplusW()));
-        }
-
-        // running: ramp up, but only once we've mined long enough for the long average to be valid,
-        // and only by a bounded number of rungs per cycle.
+        // ramp up only once we've mined long enough for the long average to be valid, and only by a
+        // bounded number of rungs per cycle.
         if (!minedLongEnough(in)) {
             return none("mining not long enough for a valid up-average → holding");
         }

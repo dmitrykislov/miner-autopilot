@@ -97,7 +97,7 @@ export function daylightExtent(samples, thresholdW = 50) {
   return first !== null && last > first ? [first, last] : null
 }
 
-const MINER_LABELS = { MINING: 'Mining', SUSPENDED: 'Suspended', STOPPED: 'Stopped', OFFLINE: 'Offline' }
+const MINER_LABELS = { MINING: 'Mining', SUSPENDED: 'Suspended', STOPPED: 'Stopped', OFFLINE: 'Off' }
 
 /**
  * Derives the miner card's display state from a status object (or null).
@@ -109,7 +109,11 @@ export function minerView(miner) {
   const running = !!miner?.running
   const state = miner?.state
   const mining = state === 'MINING'
-  const statusText = !miner ? 'Connecting…' : (MINER_LABELS[state] || (reachable ? 'Unknown' : 'Offline'))
+  // A cleanly-off miner (stopped BOSMiner) reads as "Off"; only a genuine transport error shows
+  // "Offline" (and the error line) — a stopped miner reports no error.
+  const statusText = !miner ? 'Connecting…'
+    : state === 'OFFLINE' ? (miner.error ? 'Offline' : 'Off')
+    : (MINER_LABELS[state] || (reachable ? 'Unknown' : 'Off'))
   const dot = mining ? 'on' : state === 'SUSPENDED' ? 'warn' : state === 'OFFLINE' ? 'offline' : 'off'
   const cardCls = mining ? 'is-on' : state === 'OFFLINE' ? 'is-offline' : state === 'SUSPENDED' ? 'is-warn' : 'is-off'
   return { reachable, running, mining, statusText, dot, cardCls, upStr: formatUptime(miner?.uptimeSeconds) }

@@ -3,6 +3,8 @@ package io.dmitrykislov.miner.autopilot;
 import io.dmitrykislov.miner.braiins.MinerService;
 import io.dmitrykislov.miner.braiins.MinerStatus;
 import io.dmitrykislov.miner.config.HouseProperties;
+import io.dmitrykislov.miner.history.PowerChangeEvent;
+import io.dmitrykislov.miner.history.TelemetryStore;
 import io.dmitrykislov.miner.inverter.InverterStreamService;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import org.slf4j.Logger;
@@ -66,7 +68,7 @@ public class MinerAutopilot {
 
     public MinerAutopilot(EnergyAverages energy, InverterStreamService inverter,
                           MinerService minerService, HouseProperties props,
-                          AutopilotStreamService statusStream) {
+                          AutopilotStreamService statusStream, TelemetryStore history) {
         this.energy = energy;
         this.inverter = inverter;
         this.minerService = minerService;
@@ -82,8 +84,24 @@ public class MinerAutopilot {
         // be piloted on stale data. 4× the poll interval rides out transient GC/scheduling jitter.
         this.maxSnapshotAge = Duration.ofMillis(Math.max(1L, props.inverter().pollIntervalMs()) * 4);
         this.enabled.set(cfg.enabled());
+        // Restore the last power change from persisted history so a controller restart doesn't forget
+        // what it just did: the governor's restart cooldown / up-dampening are measured from
+        // lastChangeAt, so without this a reboot would reset them to "elapsed" and could act too soon.
+        restoreLastChange(history);
         this.lastDecision = cfg.enabled() ? "enabled — awaiting first evaluation" : "disabled";
         statusStream.publish(status());
+    }
+
+    private void restoreLastChange(TelemetryStore history) {
+        try {
+            PowerChangeEvent e = history.latestEvent();
+            if (e != null) {
+                lastChange.set(new AutopilotStatus.Change(e.at(), e.action(), e.fromW(), e.toW(), e.reason()));
+                log.info("autopilot: restored last change from history — {} at {}", e.action(), e.at());
+            }
+        } catch (Exception ex) {
+            log.debug("autopilot: could not restore last change from history: {}", ex.toString());
+        }
     }
 
     // ---- runtime control / status (used by the API + UI) --------------------

@@ -53,6 +53,16 @@ describe('MinerCard', () => {
     expect(screen.getByRole('spinbutton')).toBeDisabled()                 // can't set power while unreachable
   })
 
+  it('cleanly off (no error): shows "Off" and no error line, Start enabled', () => {
+    const m = miner({ reachable: false, running: false, state: 'OFFLINE',
+      hashrateThs: null, powerDrawW: null, fans: [], error: null })
+    const { container } = render(
+      <MinerCard miner={m} pending={false} onStart={noop} onStop={noop} onSetPower={noop} />)
+    expect(container.textContent).toContain('Off')
+    expect(container.querySelector('.plug-error')).toBeNull()          // no scary message when just off
+    expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()
+  })
+
   it('offline Start button invokes onStart', () => {
     const onStart = vi.fn()
     const m = miner({ reachable: false, running: false, state: 'OFFLINE', error: 'x' })

@@ -29,7 +29,9 @@ public class MockMiner {
     public void reset() {
         wm.resetAll();
         stubMutation("WorkspaceBosStart", "{\"data\":{\"bosminer\":{\"start\":{\"__typename\":\"BosminerResult\"}}}}");
-        stubMutation("WorkspaceBosStop",
+        // Real Braiins OS+ answers the stop mutation with a JSON body mislabelled octet-stream — mirror
+        // that here so the e2e suite exercises the transport's content-type tolerance, not just JSON.
+        stubMutationWithContentType("WorkspaceBosStop", "application/octet-stream",
                 "{\"data\":{\"bosminer\":{\"stop\":{\"__typename\":\"VoidResult\",\"void\":true}}}}");
         stubMutation("SettingsPerformanceEditWithTuning",
                 "{\"data\":{\"bosminer\":{\"config\":{\"updateAutotuning\":{\"__typename\":\"BosminerConfig\"}}}}}");
@@ -85,6 +87,11 @@ public class MockMiner {
     private void stubMutation(String op, String responseJson) {
         wm.stubFor(post("/graphql").withRequestBody(matchingJsonPath("$[?(@.operationName == '" + op + "')]"))
                 .willReturn(okJson(responseJson)));
+    }
+
+    private void stubMutationWithContentType(String op, String contentType, String body) {
+        wm.stubFor(post("/graphql").withRequestBody(matchingJsonPath("$[?(@.operationName == '" + op + "')]"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", contentType).withBody(body)));
     }
 
     private void verifyOp(String op, int times) {

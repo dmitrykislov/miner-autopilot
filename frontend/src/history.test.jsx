@@ -139,6 +139,18 @@ describe('HistoryChart', () => {
     await waitFor(() => expect(lastRange(authFetch).span).toBeCloseTo(3600e3, -3)) // ~1h
   })
 
+  it('shows a custom number of hours when entered', async () => {
+    const authFetch = fakeFetch(payload())
+    render(<HistoryChart authFetch={authFetch} />)
+    await screen.findByTestId('history-line-solarW')
+
+    const input = screen.getByLabelText('Custom hours')
+    fireEvent.change(input, { target: { value: '6' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Show custom hours' }))
+    // The requested range must span exactly the 6 hours the user asked for.
+    await waitFor(() => expect(lastRange(authFetch).span).toBeCloseTo(6 * 3600e3, -3))
+  })
+
   it('steps back in time and returns to live with "Now"', async () => {
     const authFetch = fakeFetch(payload())
     render(<HistoryChart authFetch={authFetch} />)

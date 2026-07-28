@@ -44,6 +44,12 @@ class AutopilotGovernorTest {
                 true, OptionalDouble.of(S), OptionalDouble.of(S));
     }
 
+    /** Off miner with <em>divergent</em> short/long surpluses (for the restart confirmation guard). */
+    private Input offSL(double sShort, double sLong, Instant lastChange) {
+        return new Input(NOW, true, false, false, null, null, lastChange,
+                true, OptionalDouble.of(sShort), OptionalDouble.of(sLong));
+    }
+
     /** Running miner with <em>divergent</em> short- and long-window available surpluses. */
     private Input runningSL(int cur, double sShort, double sLong, Instant lastChange, Instant miningSince) {
         return new Input(NOW, true, true, false, cur, miningSince, lastChange,
@@ -71,11 +77,13 @@ class AutopilotGovernorTest {
         assertThat(d.reason()).contains("stay off");
     }
 
-    @Test void unreachableMinerWithinUpIntervalWaits() {
-        // Anti-flap: don't relaunch immediately after a recent change even with surplus.
+    @Test void unreachableMinerWithinRestartCooldownWaits() {
+        // Anti-cycling: don't relaunch immediately after a recent change even with surplus. Restart is
+        // gated by the SHORT downInterval cooldown (5 min), not the long up-interval — RECENT (1 min)
+        // is inside it.
         var d = gov.decide(unreachable(2000, RECENT));
         assertThat(d.action()).isEqualTo(Action.NONE);
-        assertThat(d.reason()).contains("up dampening");
+        assertThat(d.reason()).contains("restart cooldown");
     }
 
     @Test void unreachableMinerWithStaleFeedDoesNothing() {
@@ -130,12 +138,42 @@ class AutopilotGovernorTest {
         assertThat(gov.decide(off(1599, LONG_AGO)).reason()).contains("stay off");
     }
 
-    @Test void doesNotStartWithinDampeningWindow() {
-        assertThat(gov.decide(off(5000, RECENT)).action()).isEqualTo(Action.NONE); // huge surplus but too soon
+    @Test void doesNotStartWithinRestartCooldown() {
+        var d = gov.decide(off(5000, RECENT)); // huge surplus but only 1 min since the last change
+        assertThat(d.action()).isEqualTo(Action.NONE);
+        assertThat(d.reason()).contains("restart cooldown");
     }
 
     @Test void startAllowedWhenNeverChanged() {
         assertThat(gov.decide(off(2000, null)).action()).isEqualTo(Action.START); // null lastChange = elapsed
+    }
+
+    @Test void restartAllowedAfterDownIntervalEvenWhileWithinUpInterval() {
+        // The bug this fixes: a stopped miner was blocked from restarting for the whole 15-min
+        // up-interval, stranding a returned surplus off-grid. Restart must be allowed once the SHORT
+        // 5-min cooldown has passed, even though the 15-min up-interval has NOT.
+        var eightMinAgo = NOW.minus(Duration.ofMinutes(8)); // > downInterval(5), < upInterval(15)
+        var d = gov.decide(off(5000, eightMinAgo));
+        assertThat(d.action()).isEqualTo(Action.START);
+        assertThat(d.targetPowerW()).isEqualTo(1200);
+    }
+
+    @Test void restartAllowedExactlyAtDownIntervalBoundary() {
+        var d = gov.decide(off(2000, NOW.minus(Duration.ofMinutes(5)))); // == downInterval → elapsed
+        assertThat(d.action()).isEqualTo(Action.START);
+    }
+
+    @Test void restartBlockedWhenShortWindowCannotYetHoldFloor() {
+        // Anti-flap confirmation: long surplus is well above start, but the recent (short) surplus
+        // can't cover floor+headroom yet — restarting now would trip an immediate protective stop.
+        var d = gov.decide(offSL(1300, 2500, LONG_AGO)); // sShort−headroom=1100 < floor 1200
+        assertThat(d.action()).isEqualTo(Action.NONE);
+        assertThat(d.reason()).contains("can't yet hold floor");
+    }
+
+    @Test void restartProceedsOnceShortWindowConfirmsFloorIsSustainable() {
+        var d = gov.decide(offSL(1500, 2500, LONG_AGO)); // sShort−headroom=1300 ≥ floor 1200
+        assertThat(d.action()).isEqualTo(Action.START);
     }
 
     // ---------------------------------------------------------------- step up
@@ -343,9 +381,10 @@ class AutopilotGovernorTest {
     }
 
     // ------------------------------------------- interval boundary (elapsed is inclusive)
-    @Test void startAllowedExactlyAtTheUpIntervalBoundary() {
-        var d = gov.decide(off(2000, NOW.minus(Duration.ofMinutes(15)))); // == upInterval → elapsed
-        assertThat(d.action()).isEqualTo(Action.START);
+    @Test void upStepAllowedExactlyAtTheUpIntervalBoundary() {
+        // A RUNNING miner's up-step is gated by the 15-min up-interval; exactly at the boundary → allowed.
+        var d = gov.decide(running(1200, 3800, NOW.minus(Duration.ofMinutes(15)), MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STEP_UP);
     }
 
     // ---------------------------------------------------------------- ladder + config

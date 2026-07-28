@@ -3,6 +3,8 @@ package io.dmitrykislov.miner.autopilot;
 import io.dmitrykislov.miner.braiins.MinerService;
 import io.dmitrykislov.miner.braiins.MinerStatus;
 import io.dmitrykislov.miner.config.HouseProperties;
+import io.dmitrykislov.miner.history.PowerChangeEvent;
+import io.dmitrykislov.miner.history.TelemetryStore;
 import io.dmitrykislov.miner.inverter.InverterStreamService;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import io.dmitrykislov.miner.inverter.model.PowerBalance;
@@ -34,10 +36,12 @@ class MinerAutopilotTest {
     private InverterStreamService inverterStream;
     private EnergyAverages energy;
     private AutopilotStreamService stream;
+    private TelemetryStore history;
 
     @BeforeEach
     void setup() {
         miner = mock(MinerService.class);
+        history = mock(TelemetryStore.class); // no persisted history by default → latestEvent() == null
         inverterStream = new InverterStreamService();
         energy = new EnergyAverages(
                 Duration.ofMinutes(3), Duration.ofMinutes(3), Duration.ofSeconds(90),
@@ -65,7 +69,7 @@ class MinerAutopilotTest {
 
     private MinerAutopilot autopilot(boolean enabled) {
         stream = new AutopilotStreamService();
-        return new MinerAutopilot(energy, inverterStream, miner, props(enabled), stream);
+        return new MinerAutopilot(energy, inverterStream, miner, props(enabled), stream, history);
     }
 
     private MinerStatus status(boolean reachable, boolean running, Integer powerTargetW) {
@@ -76,6 +80,28 @@ class MinerAutopilotTest {
         return new MinerStatus(reachable, running, running ? "MINING" : "STOPPED", null, "S19k",
                 powerTargetW, true, running ? 1 : 0, 1, null, null, List.of(),
                 uptimeS, Instant.now(), null);
+    }
+
+    @Test
+    void restoresLastChangeFromHistoryOnStartup() {
+        // A controller restart must not forget the last power change: the governor's cooldown /
+        // up-dampening are measured from it. Seed it from the newest persisted event.
+        Instant when = Instant.parse("2026-07-27T11:59:00Z");
+        when(history.latestEvent()).thenReturn(
+                new PowerChangeEvent(when, "STOP", 1200, null, "surplus 900W can't hold floor → stop"));
+
+        var ap = autopilot(true).status();
+
+        assertThat(ap.lastChange()).isNotNull();
+        assertThat(ap.lastChange().action()).isEqualTo("STOP");
+        assertThat(ap.lastChange().at()).isEqualTo(when);
+        assertThat(ap.lastChangeAt()).isEqualTo(when);
+    }
+
+    @Test
+    void toleratesEmptyHistoryOnStartup() {
+        when(history.latestEvent()).thenReturn(null); // fresh install / history disabled
+        assertThat(autopilot(true).status().lastChange()).isNull();
     }
 
     /** Service up but paused (dead pools): running=true, state=SUSPENDED, ~0 W draw. */

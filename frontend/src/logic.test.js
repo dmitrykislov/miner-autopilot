@@ -106,13 +106,17 @@ describe('minerView', () => {
     const v = minerView({ reachable: true, running: false, state: 'STOPPED' })
     expect(v).toMatchObject({ statusText: 'Stopped', dot: 'off', cardCls: 'is-off' })
   })
-  it('OFFLINE → red dot, is-offline', () => {
+  it('OFFLINE with no error → clean "Off"', () => {
     const v = minerView({ reachable: false, running: false, state: 'OFFLINE' })
-    expect(v).toMatchObject({ statusText: 'Offline', dot: 'offline', cardCls: 'is-offline' })
+    expect(v).toMatchObject({ statusText: 'Off', dot: 'offline', cardCls: 'is-offline' })
+  })
+  it('OFFLINE with a genuine error → "Offline"', () => {
+    const v = minerView({ reachable: false, running: false, state: 'OFFLINE', error: 'connection refused' })
+    expect(v.statusText).toBe('Offline')
   })
   it('unknown state falls back sensibly by reachability', () => {
     expect(minerView({ reachable: true, state: 'WEIRD' }).statusText).toBe('Unknown')
-    expect(minerView({ reachable: false, state: 'WEIRD' }).statusText).toBe('Offline')
+    expect(minerView({ reachable: false, state: 'WEIRD' }).statusText).toBe('Off')
   })
 })
 

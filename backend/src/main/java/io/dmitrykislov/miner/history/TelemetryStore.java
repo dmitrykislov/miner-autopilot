@@ -99,6 +99,12 @@ public class TelemetryStore {
         return eventsBetween(from, Instant.MAX);
     }
 
+    /** The most recently recorded power-change event (newest), or null if none — used to restore the
+     *  autopilot's "last change" across a controller restart so its cooldown/dampening survive. */
+    public synchronized PowerChangeEvent latestEvent() {
+        return events.peekLast();
+    }
+
     /** Samples with {@code from ≤ at ≤ to}, time-ascending. */
     public synchronized List<TelemetrySample> samplesBetween(Instant from, Instant to) {
         List<TelemetrySample> out = new ArrayList<>();

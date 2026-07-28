@@ -46,6 +46,8 @@ const fmtDay = timeFormat('%a, %b %d')
  */
 export default function HistoryChart({ authFetch }) {
   const [winIdx, setWinIdx] = useState(DEFAULT_WIN)
+  const [custom, setCustom] = useState(null)     // a { hours } window typed by the user, or null
+  const [customHours, setCustomHours] = useState('')
   const [offset, setOffset] = useState(0) // 0 = latest/live; higher = further back
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -56,7 +58,7 @@ export default function HistoryChart({ authFetch }) {
   const fetchRef = useRef(authFetch)
   fetchRef.current = authFetch
 
-  const win = WINDOWS[winIdx]
+  const win = custom || WINDOWS[winIdx]
   const live = offset === 0
 
   // Responsive width (falls back to a fixed width under jsdom, where ResizeObserver is absent).
@@ -169,10 +171,24 @@ export default function HistoryChart({ authFetch }) {
         <h2>History</h2>
         <div className="history-windows" role="tablist" aria-label="History window">
           {WINDOWS.map((wnd, i) => (
-            <button key={wnd.key} type="button" role="tab" aria-selected={i === winIdx}
-              className={`hbtn ${i === winIdx ? 'active' : ''}`}
-              onClick={() => { setWinIdx(i); setOffset(0) }}>{wnd.label}</button>
+            <button key={wnd.key} type="button" role="tab" aria-selected={!custom && i === winIdx}
+              className={`hbtn ${!custom && i === winIdx ? 'active' : ''}`}
+              onClick={() => { setCustom(null); setWinIdx(i); setOffset(0) }}>{wnd.label}</button>
           ))}
+          {/* Custom span: type any number of hours to display. */}
+          <form className={`history-custom ${custom ? 'active' : ''}`} onSubmit={(e) => {
+            e.preventDefault()
+            const n = Number(customHours)
+            if (Number.isFinite(n) && n >= 1) {
+              setCustom({ key: 'custom', label: `${n}h`, hours: Math.min(n, retentionDays * 24) })
+              setOffset(0)
+            }
+          }}>
+            <input type="number" min="1" max={retentionDays * 24} step="1" value={customHours}
+              placeholder="hrs" aria-label="Custom hours"
+              onChange={(e) => setCustomHours(e.target.value)} />
+            <button type="submit" className="hbtn" aria-label="Show custom hours">Go</button>
+          </form>
         </div>
       </div>
 

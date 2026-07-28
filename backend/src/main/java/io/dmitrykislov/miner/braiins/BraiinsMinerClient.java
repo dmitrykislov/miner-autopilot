@@ -2,6 +2,8 @@ package io.dmitrykislov.miner.braiins;
 
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.MissingNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.Map;
 
@@ -59,6 +61,7 @@ public class BraiinsMinerClient {
         }""";
 
     private final BraiinsApi api;
+    private final JsonMapper mapper = JsonMapper.builder().build();
 
     public BraiinsMinerClient(BraiinsApi api) {
         this.api = api;
@@ -106,12 +109,19 @@ public class BraiinsMinerClient {
     // ---- transport / error handling ----------------------------------------
 
     private JsonNode exec(GraphQlRequest req) {
-        JsonNode resp = api.execute(req);
+        JsonNode resp = parse(api.execute(req));
         JsonNode errors = resp.path("errors");
         if (errors.isArray() && !errors.isEmpty()) {
             throw new IllegalStateException("GraphQL error: " + errors.get(0).path("message").asText("unknown"));
         }
         return resp.path("data");
+    }
+
+    /** Parse the raw response bytes as JSON, tolerating an empty body (a successful mutation may
+     *  return nothing) → a missing node, which carries neither errors nor data. */
+    private JsonNode parse(byte[] body) {
+        if (body == null || body.length == 0) return MissingNode.getInstance();
+        return mapper.readTree(body);
     }
 
     /** Result unions carry a {@code message} field only on the error variant. */
