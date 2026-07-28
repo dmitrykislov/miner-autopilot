@@ -34,10 +34,10 @@ find_jar() { ls -t backend/target/*.jar 2>/dev/null | grep -v 'original' | head 
 
 build() {
   require node; require npm; require mvn; require java
-  echo "▶ [1/2] building React UI → backend/src/main/resources/static"
+  echo "▶ building React UI + packaging Spring Boot jar (UI bundled inside)"
   rm -rf backend/src/main/resources/static   # avoid stale bundles accumulating
-  ( cd frontend && (npm ci || npm install) && npm run build )
-  echo "▶ [2/2] packaging Spring Boot jar (UI bundled inside)"
+  # The Maven build already builds the UI (exec-maven-plugin: npm ci + vite build, bound
+  # to generate-resources), so the UI is built exactly once here — no separate npm step.
   ( cd backend && mvn -q -DskipTests clean package )   # clean drops stale bundled assets
   local jar; jar="$(find_jar)"
   echo "✔ built: $jar ($(du -h "$jar" | cut -f1))"
