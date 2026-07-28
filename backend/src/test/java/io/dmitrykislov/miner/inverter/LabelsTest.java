@@ -27,6 +27,13 @@ class LabelsTest {
         assertThat(Labels.value("I18N_COMMON_STANDBY")).isEqualTo("Standby");
         assertThat(Labels.value("I18N_COMMON_RUNNING")).isEqualTo("Running");
         assertThat(Labels.value("I18N_COMMON_FAULT")).isEqualTo("Fault");
+        assertThat(Labels.value("I18N_COMMON_ON_GRID_OPERATION")).isEqualTo("On Grid"); // the header state
+    }
+
+    @Test
+    void prettifiesUnknownI18nValueKeysRatherThanShowingTheRawKey() {
+        // A new firmware state we haven't mapped must still render as friendly text, not "I18N_…".
+        assertThat(Labels.value("I18N_COMMON_OFF_GRID_OPERATION")).isEqualTo("Off Grid Operation");
     }
 
     @Test

@@ -40,6 +40,7 @@ public final class Labels {
     private static final Map<String, String> VALUE = Map.ofEntries(
             Map.entry("I18N_COMMON_STANDBY", "Standby"),
             Map.entry("I18N_COMMON_RUNNING", "Running"),
+            Map.entry("I18N_COMMON_ON_GRID_OPERATION", "On Grid"), // normal grid-connected operation
             Map.entry("I18N_COMMON_INITIAL_STANDBY", "Initial Standby"),
             Map.entry("I18N_COMMON_STARTUP", "Starting Up"),
             Map.entry("I18N_COMMON_SHUTDOWN", "Shutdown"),
@@ -61,7 +62,10 @@ public final class Labels {
     public static String value(String raw) {
         if (raw == null) return null;
         String mapped = VALUE.get(raw);
-        return mapped != null ? mapped : raw;
+        if (mapped != null) return mapped;
+        // An unmapped value that is itself an i18n key (new firmware state, etc.) should still render
+        // as friendly text — never the raw I18N_… key. Plain values (numbers, "--") pass through.
+        return raw.startsWith("I18N_") ? prettify(raw) : raw;
     }
 
     /** Turn "I18N_CONFIG_KEY_1003332" / unknown keys into "Config Key 1003332". */
