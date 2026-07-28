@@ -27,7 +27,8 @@ public class TelemetryRecorder {
     private final MinerStreamService miner;
     private final AutopilotStreamService autopilot;
 
-    private volatile Instant lastEventAt; // dedup: only record an autopilot change once
+    private volatile Instant lastEventAt; // dedup: the timestamp of the last event we wrote
+    private volatile boolean seeded;      // false until lastEventAt is seeded from persisted history
 
     public TelemetryRecorder(HistoryProperties cfg, TelemetryStore store, InverterStreamService inverter,
                              MinerStreamService miner, AutopilotStreamService autopilot) {
@@ -42,6 +43,14 @@ public class TelemetryRecorder {
                initialDelayString = "${house.history.record-interval-ms:60000}")
     public void record() {
         if (!cfg.enabled()) return;
+        if (!seeded) {
+            // Seed the dedup marker from the newest persisted event so a change the autopilot
+            // RESTORED from history on restart (identical timestamp) is not written again as a
+            // duplicate row. A genuinely newer change still records (its timestamp is later).
+            PowerChangeEvent last = store.latestEvent();
+            if (last != null) lastEventAt = last.at();
+            seeded = true;
+        }
         Instant now = Instant.now();
         store.recordSample(sample(now));
         captureNewEvent();

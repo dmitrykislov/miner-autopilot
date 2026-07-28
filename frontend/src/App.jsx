@@ -326,30 +326,34 @@ export function AutopilotCard({ autopilot, pending, onToggle }) {
     return Number.isNaN(d.getTime()) ? null : d.toLocaleString()
   }
   const power = (w) => (w == null ? 'off' : `${w} W`)
+  // The card is already titled "Autopilot", so drop the redundant "autopilot:" prefix the engine
+  // puts on every decision/reason string for a cleaner read.
+  const clean = (s) => (s || '').replace(/^autopilot:\s*/i, '')
+  const decision = clean(autopilot?.lastDecision) || 'Awaiting first evaluation'
   return (
     <div className={`plug card autopilot ${enabled ? 'is-on' : 'is-off'}`}>
       <div className="plug-icon"><Icon name="bolt" size={22} /></div>
       <div className="plug-body">
-        <div className="plug-name">
-          Autopilot
-          <span className={`pill ${enabled ? 'up' : 'down'}`} style={{ marginLeft: 8 }}>
-            <span className="pdot" />{enabled ? 'On' : 'Off'}
-          </span>
+        <div className="ap-head">
+          <span className="ap-title">Autopilot</span>
+          <span className={`pill ${enabled ? 'up' : 'down'}`}><span className="pdot" />{enabled ? 'On' : 'Off'}</span>
+          <button type="button" className={`ap-toggle ${enabled ? 'is-off' : 'is-on'}`}
+                  disabled={pending} onClick={onToggle}>
+            {pending ? '…' : enabled ? 'Disable autopilot' : 'Enable autopilot'}
+          </button>
         </div>
-        <div className="plug-status" aria-label="last decision">{autopilot?.lastDecision || '—'}</div>
+        <div className="ap-decision" aria-label="last decision">{decision}</div>
         {c ? (
           <div className="ap-change">
-            Last change: <strong>{c.action}</strong> {power(c.fromPowerW)} → {power(c.toPowerW)}
-            {fmtTime(c.at) && <span className="muted"> · {fmtTime(c.at)}</span>}
-            {c.detail && <div className="ap-detail muted">{c.detail}</div>}
+            <span className="ap-change-label">Last action</span>
+            <strong>{c.action}</strong>
+            <span className="ap-power">{power(c.fromPowerW)} → {power(c.toPowerW)}</span>
+            {fmtTime(c.at) && <span className="ap-time muted">{fmtTime(c.at)}</span>}
+            {c.detail && <div className="ap-detail muted">{clean(c.detail)}</div>}
           </div>
         ) : (
           <div className="ap-change muted">No changes made yet</div>
         )}
-        <button type="button" className={`ap-toggle ${enabled ? 'is-off' : 'is-on'}`}
-                disabled={pending} onClick={onToggle}>
-          {pending ? '…' : enabled ? 'Disable autopilot' : 'Enable autopilot'}
-        </button>
       </div>
     </div>
   )

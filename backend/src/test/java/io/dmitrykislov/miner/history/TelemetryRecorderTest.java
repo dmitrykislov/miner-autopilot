@@ -134,6 +134,27 @@ class TelemetryRecorderTest {
                 .containsExactly("STEP_UP", "STEP_DOWN");
     }
 
+    @Test void doesNotReRecordAChangeRestoredFromHistoryOnRestart() {
+        // On restart the autopilot restores its last change from history (same timestamp). The
+        // recorder must not write that already-persisted event again as a duplicate row.
+        Instant t1 = Instant.parse("2026-07-27T12:00:00Z");
+        when(store.latestEvent()).thenReturn(new PowerChangeEvent(t1, "START", null, 1200, "restart"));
+        when(inverter.latest()).thenReturn(null);
+        when(miner.latest()).thenReturn(null);
+        when(autopilot.latest()).thenReturn(new AutopilotStatus(true, t1, "restart", t1,
+                new AutopilotStatus.Change(t1, "START", null, 1200, "restart")));
+
+        recorder.record();
+        verify(store, never()).recordEvent(any());   // already persisted → not duplicated
+
+        // A genuinely newer change is still recorded.
+        Instant t2 = t1.plusSeconds(60);
+        when(autopilot.latest()).thenReturn(new AutopilotStatus(true, t2, "up", t2,
+                new AutopilotStatus.Change(t2, "STEP_UP", 1200, 2800, "up")));
+        recorder.record();
+        verify(store, times(1)).recordEvent(any());   // exactly the new one, once
+    }
+
     @Test void disabledRecorderDoesNothing() {
         var disabled = new TelemetryRecorder(new HistoryProperties(false, "data", 60_000, 31),
                 store, inverter, miner, autopilot);

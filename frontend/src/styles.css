@@ -323,11 +323,20 @@ body {
 /* ---------------------------------------------------------------- autopilot */
 .autopilot.is-on .plug-icon { color: var(--good); background: rgba(53, 208, 127, 0.14); }
 .autopilot.is-off .plug-icon { color: var(--muted); }
-.ap-change { font-size: 12.5px; margin-top: 6px; }
-.ap-detail { font-size: 12px; margin-top: 2px; }
+/* header row: title + On/Off pill on the left, the toggle button pushed to the right */
+.ap-head { display: flex; align-items: center; gap: 8px; }
+.ap-title { font-weight: 700; font-size: 15px; }
+.ap-head .ap-toggle { margin-left: auto; }
+.ap-decision { font-size: 12.5px; color: var(--muted); margin-top: 7px; }
+/* last-action summary on one wrapping line; the detail/reason drops to its own line */
+.ap-change { font-size: 12.5px; margin-top: 8px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.ap-change-label { color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; font-weight: 700; }
+.ap-power { color: var(--text); }
+.ap-time { margin-left: auto; }
+.ap-detail { flex-basis: 100%; font-size: 12px; margin-top: 1px; }
 .ap-toggle {
-  margin-top: 10px; align-self: flex-start; padding: 7px 14px; font-size: 13px; font-weight: 700;
-  border: none; border-radius: 9px; cursor: pointer;
+  padding: 6px 13px; font-size: 12.5px; font-weight: 700; white-space: nowrap;
+  border: none; border-radius: 8px; cursor: pointer;
 }
 .ap-toggle.is-on { background: var(--good); color: #0a1f12; }        /* action: turn on */
 .ap-toggle.is-off { background: var(--line); color: var(--text); }   /* action: turn off */
