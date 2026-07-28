@@ -34,8 +34,15 @@ public class EnergySampler {
     private final MinerStreamService miner;
     private final EnergyAverages energy;
 
+    // A stopped Braiins miner reports its API as unreachable, so we can only carry the last-known
+    // draw through a SHORT blip — a sustained outage means it's genuinely stopped (drawing 0), and
+    // carrying forever would over-state the surplus and restart the miner below its hysteresis.
+    private static final int MAX_CARRY_CYCLES = 3; // ~a few poll intervals
+
     private volatile Instant lastSolarTs;
     private volatile Instant lastConsumptionTs;
+    private volatile double lastKnownDrawW; // carried through a transient miner-status blip
+    private volatile int unreachableStreak; // consecutive samples with no confident draw
 
     public EnergySampler(InverterStreamService inverter, MinerStreamService miner, EnergyAverages energy) {
         this.inverter = inverter;
@@ -69,13 +76,31 @@ public class EnergySampler {
         }
     }
 
-    /** The miner's live draw in watts, or 0 when it isn't mining / isn't reporting one. */
+    /**
+     * The miner's live draw in watts to attribute to this consumption sample. Mining with a reading
+     * → that draw. Reachable but not mining (stopped/suspended) → genuinely ~0 W. Unreachable / no
+     * status → <b>carry the last-known draw for up to {@link #MAX_CARRY_CYCLES}</b>, then decay to 0.
+     *
+     * <p>Rationale: a transient miner-API blip must not record 0 W while the rig is still drawing
+     * (consumption still includes it) — that would under-state the surplus and could spuriously stop
+     * a healthy miner once it recovers. But a <em>sustained</em> unreachability is how a stopped
+     * miner presents, and then it is genuinely drawing 0; carrying the old draw indefinitely would
+     * over-state the surplus and restart the miner well below its start hysteresis (→ import). So the
+     * carry is time-bounded: cover the blip, then assume stopped.
+     */
     private double currentMinerDrawW() {
         MinerStatus m = miner.latest();
         if (m != null && MinerStatus.MINING.equals(m.state()) && m.powerDrawW() != null) {
-            return m.powerDrawW();
+            lastKnownDrawW = m.powerDrawW();
+            unreachableStreak = 0;
+        } else if (m != null && m.reachable()) {
+            lastKnownDrawW = 0.0;                 // reachable and not mining → not drawing
+            unreachableStreak = 0;
+        } else if (++unreachableStreak > MAX_CARRY_CYCLES) {
+            lastKnownDrawW = 0.0;                 // sustained outage → treat as stopped (0 W)
         }
-        return 0.0;
+        // else: brief blip within the carry window → keep lastKnownDrawW (rig likely still mining)
+        return lastKnownDrawW;
     }
 
     private static boolean isNew(Instant ts, Instant last) {

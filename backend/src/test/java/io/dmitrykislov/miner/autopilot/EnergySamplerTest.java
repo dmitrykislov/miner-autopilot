@@ -86,6 +86,54 @@ class EnergySamplerTest {
         assertThat(sig.shortSurplusW().getAsDouble()).isCloseTo(3000, within(1e-6)); // 4000−1000+0
     }
 
+    @Test void carriesLastKnownDrawThroughAMinerApiBlip() {
+        // Rig mining at 2000 W (base 1000, house 3000) → surplus 3000.
+        minerStream.publish(miner(MinerStatus.MINING, 2000));
+        stream.publish(snap(true, PowerBalance.metered(4.0, 3.0), T0));
+        sampler.sample();
+        // Miner status feed blips to OFFLINE, but the rig keeps drawing — consumption (independent
+        // Solar Analytics feed) still shows 3.0 kW. The draw must be CARRIED (2000), not zeroed.
+        minerStream.publish(MinerStatus.offline(T0.plusSeconds(10), "blip"));
+        stream.publish(snap(true, PowerBalance.metered(4.0, 3.0), T0.plusSeconds(10)));
+        sampler.sample();
+
+        // With draw carried, both samples → surplus 3000. If the blip sample recorded 0 W (the old
+        // behaviour), avg(draw) would be 1000 → surplus 2000 (understated → could spuriously stop).
+        assertThat(energy.signals(T0.plusSeconds(11)).shortSurplusW().getAsDouble())
+                .isCloseTo(3000, within(1e-6));
+    }
+
+    @Test void decaysCarriedDrawToZeroOnSustainedUnreachability() {
+        // A stopped miner reads as unreachable; carrying its old draw forever would over-state the
+        // surplus. After the short carry window the draw must decay to 0 (miner assumed stopped).
+        // True surplus is 3000 throughout (solar 4000, base 1000); the miner's own draw is internal.
+        minerStream.publish(miner(MinerStatus.MINING, 2000));
+        stream.publish(snap(true, PowerBalance.metered(4.0, 3.0), T0)); // house = base 1000 + draw 2000
+        sampler.sample();
+        minerStream.publish(MinerStatus.offline(T0, "down"));
+        for (int i = 1; i <= 8; i++) { // sustained outage; house drops to base only
+            stream.publish(snap(true, PowerBalance.metered(4.0, 1.0), T0.plusSeconds(10L * i)));
+            sampler.sample();
+        }
+        // A recent 40s window holds only decayed (draw=0) samples → surplus 3000, NOT 5000
+        // (which an unbounded carry of the old 2000 W draw would have produced).
+        assertThat(energy.surplusAvg(T0.plusSeconds(80), Duration.ofSeconds(40), Duration.ZERO).getAsDouble())
+                .isCloseTo(3000, within(1e-6));
+    }
+
+    @Test void zeroesDrawWhenReachableAndNotMining() {
+        // Mining at 2000, then reachable-but-STOPPED → draw is genuinely 0 (not carried).
+        minerStream.publish(miner(MinerStatus.MINING, 2000));
+        stream.publish(snap(true, PowerBalance.metered(4.0, 3.0), T0));
+        sampler.sample();
+        minerStream.publish(miner(MinerStatus.STOPPED, null));       // reachable, not mining
+        stream.publish(snap(true, PowerBalance.metered(4.0, 1.0), T0.plusSeconds(10))); // house back to base 1000
+        sampler.sample();
+        // sample1 surplus 3000, sample2 surplus 3000 (4000−1000+0) → mean 3000; draw NOT carried.
+        assertThat(energy.signals(T0.plusSeconds(11)).shortSurplusW().getAsDouble())
+                .isCloseTo(3000, within(1e-6));
+    }
+
     @Test void toleratesNoSnapshotYet() {
         sampler.sample(); // nothing published
         assertThat(energy.signals(T0).dataFresh()).isFalse();

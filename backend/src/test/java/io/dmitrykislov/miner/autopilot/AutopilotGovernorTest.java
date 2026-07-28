@@ -16,7 +16,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Exhaustive tests for the ladder controller. Config: floor 1200, ceil 3600, step 400 →
  * ladder [1200,1600,2000,2400,2800,3200,3600]; headroom 200; start 1600; up 15 min (≤2 rungs);
- * down 5 min; emergency gap 800. Surplus S = margin + currentPower (0 when off).
+ * down 5 min; emergency gap 800. The Input carries the miner-independent surplus S directly
+ * (EnergyAverages already adds the miner's own draw back); currentPowerW is used only for the
+ * rung / over-draw comparisons, never to reconstruct S.
  */
 class AutopilotGovernorTest {
 
@@ -220,17 +222,17 @@ class AutopilotGovernorTest {
 
     // ---------------------------------------------------------------- edge cases
     @Test void subFloorRunningMinerIsRaisedTowardTheFloor() {
-        // running at 800 (below floor) with surplus → step up to reach the floor band
+        // running at 800 (below floor) with surplus → step up ≤2 rungs: 800 + 2·400 = 1600.
         var d = gov.decide(running(800, 3000, LONG_AGO, MINED_LONG));
         assertThat(d.action()).isEqualTo(Action.STEP_UP);
-        assertThat(d.targetPowerW()).isGreaterThanOrEqualTo(1200);
+        assertThat(d.targetPowerW()).isEqualTo(1600);
     }
 
     @Test void nullCurrentPowerWhileRunningTreatedAsFloor() {
         Input in = new Input(NOW, true, true, false, null, MINED_LONG, LONG_AGO,
                 true, OptionalDouble.of(1600), OptionalDouble.of(1600)); // surplus 1600, cur→floor 1200
-        assertThatCode(() -> gov.decide(in)).doesNotThrowAnyException();
-        assertThat(gov.decide(in).action()).isIn(Action.NONE, Action.STEP_UP, Action.STEP_DOWN, Action.STOP);
+        // Deterministic: S−headroom = 1400 → highest rung ≤ 1400 is the floor 1200 = cur → hold.
+        assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
     }
 
     // ---------------------------------------------- import invariants (property)

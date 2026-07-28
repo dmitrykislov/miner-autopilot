@@ -62,9 +62,10 @@ describe('HistoryChart', () => {
   it('draws the three series', async () => {
     render(<HistoryChart authFetch={fakeFetch(payload())} />)
     await screen.findByTestId('history-line-solarW')
-    expect(screen.getByTestId('history-line-consumptionW')).toBeInTheDocument()
-    expect(screen.getByTestId('history-line-minerPowerW')).toBeInTheDocument()
-    expect(screen.getByTestId('history-line-solarW').getAttribute('d')).toBeTruthy()
+    // all three lines must actually have a drawn path, not just be present in the DOM
+    for (const k of ['solarW', 'consumptionW', 'minerPowerW']) {
+      expect(screen.getByTestId(`history-line-${k}`).getAttribute('d')).toBeTruthy()
+    }
   })
 
   it('breaks the miner line where the miner was off (null segment)', async () => {

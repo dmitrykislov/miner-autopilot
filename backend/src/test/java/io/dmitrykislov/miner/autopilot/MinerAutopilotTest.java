@@ -255,6 +255,16 @@ class MinerAutopilotTest {
         verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
     }
 
+    @Test void miningWithNoReportedUptimeDoesNotRampOnFirstObservation() {
+        // Null uptime exercises the trackMiningSince fallback: miningSince seeded to "now" → not
+        // mined long enough → no ramp on the first observation, even with plenty of surplus.
+        when(miner.refresh()).thenReturn(status(true, true, 1200, null));
+        liveFeed(3800, 1200);
+        autopilot(true).tick();
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+        verify(miner, never()).stop();
+    }
+
     @Test void stepUpSkippedIfMinerStoppedAtOpTime() {
         when(miner.refresh()).thenReturn(status(true, true, 1200), status(true, false, null));
         liveFeed(3800, 1200);

@@ -143,7 +143,20 @@ public class MinerService {
             log.warn("Miner setPowerTarget({}) failed: {}", clamped, e.toString());
             return publish(MinerStatus.offline(Instant.now(), e.getMessage()));
         }
-        return refresh();
+        // Read back and verify the miner accepted the new target. This checks the configured
+        // SETPOINT, not the live draw — Braiins autotuning ramps the actual consumption toward the
+        // target separately (and slowly), so a draw below target right after a change is normal. The
+        // read-back distinguishes an accepted command from one that silently didn't apply.
+        MinerStatus after = refresh();
+        Integer applied = after.powerTargetW();
+        if (applied != null && applied == clamped) {
+            log.info("Power target set to {}W — miner confirms {}W (actual draw ramps via autotuning)",
+                    clamped, applied);
+        } else {
+            log.warn("Power target set to {}W but miner reports {}W — command may not have applied",
+                    clamped, applied);
+        }
+        return after;
     }
 
     private MinerStatus publish(MinerStatus s) {

@@ -1,7 +1,12 @@
 package io.dmitrykislov.miner.braiins;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.dmitrykislov.miner.config.HouseProperties;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -117,6 +122,71 @@ class MinerServiceTest {
         service.setPowerTarget(1400, true);
         verify(client).setPowerTarget(1400, true);
         verify(client, times(3)).status(); // each command refreshes
+    }
+
+    @Test
+    void setPowerTargetReadsBackTheAppliedTarget() throws Exception {
+        var client = mock(BraiinsMinerClient.class);
+        // The miner reflects the new target on the next status read → the read-back confirms it.
+        when(client.status()).thenReturn(node(
+                "{\"info\":{\"modelName\":\"S\"},\"uptime\":null," +
+                "\"config\":{\"autotuning\":{\"enabled\":true,\"powerTarget\":2800}}}"));
+        var service = svc(client, new MinerStreamService(), true, "192.168.4.28");
+
+        MinerStatus after = service.setPowerTarget(2800, true);
+
+        verify(client).setPowerTarget(2800, true);
+        verify(client).status();                       // the set is followed by one verifying read-back
+        assertThat(after.powerTargetW()).isEqualTo(2800); // miner confirms the applied target
+    }
+
+    @Test
+    void setPowerTargetSurfacesAReadBackMismatch() throws Exception {
+        var client = mock(BraiinsMinerClient.class);
+        // Command sent for 2800 but the miner still reports 1200 → mismatch (WARN path).
+        when(client.status()).thenReturn(node(
+                "{\"info\":{\"modelName\":\"S\"},\"uptime\":null," +
+                "\"config\":{\"autotuning\":{\"enabled\":true,\"powerTarget\":1200}}}"));
+        var service = svc(client, new MinerStreamService(), true, "192.168.4.28");
+
+        MinerStatus after = service.setPowerTarget(2800, true);
+
+        verify(client).setPowerTarget(2800, true);
+        assertThat(after.powerTargetW()).isEqualTo(1200); // read-back surfaces what the miner really has
+    }
+
+    @Test
+    void setPowerTargetLogsWarnWhenReadBackDoesNotMatch() throws Exception {
+        // Directly verifies the NEW read-back logging: a mismatch must WARN. (This would fail if the
+        // read-back/verify block were removed, unlike the return-value characterisation tests.)
+        Logger logger = (Logger) LoggerFactory.getLogger(MinerService.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            var client = mock(BraiinsMinerClient.class);
+            when(client.status()).thenReturn(node(
+                    "{\"info\":{\"modelName\":\"S\"},\"uptime\":null," +
+                    "\"config\":{\"autotuning\":{\"powerTarget\":1200}}}")); // miner reports 1200, not 2800
+            svc(client, new MinerStreamService(), true, "192.168.4.28").setPowerTarget(2800, true);
+
+            assertThat(appender.list).anyMatch(e ->
+                    e.getLevel() == Level.WARN && e.getFormattedMessage().contains("may not have applied"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void setPowerTargetToleratesNullReadBackTarget() throws Exception {
+        var client = mock(BraiinsMinerClient.class);
+        // A stopped/unreachable miner may report no power target → the read-back must not NPE.
+        when(client.status()).thenReturn(node("{\"info\":{\"modelName\":\"S\"},\"uptime\":null,\"config\":{}}"));
+        var service = svc(client, new MinerStreamService(), true, "192.168.4.28");
+
+        MinerStatus after = service.setPowerTarget(2800, true);
+
+        assertThat(after.powerTargetW()).isNull();
     }
 
     @Test
