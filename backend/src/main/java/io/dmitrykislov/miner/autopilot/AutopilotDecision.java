@@ -14,13 +14,13 @@ public record AutopilotDecision(Action action, int targetPowerW, String reason) 
     public enum Action {
         /** Miner is off and there is enough surplus — start it at the minimum power. */
         START,
-        /** Miner is on — raise the power target by one step (bounded by max). */
+        /** Miner is on — raise the target to the highest affordable rung (up to upMaxRungsPerCycle rungs per cycle, ≤ max). */
         STEP_UP,
-        /** Miner is on — lower the power target by one step (still ≥ min). */
+        /** Miner is on — lower the target to the highest sustainable rung (uncapped; if none, STOP). */
         STEP_DOWN,
-        /** Miner is on at the floor and margin is too low — turn it off. */
+        /** Miner is on at the floor and the surplus can't sustain it — turn it off. */
         STOP,
-        /** Do nothing (off with too little surplus, at max/min, or within the deadzone). */
+        /** Do nothing (off with too little surplus, already at the affordable rung, or within a dampening/cooldown window). */
         NONE
     }
 

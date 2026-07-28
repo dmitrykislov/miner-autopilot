@@ -133,6 +133,8 @@ miner-controller/
 │  ├─ braiins/             # Braiins miner client + service + SSE
 │  ├─ autopilot/           # the Averager + Governor + Autopilot loop
 │  ├─ history/             # file-backed telemetry log + chart API
+│  ├─ security/            # password auth: bcrypt + signed bearer tokens
+│  ├─ stream/ · util/      # SSE broadcast helper + small utilities
 │  └─ api/                 # SSE + REST controllers
 └─ frontend/               # React + Vite UI
 ```
@@ -148,7 +150,7 @@ cp .env.example .env      # edit: device IPs/credentials + set the UI password h
 ./start.sh                # build the UI + backend into the jar, then run it
 ```
 
-Open **http://localhost:8899** and log in with your password.
+Open **http://localhost:8899** (the `SERVER_PORT` shipped in `.env.example`; the app's built-in default is `8080`) and log in with your password.
 
 | Command | What it does |
 |---|---|
@@ -176,7 +178,8 @@ Every environment-specific value comes from an env var — there are **no** hard
 
 | Variable | Default | Notes |
 |---|---|---|
-| `SERVER_PORT` | `8080` | Backend + bundled UI |
+| `SERVER_PORT` | `8080` | Backend + bundled UI (`.env.example` ships `8899`) |
+| `FRONTEND_PORT` | `5173` | Vite dev-server port — used by `./start.sh --dev` only (a shell var, not an app setting) |
 | `LOG_LEVEL` | `INFO` | App log level |
 | `SCHEDULING_POOL_SIZE` | `6` | One thread per scheduled job so none blocks the others |
 | `JAVA_OPTS` | _(blank)_ | Extra JVM flags. On a small Pi use the footprint caps in `.env.example` (`-Xmx128m` + SerialGC + …) → ~140 MB RSS |
@@ -338,8 +341,8 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install      # 297 backend + 89 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (297)
+mvn clean install      # 298 backend + 89 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (298)
 ```
 
 Coverage includes: config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, every poller/service (mocked clients) and controller; the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards); the autopilot **wiring** (live-state re-verification, restore-from-history, window warm-up); a real-HTTP **transport** test (odd content types, error handling); and an **end-to-end** test that boots the full app against simulated devices and asserts the exact commands sent. The **history** layer and the React chart/auth UI have their own suites.

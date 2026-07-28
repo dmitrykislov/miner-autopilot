@@ -15,9 +15,6 @@ export const House = ({ size }) => (
 export const Grid = ({ size }) => (
   <svg {...base(size)}><path d="M12 2v6M9 8h6M8 8l-2 14M16 8l2 14M8.5 12h7M8 16h8M4 22h16" /></svg>
 )
-export const Scale = ({ size }) => (
-  <svg {...base(size)}><path d="M12 3v18" /><path d="M6 7h12" /><path d="M6 7 3 13h6L6 7z" /><path d="M18 7l-3 6h6l-3-6z" /><path d="M8 21h8" /></svg>
-)
 export const Bolt = ({ size }) => (
   <svg {...base(size)}><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" /></svg>
 )
@@ -60,9 +57,6 @@ export const ArrowDown = ({ size }) => (
 export const Info = ({ size = 15 }) => (
   <svg {...base(size)} strokeWidth={2}><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><circle cx="12" cy="7.6" r="0.6" fill="currentColor" stroke="none" /></svg>
 )
-export const Activity = ({ size }) => (
-  <svg {...base(size)}><path d="M3 12h4l3 8 4-16 3 8h4" /></svg>
-)
 export const Fan = ({ size }) => (
   <svg {...base(size)}><circle cx="12" cy="12" r="1.6" fill="currentColor" />
     <path d="M12 10.4C12 6 12.8 3 15 3s2.4 4-.5 6.7M13.6 12c3.8-2.2 6.9-2.6 8-.7s-1.6 3.9-5.6 3.4M12 13.6c1.9 3.8 1.9 6.9-.2 7.9s-3-2.6-2.2-6.6M10.4 12C6.6 14.2 3.4 14.3 2.4 12.2S4.6 8.5 8.6 9.4" />
@@ -71,7 +65,7 @@ export const Fan = ({ size }) => (
 
 // Maps a metadata icon name to a component.
 export const ICONS = {
-  sun: Sun, house: House, grid: Grid, scale: Scale, bolt: Bolt, plug: Plug, gauge: Gauge,
+  sun: Sun, house: House, grid: Grid, bolt: Bolt, plug: Plug, gauge: Gauge,
   wave: Wave, thermometer: Thermometer, calendar: Calendar, sigma: Sigma,
-  clock: Clock, panel: Panel, shield: Shield, chip: Chip, activity: Activity, fan: Fan,
+  clock: Clock, panel: Panel, shield: Shield, chip: Chip, fan: Fan,
 }

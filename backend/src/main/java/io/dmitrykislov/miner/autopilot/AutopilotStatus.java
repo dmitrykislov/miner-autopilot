@@ -29,10 +29,4 @@ public record AutopilotStatus(
      * @param detail     the decision reason behind the change
      */
     public record Change(Instant at, String action, Integer fromPowerW, Integer toPowerW, String detail) {}
-
-    /** Initial status before the first tick. */
-    static AutopilotStatus initial(boolean enabled) {
-        return new AutopilotStatus(enabled, null,
-                enabled ? "enabled — awaiting first evaluation" : "disabled", null, null);
-    }
 }

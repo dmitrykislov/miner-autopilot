@@ -302,16 +302,16 @@ const SECTIONS = [
 const STALE_MS = 30000
 const SPARK_MAX = 40
 
-// Inverter metric keys already surfaced elsewhere (KPI tiles, the Solar flow node,
-// the header state pill) — hidden from the detailed metric sections to avoid showing
-// the same value twice.
+// Inverter metric keys already surfaced elsewhere (KPI tiles, the Solar flow node) —
+// hidden from the detailed metric sections to avoid showing the same value twice. The
+// running state is NOT hidden: it now shows in the Advanced → Device Status section
+// (there is no longer a header state pill).
 const PROMOTED_KEYS = new Set([
   'I18N_COMMON_DAILY_POWER_YIELD',       // KPI: Today
   'I18N_COMMON_TOTAL_YIELD',             // KPI: Lifetime
   'I18N_COMMON_GRID_FREQUENCY',          // KPI: Grid Frequency
   'I18N_COMMON_AIR_TEM_INSIDE_MACHINE',  // KPI: Inverter Temp
   'I18N_COMMON_TOTAL_ACTIVE_POWER',      // Solar flow node
-  'I18N_COMMON_RUNNING_STATE',           // header state pill
 ])
 
 // ---------------------------------------------------------------- app
@@ -411,7 +411,6 @@ export function InverterDetails({ metrics = [], strings = [] }) {
 
 function Dashboard({ onLogout }) {
   const [snapshot, setSnapshot] = useState(null)
-  const [connected, setConnected] = useState(false)
   const [houseLive, setHouseLive] = useState(null)
   const [spark, setSpark] = useState([])
   const [miner, setMiner] = useState(null)
@@ -435,8 +434,7 @@ function Dashboard({ onLogout }) {
   }, [])
 
   // SSE carries the token as ?token= (EventSource can't set headers).
-  useEventSource(withToken('/api/inverter/stream'), setSnapshot,
-    { onOpen: () => setConnected(true), onError: () => setConnected(false) })
+  useEventSource(withToken('/api/inverter/stream'), setSnapshot)
 
   useEventSource(withToken('/api/house/stream'), (r) => {
     if (r && r.metered) {
