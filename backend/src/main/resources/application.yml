@@ -83,6 +83,7 @@ house:
     down-interval-ms: ${AUTOPILOT_DOWN_INTERVAL_MS:300000} # between routine down steps (must be ≥ short-window-ms)
     short-window-ms: ${AUTOPILOT_SHORT_WINDOW_MS:180000}   # avg window for down/stop (fast)
     long-window-ms: ${AUTOPILOT_LONG_WINDOW_MS:900000}     # avg window for up/start (conservative)
+    min-run-ms: ${AUTOPILOT_MIN_RUN_MS:180000}             # once mining, don't stop for this long unless importing hard
     fresh-within-ms: ${AUTOPILOT_FRESH_WITHIN_MS:90000}    # a feed older than this → surplus unknown
     short-coverage-ms: ${AUTOPILOT_SHORT_COVERAGE_MS:60000} # min span for a trusted short average
     long-coverage-ms: ${AUTOPILOT_LONG_COVERAGE_MS:300000}  # min span for a trusted long average

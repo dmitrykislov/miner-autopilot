@@ -10,7 +10,8 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
  * house
  *  ├─ inverter        → the Sungrow SG10RS / WiNet-S (solar generation)
  *  ├─ solar-analytics → Solar Analytics cloud API (measured whole-home consumption)
- *  └─ miner           → the Braiins OS+ miner (Antminer S19k Pro) GraphQL API
+ *  ├─ miner           → the Braiins OS+ miner (Antminer S19k Pro) GraphQL API
+ *  └─ autopilot       → smoothed solar-surplus control loop (see AutopilotGovernor)
  * </pre>
  */
 @ConfigurationProperties(prefix = "house")

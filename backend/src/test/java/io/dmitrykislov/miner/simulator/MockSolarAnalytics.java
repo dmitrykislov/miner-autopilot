@@ -10,7 +10,6 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
  * {@code /live_site_data} endpoint the {@code SolarAnalyticsClient} polls.
  * <pre>
  *   solar.consumption(1000);  // whole-home draw = 1000 W
- *   solar.offline();          // API 5xx → consumption unavailable
  * </pre>
  */
 public class MockSolarAnalytics {
@@ -44,10 +43,5 @@ public class MockSolarAnalytics {
         wm.stubFor(get(urlPathEqualTo("/api/v3/live_site_data")).willReturn(okJson(
                 "{\"data\":[{\"consumed\":" + watts + ",\"generated\":0,\"t_stamp\":\"2026-07-26T06:00:00Z\"}],"
                         + "\"site_timezone\":\"Australia/Brisbane\"}")));
-    }
-
-    /** API failing → no consumption reading available. */
-    public void offline() {
-        wm.stubFor(get(urlPathEqualTo("/api/v3/live_site_data")).willReturn(aResponse().withStatus(503)));
     }
 }
