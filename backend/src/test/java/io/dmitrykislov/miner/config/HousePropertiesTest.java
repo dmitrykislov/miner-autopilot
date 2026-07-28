@@ -11,7 +11,7 @@ class HousePropertiesTest {
     /** Build an Autopilot with the given guard-relevant fields; everything else takes its default. */
     private static HouseProperties.Autopilot ap(boolean enabled, int floorW, int headroomW, int startSurplusW) {
         return new HouseProperties.Autopilot(enabled, 0, floorW, 0, headroomW, startSurplusW,
-                0, 0, 0, 0, 0, 0, 0, 0, 0);
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 
     @Test
@@ -128,7 +128,7 @@ class HousePropertiesTest {
 
     @Test
     void autopilotDefaultsAreStable() {
-        var a = new HouseProperties.Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        var a = new HouseProperties.Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         assertThat(a.intervalMs()).isEqualTo(30_000);
         assertThat(a.floorW()).isEqualTo(1200);
         assertThat(a.stepW()).isEqualTo(400);
@@ -143,6 +143,7 @@ class HousePropertiesTest {
         assertThat(a.freshWithinMs()).isEqualTo(90_000);
         assertThat(a.shortCoverageMs()).isEqualTo(60_000);
         assertThat(a.longCoverageMs()).isEqualTo(300_000);
+        assertThat(a.minRunMs()).isEqualTo(180_000);
         // Start/stop hysteresis: start-surplus must sit above the floor so they can't flap.
         assertThat(a.startSurplusW()).isGreaterThan(a.floorW());
         // Up dampening must be ≥ the long window (no post-change contamination of the up-average).
@@ -153,14 +154,14 @@ class HousePropertiesTest {
     void rejectsCadenceIntervalBelowItsWindow() {
         // down-interval must be ≥ short-window (else a down-step contaminates the short average).
         assertThatThrownBy(() -> new HouseProperties.Autopilot(false, 0, 1200, 400, 200, 1600, 2, 800,
-                900_000, 60_000, 180_000, 900_000, 90_000, 1, 1)) // down 60s < short 180s
+                900_000, 60_000, 180_000, 900_000, 90_000, 1, 1, 0)) // down 60s < short 180s
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("down-interval-ms");
         // up-interval must be ≥ long-window (else an up-step contaminates the long average).
         assertThatThrownBy(() -> new HouseProperties.Autopilot(false, 0, 1200, 400, 200, 1600, 2, 800,
-                60_000, 300_000, 180_000, 900_000, 90_000, 1, 1)) // up 60s < long 900s
+                60_000, 300_000, 180_000, 900_000, 90_000, 1, 1, 0)) // up 60s < long 900s
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("up-interval-ms");
         // The shipped defaults satisfy both (up 900s ≥ long 900s; down 300s ≥ short 180s).
-        assertThatCode(() -> new HouseProperties.Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        assertThatCode(() -> new HouseProperties.Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
                 .doesNotThrowAnyException();
     }
 

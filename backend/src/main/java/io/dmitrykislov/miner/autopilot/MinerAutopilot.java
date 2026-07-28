@@ -78,7 +78,8 @@ public class MinerAutopilot {
         this.governor = new AutopilotGovernor(new AutopilotGovernor.Config(
                 cfg.floorW(), minerCfg.maxPowerW(), cfg.stepW(), cfg.headroomW(), cfg.startSurplusW(),
                 Duration.ofMillis(cfg.upIntervalMs()), Duration.ofMillis(cfg.downIntervalMs()),
-                Duration.ofMillis(cfg.longWindowMs()), cfg.upMaxRungsPerCycle(), cfg.emergencyGapW()));
+                Duration.ofMillis(cfg.longWindowMs()), cfg.upMaxRungsPerCycle(), cfg.emergencyGapW(),
+                Duration.ofMillis(cfg.minRunMs())));
         // Tolerate a few missed/slow inverter polls, but treat a longer gap as "no longer known":
         // a stalled poller keeps handing back its last snapshot, so without this the surplus could
         // be piloted on stale data. 4× the poll interval rides out transient GC/scheduling jitter.

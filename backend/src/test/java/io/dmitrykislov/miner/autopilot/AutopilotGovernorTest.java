@@ -32,6 +32,10 @@ class AutopilotGovernorTest {
             Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800);
     private final AutopilotGovernor gov = new AutopilotGovernor(cfg);
 
+    // Same config but with a 3-minute minimum run-time (the min-run guard enabled).
+    private final AutopilotGovernor govMin = new AutopilotGovernor(new Config(1200, 3600, 400, 200, 1600,
+            Duration.ofMinutes(15), Duration.ofMinutes(5), Duration.ofMinutes(15), 2, 800, Duration.ofMinutes(3)));
+
     /** Running miner at {@code cur} W with available (miner-independent) surplus {@code S}. */
     private Input running(int cur, double S, Instant lastChange, Instant miningSince) {
         return new Input(NOW, true, true, false, cur, miningSince, lastChange,
@@ -378,6 +382,33 @@ class AutopilotGovernorTest {
         var d = gov.decide(running(2000, 2600, LONG_AGO, MINED_LONG));
         assertThat(d.action()).isEqualTo(Action.STEP_UP);
         assertThat(d.targetPowerW()).isEqualTo(2400);
+    }
+
+    // ---------------------------------------------------------------- min run-time
+    @Test void holdsThroughAMildDipWithinMinRunTime() {
+        // Mining for 1 min (< 3 min min-run). Surplus dipped so it can't hold the floor, but it's not
+        // a hard import → ride it out instead of cycling the miner off so soon after starting.
+        var d = govMin.decide(running(1200, 1300, LONG_AGO, RECENT)); // 1300−200 = 1100 < floor 1200
+        assertThat(d.action()).isEqualTo(Action.NONE);
+        assertThat(d.reason()).contains("min run-time");
+    }
+
+    @Test void stopsWithinMinRunTimeWhenImportingHard() {
+        // Even inside the min-run window, a hard import (over-draw ≥ emergencyGap 800) stops at once.
+        var d = govMin.decide(running(1200, 350, LONG_AGO, RECENT)); // 1200 − 350 = 850 ≥ 800
+        assertThat(d.action()).isEqualTo(Action.STOP);
+    }
+
+    @Test void stopsForAMildDipOnceMinRunTimeHasElapsed() {
+        // Mining 20 min (> 3 min): the guard no longer applies → a floor-breaching dip stops it.
+        var d = govMin.decide(running(1200, 1300, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.STOP);
+    }
+
+    @Test void minRunTimeDisabledStopsImmediately() {
+        // Default config (minRunTime = 0): the guard is off, so the same mild dip stops right away.
+        var d = gov.decide(running(1200, 1300, LONG_AGO, RECENT));
+        assertThat(d.action()).isEqualTo(Action.STOP);
     }
 
     // ------------------------------------------- interval boundary (elapsed is inclusive)

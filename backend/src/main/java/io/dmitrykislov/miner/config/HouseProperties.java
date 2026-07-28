@@ -24,7 +24,7 @@ public record HouseProperties(
         if (inverter == null) inverter = new Inverter(null, 0, null, null, null, 0, 0);
         if (solarAnalytics == null) solarAnalytics = new SolarAnalytics(true, null, null, null, null, 0, 0, 0, 0);
         if (miner == null) miner = new Miner(true, null, 0, 0, null, 0, 0);
-        if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        if (autopilot == null) autopilot = new Autopilot(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         // These cross-cutting checks only matter when the autopilot is enabled: with it off nothing
         // auto-(re)starts the miner, so a mis-sized gate merely hides consumption at low solar (a UI
         // concern, not stranding).
@@ -223,9 +223,15 @@ public record HouseProperties(
             // Minimum span (ms) an averaging window must cover to be trusted (else it reports empty:
             // a too-sparse window right after boot/gap must not be acted on).
             long shortCoverageMs,
-            long longCoverageMs) {
+            long longCoverageMs,
+            // Once mining, the miner won't be stopped for this long (ms) unless it is importing hard
+            // (over-drawing by ≥ emergencyGapW). Bounds power cycling so a brief dip right after a
+            // start doesn't immediately stop the miner. 0 keeps the default; negative disables it.
+            long minRunMs) {
 
         public Autopilot {
+            if (minRunMs == 0) minRunMs = 180_000;             // 3 min
+            if (minRunMs < 0) minRunMs = 0;                    // explicit negative → disable the guard
             if (intervalMs == 0) intervalMs = 30_000;
             if (floorW == 0) floorW = 1200;
             if (stepW == 0) stepW = 400;

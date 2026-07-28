@@ -482,7 +482,6 @@ function Dashboard({ onLogout }) {
   const hl = snapshot?.highlights ?? {}
   const metrics = snapshot?.metrics ?? []
   const strings = snapshot?.strings ?? []
-  const state = snapshot?.runningState || (connected ? '…' : 'Connecting')
 
   return (
     <div className="app">
@@ -494,20 +493,12 @@ function Dashboard({ onLogout }) {
             <div className="sub">SN {snapshot?.serialNumber || '—'}</div>
           </div>
         </div>
-        <div className="status-group">
-          <span className={`pill state-${(snapshot?.runningState || '').toLowerCase()}`}><span className="pdot" />{state}</span>
-          <span className={`pill meter ${house.metered ? 'up' : 'down'}`}><span className="pdot" />{house.metered ? 'Meter live' : 'Meter offline'}</span>
-          <span className={`pill conn ${connected && online ? 'up' : 'down'}`}>
-            <span className="pdot" />{connected ? (online ? 'Live' : 'Inverter offline') : 'Reconnecting…'}
-            {snapshot?.timestamp && <span className="ts">{new Date(snapshot.timestamp).toLocaleTimeString()}</span>}
-          </span>
-        </div>
+        {/* Tabs live in the header; live status is shown in the Live Power Flow section below. */}
+        {snapshot && <Tabs active={tab} onChange={setTab} />}
       </header>
 
       {snapshot?.error && !online && <div className="banner">Last poll failed: {snapshot.error}</div>}
       {!snapshot && <div className="loading card">Connecting to inverter…</div>}
-
-      {snapshot && <Tabs active={tab} onChange={setTab} />}
 
       {snapshot && tab === 'overview' && (
         <>

@@ -64,11 +64,27 @@ public final class AutopilotGovernor {
      * @param upMaxRungsPerCycle cap on how many rungs a single up-move may climb (smooth ramp)
      * @param emergencyGapW if the miner is over-drawing the surplus by at least this, a down-step
      *                      bypasses {@code downInterval}
+     * @param minRunTime    once mining, the miner won't be STOPPED for this long unless it is
+     *                      over-drawing by ≥ {@code emergencyGapW} (a hard import). Bounds power
+     *                      cycling so a brief dip just after a start doesn't immediately stop it.
+     *                      {@code Duration.ZERO} disables the guard (stop the instant it can't hold).
      */
     public record Config(int floorW, int ceilW, int stepW, int headroomW, int startSurplusW,
                          Duration upInterval, Duration downInterval, Duration longWindow,
-                         int upMaxRungsPerCycle, int emergencyGapW) {
+                         int upMaxRungsPerCycle, int emergencyGapW, Duration minRunTime) {
+
+        /** Convenience: no minimum run-time (guard disabled). */
+        public Config(int floorW, int ceilW, int stepW, int headroomW, int startSurplusW,
+                      Duration upInterval, Duration downInterval, Duration longWindow,
+                      int upMaxRungsPerCycle, int emergencyGapW) {
+            this(floorW, ceilW, stepW, headroomW, startSurplusW, upInterval, downInterval, longWindow,
+                    upMaxRungsPerCycle, emergencyGapW, Duration.ZERO);
+        }
+
         public Config {
+            if (minRunTime == null || minRunTime.isNegative()) {
+                throw new IllegalArgumentException("minRunTime must be ≥ 0");
+            }
             if (floorW <= 0) throw new IllegalArgumentException("floorW must be > 0");
             if (ceilW <= floorW) throw new IllegalArgumentException("ceilW must be > floorW");
             if (stepW <= 0) throw new IllegalArgumentException("stepW must be > 0");
@@ -160,15 +176,22 @@ public final class AutopilotGovernor {
 
         // ---- protection (bypasses the up dampening) ----
         if (running) {
-            // 1) can't even sustain the floor → stop now.
+            boolean emergency = (cur - sShort) >= cfg.emergencyGapW();
+            // 1) can't even sustain the floor → stop now — UNLESS it only just started mining and the
+            // dip is mild (not a hard import): hold through the min run-time so a brief cloud right
+            // after a start doesn't immediately cycle the miner off. A hard import still stops at once.
             if (sShort - cfg.headroomW() < cfg.floorW()) {
+                if (!emergency && withinMinRunTime(in)) {
+                    return none(String.format(
+                            "surplus %dW below floor but within min run-time → holding at %dW",
+                            Math.round(sShort), cur));
+                }
                 return decision(Action.STOP, 0, String.format(
                         "surplus %dW can't hold floor %dW → stop", Math.round(sShort), cfg.floorW()));
             }
             // 2) over-drawing the surplus by ≥ a rung → step down toward what it can hold.
             int downTarget = rungAtOrBelow(sShort - cfg.headroomW());
             if (downTarget < cur) {
-                boolean emergency = (cur - sShort) >= cfg.emergencyGapW();
                 if (emergency || elapsed(in.lastChangeAt(), in.now(), cfg.downInterval())) {
                     return decision(Action.STEP_DOWN, downTarget, String.format(
                             "surplus %dW%s → down to %dW", Math.round(sShort),
@@ -242,6 +265,13 @@ public final class AutopilotGovernor {
     private boolean minedLongEnough(Input in) {
         return in.running() && in.miningSince() != null
                 && Duration.between(in.miningSince(), in.now()).compareTo(cfg.longWindow()) >= 0;
+    }
+
+    /** True while the miner has been mining for less than {@code minRunTime} — the window in which a
+     *  mild dip is ridden out rather than stopped. Always false when the guard is disabled (ZERO). */
+    private boolean withinMinRunTime(Input in) {
+        return !cfg.minRunTime().isZero() && in.miningSince() != null
+                && Duration.between(in.miningSince(), in.now()).compareTo(cfg.minRunTime()) < 0;
     }
 
     private static boolean elapsed(Instant last, Instant now, Duration interval) {

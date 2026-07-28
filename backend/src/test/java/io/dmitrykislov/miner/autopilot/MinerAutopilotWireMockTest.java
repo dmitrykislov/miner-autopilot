@@ -90,6 +90,8 @@ class MinerAutopilotWireMockTest {
         r.add("house.autopilot.fresh-within-ms", () -> 1);
         r.add("house.autopilot.short-coverage-ms", () -> 1);
         r.add("house.autopilot.long-coverage-ms", () -> 1);
+        r.add("house.autopilot.min-run-ms", () -> -1); // disable min-run here (a cadence guard, like
+        // the intervals above) — its logic is covered in AutopilotGovernorTest; here we test wiring.
     }
 
     @AfterAll

@@ -64,7 +64,9 @@ class MinerAutopilotTest {
                         180_000, // longWindowMs
                         90_000,  // freshWithinMs
                         1,       // shortCoverageMs (tiny)
-                        1));     // longCoverageMs (tiny)
+                        1,       // longCoverageMs (tiny)
+                        -1));    // minRunMs disabled — these wiring tests predate the min-run guard
+                                 // (the guard's logic is covered in AutopilotGovernorTest)
     }
 
     private MinerAutopilot autopilot(boolean enabled) {

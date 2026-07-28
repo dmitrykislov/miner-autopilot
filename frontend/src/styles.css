@@ -67,7 +67,8 @@ body {
 
 .status-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
-  padding: 6px 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+  padding: 6px 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border);
+  color: var(--muted); white-space: nowrap; }
 .pill .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .pill.state-running { color: var(--good); } .pill.state-running .pdot { background: var(--good); box-shadow: 0 0 0 3px rgba(53, 208, 127, 0.18); }
 .pill.state-standby .pdot { background: var(--accent); }
@@ -335,6 +336,7 @@ body {
 /* ---------------------------------------------------------------- tabs */
 .tabs { display: inline-flex; gap: 4px; background: var(--surface-2); border: 1px solid var(--border-soft);
   border-radius: 12px; padding: 4px; margin-bottom: 20px; }
+.appbar .tabs { margin-bottom: 0; }  /* in the header row: no trailing gap */
 .tab-btn { background: transparent; border: none; color: var(--muted); font: inherit; font-weight: 600;
   padding: 7px 18px; border-radius: 9px; cursor: pointer; }
 .tab-btn:hover { color: var(--text); }
