@@ -104,6 +104,13 @@ cd "$DIR"
 # Load remote config (ports, AUTOPILOT_ENABLED, optional JAVA_OPTS) from the Pi's .env.
 if [[ -f .env ]]; then set -a; . ./.env; set +a; else echo "  ⚠ no .env — using built-in defaults"; fi
 APP_PORT="${SERVER_PORT:-8080}"
+# When TLS is enabled the app serves HTTPS, so the health probe must use https and skip
+# cert verification (the self-signed cert isn't in the box's trust store). Otherwise http.
+if [[ "${TLS_ENABLED:-false}" == "true" ]]; then
+  SCHEME="https"; CURL_K="-k"; WGET_K="--no-check-certificate"
+else
+  SCHEME="http"; CURL_K=""; WGET_K=""
+fi
 
 # --- preflight ---
 command -v java >/dev/null 2>&1 || { echo "  ✗ java not found on PATH"; exit 1; }
@@ -166,9 +173,9 @@ healthy() {                                        # 0 if the app is serving wit
   for _ in $(seq 1 60); do
     if command -v curl >/dev/null 2>&1; then
       # --max-time so a thrashing/half-up app can never hang the probe (and the deploy).
-      code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://localhost:$p/api/system" 2>/dev/null || true)"
+      code="$(curl -s $CURL_K --max-time 5 -o /dev/null -w '%{http_code}' "$SCHEME://localhost:$p/api/system" 2>/dev/null || true)"
     elif command -v wget >/dev/null 2>&1; then
-      code="$(wget -q -T 5 -t 1 -O /dev/null -S "http://localhost:$p/api/system" 2>&1 | awk '/HTTP\//{print $2; exit}' || true)"
+      code="$(wget -q $WGET_K -T 5 -t 1 -O /dev/null -S "$SCHEME://localhost:$p/api/system" 2>&1 | awk '/HTTP\//{print $2; exit}' || true)"
     else
       (exec 3<>"/dev/tcp/localhost/$p") 2>/dev/null && { exec 3>&- 3<&-; code=200; } || code=000
     fi
@@ -193,8 +200,8 @@ echo "  installed $(ls -la "$JAR_NAME" | awk '{print $5, $NF}')"
 # --- start and verify; roll back to the previous jar if it won't come up ---------
 start_app
 if healthy "$APP_PORT"; then
-  code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://localhost:$APP_PORT/api/system" 2>/dev/null || echo '?')"
-  echo "  ✓ healthy on :$APP_PORT (/api/system → HTTP $code${code:+; 401 = auth active})"
+  code="$(curl -s $CURL_K --max-time 5 -o /dev/null -w '%{http_code}' "$SCHEME://localhost:$APP_PORT/api/system" 2>/dev/null || echo '?')"
+  echo "  ✓ healthy on :$APP_PORT ($SCHEME /api/system → HTTP $code${code:+; 401 = auth active})"
   grep -E "Started MinerControllerApplication" miner-controller.log | tail -1 || true
 else
   echo "  ✗ new jar did not become healthy — rolling back"; tail -20 miner-controller.log || true
@@ -210,4 +217,4 @@ else
 fi
 REMOTE
 
-log "Deploy complete → http://$HOST:<SERVER_PORT>/"
+log "Deploy complete → http(s)://$HOST:<SERVER_PORT>/"

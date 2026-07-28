@@ -304,7 +304,7 @@ Optional, **off by default** (plain HTTP keeps dev/CI simple). When on, Spring B
 # 3. Restart. The app now serves https://<host>:<SERVER_PORT>.
 ```
 
-**How it works:** with `TLS_ENABLED=true`, `application.yml` hands Spring Boot the two PEM files via `server.ssl.certificate` / `server.ssl.certificate-private-key`; Spring builds an in-memory keystore and configures the embedded Netty server to do the TLS handshake. The React UI and the SSE streams use relative URLs, so they follow the scheme automatically — nothing else changes. When `TLS_ENABLED=false`, the certificate paths are ignored and it's plain HTTP.
+**How it works:** with `TLS_ENABLED=true`, `application.yml` hands Spring Boot the two PEM files via `server.ssl.certificate` / `server.ssl.certificate-private-key`; Spring builds an in-memory keystore and configures the embedded Netty server to do the TLS handshake. The React UI and the SSE streams use relative URLs, so they follow the scheme automatically — nothing else changes. When `TLS_ENABLED=false`, the certificate paths are ignored and it's plain HTTP. `deploy.sh` reads `TLS_ENABLED` and runs its post-deploy health check over HTTPS (with `-k`) automatically, so deploys work the same either way.
 
 **A self-signed cert works, with a one-time browser warning.** To avoid the warning on your own devices, generate the cert with [`mkcert`](https://github.com/FiloSottile/mkcert) instead (it installs a local CA your devices trust) — same file names, no config change. `key.pem` is a secret and is git-ignored.
 
