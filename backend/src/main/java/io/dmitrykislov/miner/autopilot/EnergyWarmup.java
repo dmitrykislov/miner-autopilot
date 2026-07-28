@@ -6,6 +6,7 @@ import io.dmitrykislov.miner.history.TelemetryStore;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -27,6 +28,10 @@ import java.util.List;
  * <p>Only real persisted data is replayed — nothing is fabricated. If history is empty/disabled it
  * is a no-op.
  */
+// @Lazy(false): the app runs with spring.main.lazy-initialization=true on the Pi (footprint). This
+// bean is a leaf that nothing injects, so under global lazy-init it would never be created and its
+// @PostConstruct warm-up would never run. Mark it eager so it always warms the windows at startup.
+@Lazy(false)
 @Component
 public class EnergyWarmup {
 
