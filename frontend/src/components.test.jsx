@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { MinerCard, EnergyFlow, CoverageRing, Sparkline } from './App.jsx'
+import { MinerCard, EnergyFlow, CoverageRing, Sparkline, Tabs, InverterDetails } from './App.jsx'
 
 function miner(over = {}) {
   return {
@@ -122,6 +122,48 @@ describe('EnergyFlow', () => {
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
     expect(container.textContent).toMatch(/waiting for/i)            // Solar Analytics offline message
     expect(container.textContent).toMatch(/unavailable/i)            // margin can't be computed
+  })
+})
+
+describe('Tabs', () => {
+  it('renders both tabs, marks the active one, and fires onChange on click', () => {
+    const onChange = vi.fn()
+    render(<Tabs active="overview" onChange={onChange} />)
+    const overview = screen.getByRole('tab', { name: 'Overview' })
+    const advanced = screen.getByRole('tab', { name: 'Advanced' })
+    expect(overview).toHaveAttribute('aria-selected', 'true')
+    expect(advanced).toHaveAttribute('aria-selected', 'false')
+    fireEvent.click(advanced)
+    expect(onChange).toHaveBeenCalledWith('advanced')
+  })
+})
+
+describe('InverterDetails', () => {
+  const metrics = [
+    { key: 'A', label: 'Active Power', category: 'power', value: '1.2', unit: 'kW' },
+    { key: 'B', label: 'Grid Voltage', category: 'grid', value: '240', unit: 'V' },
+    // A promoted key (shown elsewhere) must NOT appear in the detail sections.
+    { key: 'I18N_COMMON_TOTAL_ACTIVE_POWER', label: 'Total Active Power', category: 'power', value: '1.2', unit: 'kW' },
+  ]
+
+  it('renders a section per populated category and hides promoted keys', () => {
+    render(<InverterDetails metrics={metrics} strings={[]} />)
+    expect(screen.getByRole('heading', { name: 'Power' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Grid & AC Output' })).toBeInTheDocument()
+    expect(screen.getByText('Active Power')).toBeInTheDocument()
+    expect(screen.queryByText('Total Active Power')).not.toBeInTheDocument() // promoted → hidden
+    expect(screen.queryByRole('heading', { name: 'Energy' })).not.toBeInTheDocument() // empty → skipped
+  })
+
+  it('renders MPPT string cards under DC / PV Array', () => {
+    render(<InverterDetails metrics={[]} strings={[{ name: 'MPPT1', voltage: 600, current: 8, powerKw: 4.8 }]} />)
+    expect(screen.getByRole('heading', { name: 'DC / PV Array' })).toBeInTheDocument()
+    expect(screen.getByText('MPPT1')).toBeInTheDocument()
+  })
+
+  it('shows a placeholder when there is nothing to show', () => {
+    render(<InverterDetails metrics={[]} strings={[]} />)
+    expect(screen.getByText(/No inverter detail/i)).toBeInTheDocument()
   })
 })
 

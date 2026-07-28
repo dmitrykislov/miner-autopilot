@@ -16,11 +16,17 @@ const WINDOWS = [
 const DEFAULT_WIN = 4 // Today
 
 // The three plotted series. Values are watts; the axis/tooltip render them as kW.
+// The miner is `zeroFill`: when it's off (minerPowerW null) the line is held at 0 rather than
+// broken — the rig genuinely draws 0 W when off, so a flat baseline reads more clearly than a gap.
+// Solar/Home stay gapped on null (a missing reading is unknown, not zero).
 const SERIES = [
   { key: 'solarW', label: 'Solar', color: 'var(--solar)' },
   { key: 'consumptionW', label: 'Home', color: 'var(--house)' },
-  { key: 'minerPowerW', label: 'Miner', color: 'var(--miner)' },
+  { key: 'minerPowerW', label: 'Miner', color: 'var(--miner)', zeroFill: true },
 ]
+
+// Series value at a sample: 0 when a zeroFill series is missing (miner off), else the raw value.
+const seriesValue = (s, p) => (s.zeroFill ? (p[s.key] ?? 0) : p[s.key])
 
 const M = { top: 14, right: 16, bottom: 26, left: 46 }
 const H = 300
@@ -114,7 +120,12 @@ export default function HistoryChart({ authFetch }) {
 
   const paths = useMemo(() => SERIES.map((s) => ({
     ...s,
-    d: line().defined((p) => p[s.key] != null).x((p) => x(p.date)).y((p) => y(p[s.key]))(samples),
+    // zeroFill series are always defined (0 where missing) → one continuous line held at the
+    // baseline while off; others break on null so a missing reading isn't drawn as zero.
+    d: line()
+      .defined((p) => (s.zeroFill ? true : p[s.key] != null))
+      .x((p) => x(p.date))
+      .y((p) => y(seriesValue(s, p)))(samples),
   })), [samples, x, y])
 
   // Sign-coloured fill of the Solar↔Home difference: green where solar ≥ home (surplus), red where
@@ -237,9 +248,12 @@ export default function HistoryChart({ authFetch }) {
             {hover && (
               <g className="hcross">
                 <line x1={hover.x} x2={hover.x} y1={M.top} y2={M.top + plotH} />
-                {SERIES.map((s) => hover.sample[s.key] != null && (
-                  <circle key={s.key} cx={hover.x} cy={y(hover.sample[s.key])} r="3.2" fill={s.color} />
-                ))}
+                {SERIES.map((s) => {
+                  const v = seriesValue(s, hover.sample) // 0 for an off miner → dot tracks the baseline
+                  return v != null && (
+                    <circle key={s.key} cx={hover.x} cy={y(v)} r="3.2" fill={s.color} />
+                  )
+                })}
               </g>
             )}
 

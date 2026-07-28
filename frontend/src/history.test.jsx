@@ -7,8 +7,8 @@ const T0 = Date.parse('2026-07-27T06:00:00Z')
 function payload(over = {}) {
   const samples = []
   for (let i = 0; i < 30; i++) {
-    // Miner off before i=8 (pre-mining) and again in [18,22) (a mid-window suspension) → the miner
-    // line has an interior gap (two drawn segments), which is what the line-break test checks.
+    // Miner off before i=8 (pre-mining) and again in [18,22) (a mid-window suspension). When off the
+    // miner line is held at zero (not gapped) — the zero-baseline test checks that.
     const off = i < 8 || (i >= 18 && i < 22)
     samples.push({
       at: new Date(T0 + i * 60_000).toISOString(),
@@ -68,11 +68,17 @@ describe('HistoryChart', () => {
     }
   })
 
-  it('breaks the miner line where the miner was off (null segment)', async () => {
+  it('holds the miner line at zero (not a gap) while the miner is off', async () => {
     render(<HistoryChart authFetch={fakeFetch(payload())} />)
     const miner = await screen.findByTestId('history-line-minerPowerW')
-    // d3 line().defined(...) restarts the path after the gap → a second "M" command.
-    expect((miner.getAttribute('d').match(/M/g) || []).length).toBeGreaterThan(1)
+    const solar = await screen.findByTestId('history-line-solarW')
+    const md = miner.getAttribute('d')
+    // One continuous path — no defined()-induced break where the miner was off.
+    expect((md.match(/M/g) || []).length).toBe(1)
+    // Off samples sit on the zero baseline, so the miner line reaches lower on screen (larger SVG y)
+    // than the always-positive solar line's lowest point.
+    const maxY = (d) => Math.max(...[...d.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((m) => Number(m[2])))
+    expect(maxY(md)).toBeGreaterThan(maxY(solar.getAttribute('d')))
   })
 
   it('renders the sign-coloured solar↔home difference fill', async () => {
@@ -84,6 +90,24 @@ describe('HistoryChart', () => {
     expect(deficit.getAttribute('d')).toBeTruthy()
     expect(surplus.getAttribute('clip-path')).toContain('surplus')
     expect(deficit.getAttribute('clip-path')).toContain('deficit')
+  })
+
+  it('draws the deficit (red) fill where home consumption exceeds solar', async () => {
+    // A window that starts in deficit (home 4 kW > solar 2 kW) and crosses into surplus.
+    const samples = Array.from({ length: 20 }, (_, i) => ({
+      at: new Date(T0 + i * 60_000).toISOString(),
+      solarW: 2000 + i * 200,        // rises 2000 → ~5800
+      consumptionW: 4000,            // flat 4 kW → deficit while solar < 4000 (roughly i < 10)
+      minerPowerW: null, minerState: 'STOPPED',
+    }))
+    render(<HistoryChart authFetch={fakeFetch(payload({ samples, events: [] }))} />)
+    const deficit = await screen.findByTestId('history-deficit-fill')
+    const surplus = screen.getByTestId('history-surplus-fill')
+    // Same band, clipped below/above the Home line respectively → the deficit stretch shows red,
+    // the later surplus stretch green. Both must be drawn and clipped to their own region.
+    expect(deficit.getAttribute('d')).toBeTruthy()
+    expect(deficit.getAttribute('clip-path')).toContain('deficit')
+    expect(surplus.getAttribute('clip-path')).toContain('surplus')
   })
 
   it('shows a plot readout on hover (solar / home / surplus)', async () => {

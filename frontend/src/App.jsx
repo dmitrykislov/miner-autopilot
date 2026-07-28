@@ -355,6 +355,56 @@ export function AutopilotCard({ autopilot, pending, onToggle }) {
   )
 }
 
+const TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'advanced', label: 'Advanced' },
+]
+
+/** Controlled tab strip. `active` is the current tab id; `onChange(id)` switches. */
+export function Tabs({ active, onChange, tabs = TABS }) {
+  return (
+    <nav className="tabs" role="tablist" aria-label="Dashboard sections">
+      {tabs.map((t) => (
+        <button key={t.id} type="button" role="tab" aria-selected={active === t.id}
+          className={`tab-btn ${active === t.id ? 'active' : ''}`}
+          onClick={() => onChange(t.id)}>{t.label}</button>
+      ))}
+    </nav>
+  )
+}
+
+/**
+ * The detailed inverter metric sections (Energy, Power, Grid, DC, Status, Per-phase) plus the MPPT
+ * string cards. Lives under the Advanced tab to keep the main Overview focused on the flow, KPIs,
+ * history and controls. Keys already shown elsewhere are hidden to avoid duplication.
+ */
+export function InverterDetails({ metrics = [], strings = [] }) {
+  const byCat = (cat) => metrics.filter((m) => m.category === cat && !PROMOTED_KEYS.has(m.key))
+  const sections = SECTIONS.map((sec) => {
+    const items = byCat(sec.id)
+    const withMppt = sec.id === 'dc'
+    if (!items.length && !(withMppt && strings.length)) return null
+    return (
+      <section className="section" key={sec.id}>
+        <div className="section-head">
+          <span className="section-icon"><Icon name={sec.icon} size={16} /></span>
+          <h2>{sec.title}</h2>
+          <InfoDot text={sec.desc} />
+        </div>
+        <div className="grid">
+          {items.map((m) => <MetricCard key={m.key} metric={m} />)}
+          {withMppt && strings.map((s) => <MpptCard key={s.name} s={s} />)}
+        </div>
+      </section>
+    )
+  }).filter(Boolean)
+
+  if (!sections.length) {
+    return <div className="card advanced-empty">No inverter detail available right now.</div>
+  }
+  return <>{sections}</>
+}
+
 function Dashboard({ onLogout }) {
   const [snapshot, setSnapshot] = useState(null)
   const [connected, setConnected] = useState(false)
@@ -366,6 +416,7 @@ function Dashboard({ onLogout }) {
   const [system, setSystem] = useState(null)
   const [autopilot, setAutopilot] = useState(null)
   const [apPending, setApPending] = useState(false)
+  const [tab, setTab] = useState('overview')
 
   // fetch with the bearer token; a 401 means the token is gone/expired → log out.
   const authFetch = (url, opts = {}) =>
@@ -431,9 +482,6 @@ function Dashboard({ onLogout }) {
   const hl = snapshot?.highlights ?? {}
   const metrics = snapshot?.metrics ?? []
   const strings = snapshot?.strings ?? []
-  // These highlights are already shown prominently (KPI tiles, the Solar node, the
-  // header state pill), so hide them from the detailed sections to avoid duplication.
-  const byCat = (cat) => metrics.filter((m) => m.category === cat && !PROMOTED_KEYS.has(m.key))
   const state = snapshot?.runningState || (connected ? '…' : 'Connecting')
 
   return (
@@ -459,7 +507,9 @@ function Dashboard({ onLogout }) {
       {snapshot?.error && !online && <div className="banner">Last poll failed: {snapshot.error}</div>}
       {!snapshot && <div className="loading card">Connecting to inverter…</div>}
 
-      {snapshot && (
+      {snapshot && <Tabs active={tab} onChange={setTab} />}
+
+      {snapshot && tab === 'overview' && (
         <>
           <EnergyFlow solar={solar} house={house} spark={spark} />
 
@@ -494,26 +544,11 @@ function Dashboard({ onLogout }) {
             </div>
             <AutopilotCard autopilot={autopilot} pending={apPending} onToggle={toggleAutopilot} />
           </section>
-
-          {SECTIONS.map((sec) => {
-            const items = byCat(sec.id)
-            const withMppt = sec.id === 'dc'
-            if (!items.length && !(withMppt && strings.length)) return null
-            return (
-              <section className="section" key={sec.id}>
-                <div className="section-head">
-                  <span className="section-icon"><Icon name={sec.icon} size={16} /></span>
-                  <h2>{sec.title}</h2>
-                  <InfoDot text={sec.desc} />
-                </div>
-                <div className="grid">
-                  {items.map((m) => <MetricCard key={m.key} metric={m} />)}
-                  {withMppt && strings.map((s) => <MpptCard key={s.name} s={s} />)}
-                </div>
-              </section>
-            )
-          })}
         </>
+      )}
+
+      {snapshot && tab === 'advanced' && (
+        <InverterDetails metrics={metrics} strings={strings} />
       )}
 
       <footer className="foot">
