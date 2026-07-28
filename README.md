@@ -168,7 +168,7 @@ DEPLOY_HOST=<ip> DEPLOY_PORT=<port> DEPLOY_USER=<user> DEPLOY_KEY=<path.pem> ./d
 SKIP_TESTS=1 ./deploy.sh   # skip the test suites for a faster redeploy
 ```
 
-> **Note:** the app runs detached, not as a system service, so it won't restart on reboot. Add a small `systemd` unit with `Restart=always` if you want that.
+> **Note:** by default the app runs detached, not as a system service, so it won't restart on reboot. To survive reboots (and auto-restart on crash), install the ready-made unit in [`deploy/miner-controller.service`](deploy/miner-controller.service) — `sudo cp` it to `/etc/systemd/system/`, set `User=`, then `sudo systemctl enable --now miner-controller`.
 
 ---
 
@@ -280,7 +280,35 @@ AUTH_TOKEN_TTL_DAYS=30
 
 **How it works:** the login checks your password against the hash and returns a stateless, signed token (valid for `AUTH_TOKEN_TTL_DAYS`, default 30 days), kept in the browser and sent on every request. **Log out** clears it. **Fail-closed:** if auth is on but no hash is set, *every* request is rejected — a misconfig can never accidentally leave it open. Use `AUTH_ENABLED=false` only for local dev.
 
-> No TLS: the UI is plain HTTP, so the password crosses the network in cleartext. Fine on a trusted LAN; put it behind a TLS reverse proxy if you expose it wider.
+> By default the UI is plain HTTP, so the password crosses the network in cleartext — fine on a trusted LAN. To encrypt it, turn on **HTTPS** (next section).
+
+---
+
+## HTTPS / TLS
+
+Optional, **off by default** (plain HTTP keeps dev/CI simple). When on, Spring Boot terminates TLS itself — no reverse proxy, no extra process, which suits the tiny Pi.
+
+**Turn it on in three steps:**
+
+```bash
+# 1. Generate a self-signed cert + key (SAN = localhost, this host's IP, + any you pass)
+./scripts/gen-tls-cert.sh                       # writes certs/cert.pem + certs/key.pem
+#    or include the exact addresses you'll browse to:
+./scripts/gen-tls-cert.sh certs 192.168.1.50 pi.local
+
+# 2. Point .env at them and flip the switch:
+#      TLS_ENABLED=true
+#      TLS_CERT=file:certs/cert.pem
+#      TLS_KEY=file:certs/key.pem
+
+# 3. Restart. The app now serves https://<host>:<SERVER_PORT>.
+```
+
+**How it works:** with `TLS_ENABLED=true`, `application.yml` hands Spring Boot the two PEM files via `server.ssl.certificate` / `server.ssl.certificate-private-key`; Spring builds an in-memory keystore and configures the embedded Netty server to do the TLS handshake. The React UI and the SSE streams use relative URLs, so they follow the scheme automatically — nothing else changes. When `TLS_ENABLED=false`, the certificate paths are ignored and it's plain HTTP.
+
+**A self-signed cert works, with a one-time browser warning.** To avoid the warning on your own devices, generate the cert with [`mkcert`](https://github.com/FiloSottile/mkcert) instead (it installs a local CA your devices trust) — same file names, no config change. `key.pem` is a secret and is git-ignored.
+
+> **Exposing it to the internet?** Then use a small reverse proxy in front instead — **[Caddy](https://caddyserver.com)** is the easiest (a ~5-line config gives you a *real*, auto-renewing Let's Encrypt cert; ~20 MB extra on the Pi). The difference from the built-in TLS above: Spring's self-signed cert isn't trusted by browsers out of the box and you renew it by hand, whereas Caddy fetches and auto-renews a publicly-trusted cert. For a LAN-only tool, the built-in TLS is simpler; for public exposure, Caddy is worth the extra process.
 
 ---
 
@@ -341,8 +369,8 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install      # 298 backend + 89 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (298)
+mvn clean install      # 299 backend + 89 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (299)
 ```
 
 Coverage includes: config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, every poller/service (mocked clients) and controller; the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards); the autopilot **wiring** (live-state re-verification, restore-from-history, window warm-up); a real-HTTP **transport** test (odd content types, error handling); and an **end-to-end** test that boots the full app against simulated devices and asserts the exact commands sent. The **history** layer and the React chart/auth UI have their own suites.
@@ -352,8 +380,8 @@ Coverage includes: config binding + guards, power-balance math, label mapping, J
 ## Limitations
 
 - **The miner needs a live pool to actually hash.** With no reachable pool, BOSMiner starts but sits **Suspended** — there's no way to force hashing without a pool. On an internet-isolated network it also can't reach a mining pool.
-- **No TLS** on the UI (see [Access control](#access-control)).
-- **No auto-start on boot** — add a `systemd` unit if you want it to come back after a reboot.
+- **Plain HTTP by default** — optional built-in **HTTPS** is available (see [HTTPS / TLS](#https--tls)).
+- **Auto-start on boot** isn't on by default, but a ready `systemd` unit ships in [`deploy/miner-controller.service`](deploy/miner-controller.service) — install it to survive reboots and auto-restart on crash.
 
 ---
 

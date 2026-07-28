@@ -1,5 +1,13 @@
 server:
   port: ${SERVER_PORT:8080}
+  # Optional HTTPS. Off by default → plain HTTP (keeps dev/CI simple). To serve the UI +
+  # API over TLS, set TLS_ENABLED=true and point TLS_CERT / TLS_KEY at PEM files — generate
+  # them with scripts/gen-tls-cert.sh. When disabled, the certificate paths are ignored.
+  # (See README → "HTTPS / TLS".)
+  ssl:
+    enabled: ${TLS_ENABLED:false}
+    certificate: ${TLS_CERT:}
+    certificate-private-key: ${TLS_KEY:}
 
 # Application version shown in the UI footer. Sourced from the Maven project version
 # (pom.xml, the single source of truth) via @...@ resource filtering; override with APP_VERSION.
