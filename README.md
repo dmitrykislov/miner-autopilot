@@ -451,9 +451,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install      # 315 backend + 97 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (315)
+mvn clean install               # everything: 315 backend (JUnit) + 97 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 144)
 ```
+
+Backend tests live **with their module** — `autopilot-engine` 144 · `autopilot-adapters` 135 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **97** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
 
 Coverage includes: config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, every poller/service (mocked clients) and controller; the **pluggable ports** — the source-agnostic `/api/power` feed (ports → snapshot, stream re-emit + dedup) and the HTTP `/api/ingest` path (push → port → feed), each proven both as a slice and in a full boot; the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards); the autopilot **wiring** (live-state re-verification, restore-from-history, window warm-up); a real-HTTP **transport** test (odd content types, error handling); and an **end-to-end** test that boots the full app against simulated devices and asserts the exact commands sent + the power feed served. The **history** layer and the React chart/auth UI (including a dashboard integration test that renders the live flow from the feed with no inverter present) have their own suites.
 
