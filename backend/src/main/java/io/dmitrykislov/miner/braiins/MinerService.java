@@ -1,6 +1,7 @@
 package io.dmitrykislov.miner.braiins;
 
 import io.dmitrykislov.miner.config.HouseProperties;
+import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.util.Rounding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +19,7 @@ import java.util.List;
  * (refreshing status immediately after).
  */
 @Service
-public class MinerService {
+public class MinerService implements MinerDriver {
 
     private static final Logger log = LoggerFactory.getLogger(MinerService.class);
 
@@ -43,6 +44,7 @@ public class MinerService {
         if (cfg.enabled()) refresh();
     }
 
+    @Override
     public MinerStatus refresh() {
         Instant now = Instant.now();
         if (!cfg.enabled() || cfg.host().isBlank()) {
@@ -132,6 +134,7 @@ public class MinerService {
         }
     }
 
+    @Override
     public MinerStatus start() {
         try {
             client.start();
@@ -142,6 +145,7 @@ public class MinerService {
         return refresh();
     }
 
+    @Override
     public MinerStatus stop() {
         try {
             client.stop();
@@ -152,6 +156,7 @@ public class MinerService {
         return refresh();
     }
 
+    @Override
     public MinerStatus setPowerTarget(int watts, boolean apply) {
         // Never send an out-of-range target to the hardware, whatever the caller asks.
         int clamped = cfg.clampPower(watts);

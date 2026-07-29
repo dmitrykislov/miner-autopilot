@@ -1,6 +1,6 @@
 package io.dmitrykislov.miner.autopilot;
 
-import io.dmitrykislov.miner.braiins.MinerService;
+import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.braiins.MinerStatus;
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.history.PowerChangeEvent;
@@ -21,7 +21,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Orchestration tests for the autopilot: it reads a FRESH miner state via
- * {@link MinerService#refresh()} each tick, derives the {@link AutopilotGovernor} inputs from the
+ * {@link MinerDriver#refresh()} each tick, derives the {@link AutopilotGovernor} inputs from the
  * live feed ({@link InverterStreamService} for validity + {@link EnergyAverages} for the averaged
  * surplus), applies the decision, and re-verifies state immediately before every mutating op.
  *
@@ -32,7 +32,7 @@ import static org.mockito.Mockito.*;
  */
 class MinerAutopilotTest {
 
-    private MinerService miner;
+    private MinerDriver miner;
     private InverterStreamService inverterStream;
     private EnergyAverages energy;
     private AutopilotStreamService stream;
@@ -40,7 +40,7 @@ class MinerAutopilotTest {
 
     @BeforeEach
     void setup() {
-        miner = mock(MinerService.class);
+        miner = mock(MinerDriver.class);
         history = mock(TelemetryStore.class); // no persisted history by default → latestEvent() == null
         inverterStream = new InverterStreamService();
         energy = new EnergyAverages(

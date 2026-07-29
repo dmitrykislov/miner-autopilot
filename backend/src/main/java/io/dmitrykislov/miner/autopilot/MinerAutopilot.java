@@ -1,7 +1,7 @@
 package io.dmitrykislov.miner.autopilot;
 
-import io.dmitrykislov.miner.braiins.MinerService;
 import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.history.PowerChangeEvent;
 import io.dmitrykislov.miner.history.TelemetryStore;
@@ -46,7 +46,7 @@ public class MinerAutopilot {
 
     private final EnergyAverages energy;
     private final InverterStreamService inverter;
-    private final MinerService minerService;
+    private final MinerDriver minerService;
     private final HouseProperties.Miner minerCfg;
     private final AutopilotGovernor governor;
     private final AutopilotStreamService statusStream;
@@ -67,7 +67,7 @@ public class MinerAutopilot {
     private volatile boolean minerObserved;
 
     public MinerAutopilot(EnergyAverages energy, InverterStreamService inverter,
-                          MinerService minerService, HouseProperties props,
+                          MinerDriver minerService, HouseProperties props,
                           AutopilotStreamService statusStream, TelemetryStore history) {
         this.energy = energy;
         this.inverter = inverter;
