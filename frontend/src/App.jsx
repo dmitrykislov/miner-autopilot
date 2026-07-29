@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { ICONS, Sun, Info, ArrowUp, ArrowDown } from './icons.jsx'
 import { metaFor } from './metricMeta.js'
-import { fmt, flow, minerView, formatDuration } from './logic.js'
+import { fmt, flow, minerView, formatDuration, powerView } from './logic.js'
 import { useEventSource } from './hooks.js'
 import { isAuthed, clearToken, authHeaders, withToken } from './auth.js'
 import Login from './Login.jsx'
@@ -410,9 +410,11 @@ export function InverterDetails({ metrics = [], strings = [] }) {
 }
 
 function Dashboard({ onLogout }) {
-  const [snapshot, setSnapshot] = useState(null)
-  const [houseLive, setHouseLive] = useState(null)
+  const [snapshot, setSnapshot] = useState(null)  // Sungrow inverter detail (optional enhancement)
+  const [power, setPower] = useState(null)        // source-agnostic live power feed (drives the flow)
+  const [powerRecvMs, setPowerRecvMs] = useState(null)
   const [spark, setSpark] = useState([])
+  const sparkTsRef = React.useRef(null)           // last consumption timestamp charted (dedup heartbeats)
   const [miner, setMiner] = useState(null)
   const [minerPending, setMinerPending] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -427,21 +429,29 @@ function Dashboard({ onLogout }) {
       .then((r) => { if (r.status === 401) { onLogout(); throw new Error('unauthorized') } return r })
 
   useEffect(() => {
-    authFetch('/api/house/latest').then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d && d.metered) setHouseLive({ ...d, at: Date.now() }) }).catch(() => {})
+    authFetch('/api/power/latest').then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) { setPower(d); setPowerRecvMs(Date.now()) } }).catch(() => {})
     authFetch('/api/system').then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d) setSystem({ version: d.version, startedMs: Date.parse(d.startedAt) }) }).catch(() => {})
   }, [])
 
-  // SSE carries the token as ?token= (EventSource can't set headers).
-  useEventSource(withToken('/api/inverter/stream'), setSnapshot)
-
-  useEventSource(withToken('/api/house/stream'), (r) => {
-    if (r && r.metered) {
-      setHouseLive({ ...r, at: Date.now() })
-      setSpark((prev) => [...prev, r.powerKw].slice(-SPARK_MAX)) // measured house consumption
+  // Source-agnostic power feed (reads the solar/consumption ports) — drives the live flow, so the
+  // dashboard works with any source. SSE carries the token as ?token= (EventSource can't set headers).
+  useEventSource(withToken('/api/power/stream'), (r) => {
+    if (!r) return
+    setPower(r)
+    setPowerRecvMs(Date.now())
+    // Chart a house point only when the consumption reading itself advances (skip the keep-alive
+    // heartbeats, which re-send the current snapshot unchanged).
+    if (r.consumptionW != null && r.consumptionAt && r.consumptionAt !== sparkTsRef.current) {
+      sparkTsRef.current = r.consumptionAt
+      setSpark((prev) => [...prev, r.consumptionW / 1000].slice(-SPARK_MAX))
     }
   })
+
+  // The Sungrow inverter's rich detail (KPIs, per-string DC, model/serial) — an optional
+  // enhancement layered on top; absent for a non-Sungrow source, which is fine.
+  useEventSource(withToken('/api/inverter/stream'), setSnapshot)
 
   useEventSource(withToken('/api/miner/stream'), setMiner)
   useEventSource(withToken('/api/autopilot/stream'), setAutopilot)
@@ -472,15 +482,11 @@ function Dashboard({ onLogout }) {
     minerCmd(`/api/miner/power?watts=${encodeURIComponent(watts)}&apply=true`)
   }
 
-  const meterFresh = houseLive && (now - houseLive.at) < STALE_MS
-  // house = measured whole-home consumption (kW) from Solar Analytics
-  const house = meterFresh
-    ? { kw: houseLive.powerKw, metered: true,
-        ts: houseLive.timestamp, ageSec: Math.max(0, Math.round((now - houseLive.at) / 1000)) }
-    : { kw: null, metered: false }
+  // solar (kW) + house consumption, mapped from the source-agnostic power feed (ports).
+  const { solar, house } = powerView(power, powerRecvMs, now, STALE_MS)
 
   const online = snapshot?.online
-  const solar = snapshot?.powerBalance?.solarPowerKw
+  const hasInverter = !!snapshot                    // Sungrow detail available?
   const hl = snapshot?.highlights ?? {}
   const metrics = snapshot?.metrics ?? []
   const strings = snapshot?.strings ?? []
@@ -491,31 +497,34 @@ function Dashboard({ onLogout }) {
         <div className="brand">
           <span className="brand-mark"><Sun size={20} /></span>
           <div>
-            <h1>{snapshot?.deviceModel || 'SG10RS'}<span className="muted"> Solar Monitor</span></h1>
-            <div className="sub">SN {snapshot?.serialNumber || '—'}</div>
+            <h1>{hasInverter && snapshot.deviceModel
+              ? snapshot.deviceModel : 'Solar'}<span className="muted"> Monitor</span></h1>
+            {hasInverter && <div className="sub">SN {snapshot.serialNumber || '—'}</div>}
           </div>
         </div>
-        {/* Tabs live in the header; live status is shown in the Live Power Flow section below. */}
-        {snapshot && <Tabs active={tab} onChange={setTab} />}
+        {/* Tabs live in the header; the Advanced tab only exists when a Sungrow inverter is present. */}
+        {hasInverter && <Tabs active={tab} onChange={setTab} />}
       </header>
 
       {snapshot?.error && !online && <div className="banner">Last poll failed: {snapshot.error}</div>}
-      {!snapshot && <div className="loading card">Connecting to inverter…</div>}
+      {!power && <div className="loading card">Connecting…</div>}
 
-      {snapshot && tab === 'overview' && (
+      {power && tab === 'overview' && (
         <>
           <EnergyFlow solar={solar} house={house} spark={spark} />
 
-          <div className="kpis">
-            <Kpi icon="calendar" label="Today" value={fmt(hl.dailyYieldKwh, 1)} unit="kWh"
-              info="Energy generated since midnight." />
-            <Kpi icon="sigma" label="Lifetime" value={fmt(hl.totalYieldKwh, 0)} unit="kWh"
-              info="Total energy generated since installation." />
-            <Kpi icon="wave" label="Grid Frequency" value={fmt(hl.gridFrequencyHz, 2)} unit="Hz"
-              info="Measured grid frequency (0 while the inverter is in standby)." />
-            <Kpi icon="thermometer" label="Inverter Temp" value={fmt(hl.temperatureC, 1)} unit="℃"
-              info="Air temperature inside the inverter enclosure." />
-          </div>
+          {hasInverter && (
+            <div className="kpis">
+              <Kpi icon="calendar" label="Today" value={fmt(hl.dailyYieldKwh, 1)} unit="kWh"
+                info="Energy generated since midnight." />
+              <Kpi icon="sigma" label="Lifetime" value={fmt(hl.totalYieldKwh, 0)} unit="kWh"
+                info="Total energy generated since installation." />
+              <Kpi icon="wave" label="Grid Frequency" value={fmt(hl.gridFrequencyHz, 2)} unit="Hz"
+                info="Measured grid frequency (0 while the inverter is in standby)." />
+              <Kpi icon="thermometer" label="Inverter Temp" value={fmt(hl.temperatureC, 1)} unit="℃"
+                info="Air temperature inside the inverter enclosure." />
+            </div>
+          )}
 
           <HistoryChart authFetch={authFetch} />
 
@@ -540,14 +549,15 @@ function Dashboard({ onLogout }) {
         </>
       )}
 
-      {snapshot && tab === 'advanced' && (
+      {hasInverter && tab === 'advanced' && (
         <InverterDetails metrics={metrics} strings={strings} />
       )}
 
       <footer className="foot">
         <div>
-          Solar via Sungrow WiNet-S (polled) · house consumption via Solar Analytics (polled) ·
-          margin = solar − measured house; unavailable while consumption data is stale.
+          Live solar &amp; house consumption from the configured sources
+          {hasInverter && <> (Sungrow WiNet-S + Solar Analytics)</>} ·
+          margin = solar − house consumption; unavailable while consumption data is stale.
         </div>
         <div className="foot-sys">
           {system && <>

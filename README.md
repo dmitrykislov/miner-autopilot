@@ -167,7 +167,7 @@ curl -X POST "https://<host>/api/ingest/consumption?watts=900"   -H "Authorizati
 curl -X POST "https://<host>/api/ingest/solar/clear"             -H "Authorization: Bearer $TOKEN"  # source down
 ```
 
-> The engine, the REST/SSE API, the safety logic, and the **history chart** are all unchanged by a swap (the recorder reads the same ports). A custom miner provides **both** the `MinerDriver` (control) and a feed into `MinerStatusSource` (its live status/draw). One remaining caveat: the *live* dashboard's inverter-detail section + the Solar/Home flow tiles still read the Sungrow/Solar-Analytics streams, so those would be empty for a non-Sungrow source — the autopilot and the history chart work fine.
+> The engine, the safety logic, the **history chart**, and the dashboard's **live power flow** are all unchanged by a swap — the flow reads a source-agnostic feed (`GET /api/power/stream`, straight off the ports), and the recorder reads the same ports, so both work for whatever source you plug in. A custom miner provides **both** the `MinerDriver` (control) and a feed into `MinerStatusSource` (its live status/draw). The only Sungrow-specific part of the UI is the *optional* inverter detail (the Advanced tab, the yield/temperature KPIs, model/serial); it simply doesn't render for a non-Sungrow solar source, and everything else keeps working.
 
 ---
 
@@ -272,7 +272,8 @@ All live streams are **Server-Sent Events** (`text/event-stream`).
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/inverter/stream` · `/latest` | Solar snapshot: power balance + all inverter metrics + MPPT strings |
+| `GET /api/power/stream` · `/latest` | **Source-agnostic** live solar + house watts (off the ports) — drives the dashboard flow |
+| `GET /api/inverter/stream` · `/latest` | Sungrow-specific detail: power balance + all inverter metrics + MPPT strings |
 | `GET /api/house/stream` · `/latest` | Whole-home usage (Solar Analytics), live |
 | `GET /api/miner/stream` · `/status` | Miner status: state, hashrate, draw, fans, pools, power target |
 | `POST /api/miner/start` · `/stop` | Start / stop the miner |
@@ -400,8 +401,8 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install      # 308 backend + 89 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (308)
+mvn clean install      # 313 backend + 94 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (313)
 ```
 
 Coverage includes: config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, every poller/service (mocked clients) and controller; the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards); the autopilot **wiring** (live-state re-verification, restore-from-history, window warm-up); a real-HTTP **transport** test (odd content types, error handling); and an **end-to-end** test that boots the full app against simulated devices and asserts the exact commands sent. The **history** layer and the React chart/auth UI have their own suites.

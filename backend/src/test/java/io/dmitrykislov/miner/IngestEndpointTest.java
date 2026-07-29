@@ -45,11 +45,30 @@ class IngestEndpointTest {
         assertThat(solar.latest()).isEmpty();
     }
 
+    @Test
+    void ingestedReadingsSurfaceOnTheSourceAgnosticPowerFeed() throws Exception {
+        // The whole point of the ports: an HTTP-pushed reading drives the UI's power feed, with no
+        // Sungrow/Solar-Analytics adapter involved (both are disabled in this context).
+        assertThat(post("/api/ingest/solar?watts=5000")).isEqualTo(202);
+        assertThat(post("/api/ingest/consumption?watts=1500")).isEqualTo(202);
+
+        String body = get("/api/power/latest");
+        assertThat(body).contains("\"solarW\":5000").contains("\"consumptionW\":1500");
+    }
+
     private int post(String path) throws Exception {
         HttpResponse<String> resp = HttpClient.newHttpClient().send(
                 HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
                         .POST(HttpRequest.BodyPublishers.noBody()).build(),
                 HttpResponse.BodyHandlers.ofString());
         return resp.statusCode();
+    }
+
+    private String get(String path) throws Exception {
+        HttpResponse<String> resp = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(resp.statusCode()).isEqualTo(200);
+        return resp.body();
     }
 }

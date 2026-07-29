@@ -21,6 +21,28 @@ export function flow(solarKw, houseKw) {
   return { net, exporting, coverage, gridFlow: Math.abs(net) }
 }
 
+/**
+ * Maps a source-agnostic power snapshot (from `/api/power`, i.e. the SolarSource / ConsumptionSource
+ * ports) into the `solar` (kW) and `house` view the EnergyFlow hero consumes — so the live flow works
+ * for any source (Sungrow + Solar Analytics, HTTP ingest, or a custom adapter), not just Sungrow.
+ *
+ * `recvMs` is when the browser last received a snapshot; if that is older than `staleMs` the SSE feed
+ * is considered dead and everything reads unavailable (a dead feed must not show a frozen value as
+ * live). A null solar/consumption field means that source isn't reporting right now.
+ *
+ * @returns {{solar:(number|null), house:{kw:(number|null), metered:boolean, ts?:*, ageSec?:number}}}
+ */
+export function powerView(power, recvMs, nowMs, staleMs = 30000) {
+  const fresh = recvMs != null && (nowMs - recvMs) < staleMs
+  const solar = fresh && power?.solarW != null ? power.solarW / 1000 : null
+  const metered = fresh && power?.consumptionW != null
+  const house = metered
+    ? { kw: power.consumptionW / 1000, metered: true, ts: power.consumptionAt,
+        ageSec: Math.max(0, Math.round((nowMs - recvMs) / 1000)) }
+    : { kw: null, metered: false }
+  return { solar, house }
+}
+
 /** Human uptime: null → null; ≥1h → "Xh Ym"; else "Xm". */
 export function formatUptime(seconds) {
   if (seconds == null || Number.isNaN(Number(seconds))) return null

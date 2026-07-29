@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fmt, flow, formatUptime, formatDuration, minerView, historyWindow, daylightExtent, pointerToSvgX } from './logic.js'
+import { fmt, flow, formatUptime, formatDuration, minerView, historyWindow, daylightExtent, pointerToSvgX, powerView } from './logic.js'
 
 describe('fmt', () => {
   it('renders "--" for non-numeric / missing values', () => {
@@ -204,6 +204,40 @@ describe('daylightExtent', () => {
       { at: iso(11), solarW: 500 },
     ]
     expect(daylightExtent(samples, 50)).toEqual([Date.parse(iso(9)), Date.parse(iso(11))])
+  })
+})
+
+describe('powerView', () => {
+  const now = 1_000_000
+  const snap = (over = {}) => ({ solarW: 3000, solarAt: 's1', consumptionW: 1500, consumptionAt: 'c1', ...over })
+
+  it('maps a fresh snapshot to solar kW and a metered house', () => {
+    const { solar, house } = powerView(snap(), now - 2000, now, 30000)
+    expect(solar).toBe(3) // 3000 W → 3 kW
+    expect(house).toEqual({ kw: 1.5, metered: true, ts: 'c1', ageSec: 2 })
+  })
+
+  it('treats a stale feed (no recent snapshot) as fully unavailable', () => {
+    const { solar, house } = powerView(snap(), now - 40000, now, 30000) // 40s old > 30s
+    expect(solar).toBeNull()
+    expect(house).toEqual({ kw: null, metered: false })
+  })
+
+  it('null consumption → solar shows but house is unmetered', () => {
+    const { solar, house } = powerView(snap({ consumptionW: null, consumptionAt: null }), now, now, 30000)
+    expect(solar).toBe(3)
+    expect(house).toEqual({ kw: null, metered: false })
+  })
+
+  it('null solar → solar is null but a present meter is still metered', () => {
+    const { solar, house } = powerView(snap({ solarW: null, solarAt: null }), now, now, 30000)
+    expect(solar).toBeNull()
+    expect(house.metered).toBe(true)
+    expect(house.kw).toBe(1.5)
+  })
+
+  it('no snapshot yet / never received → unavailable, no throw', () => {
+    expect(powerView(null, null, now)).toEqual({ solar: null, house: { kw: null, metered: false } })
   })
 })
 
