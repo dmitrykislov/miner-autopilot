@@ -1,4 +1,5 @@
 package io.dmitrykislov.miner.braiins;
+import io.dmitrykislov.miner.port.MinerStatus;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import io.dmitrykislov.miner.config.HouseProperties;

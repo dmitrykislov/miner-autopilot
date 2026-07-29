@@ -1,6 +1,6 @@
 package io.dmitrykislov.miner.api;
 
-import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.port.MinerStatusSource;
 import org.springframework.http.MediaType;

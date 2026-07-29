@@ -1,4 +1,5 @@
 package io.dmitrykislov.miner.braiins;
+import io.dmitrykislov.miner.port.MinerStatus;
 
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;

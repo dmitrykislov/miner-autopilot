@@ -1,4 +1,4 @@
-package io.dmitrykislov.miner.braiins;
+package io.dmitrykislov.miner.port;
 
 import java.util.List;
 import java.time.Instant;

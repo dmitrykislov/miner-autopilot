@@ -1,4 +1,5 @@
 package io.dmitrykislov.miner.braiins;
+import io.dmitrykislov.miner.port.MinerStatus;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;

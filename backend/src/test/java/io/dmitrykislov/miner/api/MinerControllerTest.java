@@ -1,7 +1,7 @@
 package io.dmitrykislov.miner.api;
 
 import io.dmitrykislov.miner.braiins.MinerService;
-import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.braiins.MinerStreamService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

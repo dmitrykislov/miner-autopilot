@@ -1,6 +1,5 @@
 package io.dmitrykislov.miner.port;
 
-import io.dmitrykislov.miner.braiins.MinerStatus;
 import reactor.core.publisher.Flux;
 
 /**

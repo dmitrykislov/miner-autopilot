@@ -1,5 +1,6 @@
 package io.dmitrykislov.miner.braiins;
 
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.port.MinerStatusSource;
 import io.dmitrykislov.miner.stream.LatestBroadcaster;
 import org.springframework.stereotype.Service;

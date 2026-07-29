@@ -2,7 +2,7 @@ package io.dmitrykislov.miner;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import io.dmitrykislov.miner.braiins.MinerService;
-import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.inverter.InverterPoller;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;

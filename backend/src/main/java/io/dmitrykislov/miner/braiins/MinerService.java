@@ -1,7 +1,9 @@
 package io.dmitrykislov.miner.braiins;
 
 import io.dmitrykislov.miner.config.HouseProperties;
+import io.dmitrykislov.miner.port.Fan;
 import io.dmitrykislov.miner.port.MinerDriver;
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.port.MinerStatusSource;
 import io.dmitrykislov.miner.util.Rounding;
 import org.slf4j.Logger;

@@ -1,7 +1,7 @@
 package io.dmitrykislov.miner.autopilot;
 
 import io.dmitrykislov.miner.port.MinerDriver;
-import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.history.PowerChangeEvent;
 import io.dmitrykislov.miner.history.TelemetryStore;

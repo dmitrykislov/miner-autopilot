@@ -1,4 +1,4 @@
-package io.dmitrykislov.miner.braiins;
+package io.dmitrykislov.miner.port;
 
 /**
  * One cooling fan on the miner.

@@ -1,6 +1,5 @@
 package io.dmitrykislov.miner.port;
 
-import io.dmitrykislov.miner.braiins.MinerStatus;
 
 /**
  * Outbound port: how the autopilot engine (and the REST API) drive a miner — read its live

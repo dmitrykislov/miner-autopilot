@@ -2,7 +2,7 @@ package io.dmitrykislov.miner.history;
 
 import io.dmitrykislov.miner.autopilot.AutopilotStatus;
 import io.dmitrykislov.miner.autopilot.AutopilotStreamService;
-import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.port.ConsumptionSource;
 import io.dmitrykislov.miner.port.MinerStatusSource;
 import io.dmitrykislov.miner.port.PowerReading;

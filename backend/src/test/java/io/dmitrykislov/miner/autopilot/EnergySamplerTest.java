@@ -1,6 +1,6 @@
 package io.dmitrykislov.miner.autopilot;
 
-import io.dmitrykislov.miner.braiins.MinerStatus;
+import io.dmitrykislov.miner.port.MinerStatus;
 import io.dmitrykislov.miner.braiins.MinerStreamService;
 import io.dmitrykislov.miner.port.PowerReading;
 import org.junit.jupiter.api.Test;
