@@ -86,7 +86,7 @@ class MinerAutopilotTest {
 
     @Test
     void restoresLastChangeFromHistoryOnStartup() {
-        // A controller restart must not forget the last power change: the governor's cooldown /
+        // A restart must not forget the last power change: the governor's cooldown /
         // up-dampening are measured from it. Seed it from the newest persisted event.
         Instant when = Instant.parse("2026-07-27T11:59:00Z");
         when(history.latestEvent()).thenReturn(

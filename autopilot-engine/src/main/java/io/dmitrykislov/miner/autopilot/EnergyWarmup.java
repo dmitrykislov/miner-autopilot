@@ -15,7 +15,7 @@ import java.util.List;
 
 /**
  * Warms {@link EnergyAverages} from persisted history at startup so the autopilot isn't blind for a
- * whole long-window (~15 min) after a controller restart.
+ * whole long-window (~15 min) after a restart.
  *
  * <p>Without this, the rolling windows start empty: after a reboot the governor sees
  * {@code shortSurplus}/{@code longSurplus} as under-covered and holds ("insufficient recent data")

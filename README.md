@@ -42,7 +42,7 @@ Measured **live on a Raspberry Pi Zero 2 W** (quad-core Cortex-A53 @ 1 GHz, **41
 | **Startup time** | ~1–2 s on a laptop; ~22 s on the little Pi |
 | **Disk** | the jar is ~22 MB; a month of history is only a few MB |
 
-So the whole "solar-aware miner controller" costs roughly **one third of a $15 computer's memory and almost no CPU**.
+So the whole "solar-aware miner autopilot" costs roughly **one third of a $15 computer's memory and almost no CPU**.
 
 **It can be made even leaner.** The current footprint is mostly the Java runtime itself. Compiling it to a **GraalVM native image** would cut memory to tens of MB and make startup near-instant; trimming unused libraries and lowering the heap cap further would help too. None of that is needed today — there's comfortable headroom — but the room is there if you want to run it on something even smaller.
 

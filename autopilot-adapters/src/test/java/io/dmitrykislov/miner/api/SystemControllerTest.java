@@ -17,7 +17,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 @EnableConfigurationProperties(AuthProperties.class)
 // app.version is Maven-filtered into application.yml, which lives in the launcher module; this slice
 // only asserts the version's FORMAT, so supply a representative semver here.
-@TestPropertySource(properties = {"auth.enabled=false", "app.version=1.4.0"})
+@TestPropertySource(properties = {"auth.enabled=false", "app.version=1.5.0"})
 class SystemControllerTest {
 
     @Autowired

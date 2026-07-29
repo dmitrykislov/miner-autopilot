@@ -4,7 +4,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
  * Test-only Spring Boot application root for the {@code adapters} module. The real
- * {@code MinerControllerApplication} lives in the {@code launcher} module (which depends on this
+ * {@code MinerAutopilotApplication} lives in the {@code launcher} module (which depends on this
  * one, not the other way round), so the {@code @WebFluxTest} controller slices here have no
  * application class to anchor to. This provides that anchor.
  *

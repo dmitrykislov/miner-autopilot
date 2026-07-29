@@ -103,7 +103,7 @@ public class TelemetryStore implements TelemetryHistory {
     }
 
     /** The most recently recorded power-change event (newest), or null if none — used to restore the
-     *  autopilot's "last change" across a controller restart so its cooldown/dampening survive. */
+     *  autopilot's "last change" across a restart so its cooldown/dampening survive. */
     public synchronized PowerChangeEvent latestEvent() {
         return events.peekLast();
     }

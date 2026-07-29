@@ -60,7 +60,7 @@ public class MinerAutopilot {
     private volatile String lastDecision;
     // When the miner began continuously mining (null when not mining). Drives the governor's
     // "mined long enough for a valid up-average" guard; seeded from the miner's uptime on the FIRST
-    // observation (so a long-running miner can ramp soon after a controller restart), but reset to
+    // observation (so a long-running miner can ramp soon after a restart), but reset to
     // "now" on an observed resume from a non-mining state — see trackMiningSince.
     private volatile Instant miningSince;
     // False until the first tick has observed the miner. Lets us tell a first observation (trust the
@@ -88,7 +88,7 @@ public class MinerAutopilot {
         // be piloted on stale data. 4× the poll interval rides out transient GC/scheduling jitter.
         this.maxSnapshotAge = Duration.ofMillis(Math.max(1L, props.inverter().pollIntervalMs()) * 4);
         this.enabled.set(cfg.enabled());
-        // Restore the last power change from persisted history so a controller restart doesn't forget
+        // Restore the last power change from persisted history so a restart doesn't forget
         // what it just did: the governor's restart cooldown / up-dampening are measured from
         // lastChangeAt, so without this a reboot would reset them to "elapsed" and could act too soon.
         restoreLastChange(history);
@@ -196,7 +196,7 @@ public class MinerAutopilot {
                     // the window was contaminated while the miner drew ~0 W.
                     miningSince = now;
                 } else {
-                    // First observation after a controller restart: trust the miner's own uptime, so a
+                    // First observation after a restart: trust the miner's own uptime, so a
                     // long-running miner isn't made to wait a whole long-window before it can ramp.
                     Long up = st.uptimeSeconds();
                     miningSince = (up != null && up > 0) ? now.minusSeconds(up) : now;

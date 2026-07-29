@@ -202,7 +202,7 @@ start_app
 if healthy "$APP_PORT"; then
   code="$(curl -s $CURL_K --max-time 5 -o /dev/null -w '%{http_code}' "$SCHEME://localhost:$APP_PORT/api/system" 2>/dev/null || echo '?')"
   echo "  ✓ healthy on :$APP_PORT ($SCHEME /api/system → HTTP $code${code:+; 401 = auth active})"
-  grep -E "Started MinerControllerApplication" miner-autopilot.log | tail -1 || true
+  grep -E "Started MinerAutopilotApplication" miner-autopilot.log | tail -1 || true
 else
   echo "  ✗ new jar did not become healthy — rolling back"; tail -20 miner-autopilot.log || true
   stop_app; free_port "$APP_PORT" || true

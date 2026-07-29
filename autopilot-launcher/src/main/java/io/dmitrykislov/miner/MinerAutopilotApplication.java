@@ -12,7 +12,7 @@ import io.dmitrykislov.miner.history.HistoryProperties;
 @SpringBootApplication
 @EnableScheduling
 @EnableConfigurationProperties({HouseProperties.class, AuthProperties.class, HistoryProperties.class})
-public class MinerControllerApplication {
+public class MinerAutopilotApplication {
     static {
         // Must be set before ANY java.net.http.HttpClient initialises its TLS layer.
         // The WiNet-S dongle's self-signed cert has no SAN, so hostname verification
@@ -25,6 +25,6 @@ public class MinerControllerApplication {
     public static void main(String[] args) {
         // The TLS property is set in the static initialiser above (runs at class-load,
         // before main), so it is deliberately not repeated here.
-        SpringApplication.run(MinerControllerApplication.class, args);
+        SpringApplication.run(MinerAutopilotApplication.class, args);
     }
 }

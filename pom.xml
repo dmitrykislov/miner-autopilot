@@ -13,10 +13,10 @@
 
     <groupId>io.dmitrykislov</groupId>
     <artifactId>miner-autopilot</artifactId>
-    <version>1.4.0</version>
+    <version>1.5.0</version>
     <packaging>pom</packaging>
     <name>miner-autopilot</name>
-    <description>Solar-surplus miner controller — hexagonal (ports &amp; adapters) architecture</description>
+    <description>Solar-surplus miner autopilot — hexagonal (ports &amp; adapters) architecture</description>
 
     <!--
       Hexagonal module reactor. Dependencies point strictly inward:
