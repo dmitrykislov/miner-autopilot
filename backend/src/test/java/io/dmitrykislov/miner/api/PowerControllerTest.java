@@ -6,6 +6,7 @@ import io.dmitrykislov.miner.port.PowerReading;
 import io.dmitrykislov.miner.port.PowerSnapshot;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import reactor.test.StepVerifier;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -81,5 +82,23 @@ class PowerControllerTest {
         assertThat(first).isNotNull();
         assertThat(first.solarW()).isEqualTo(2500.0);
         assertThat(first.metered()).isFalse();
+    }
+
+    @Test
+    void streamRe_emitsOnAChangeAndDedupsAnUnchangedReading() {
+        // Virtual time so the 2s poll interval doesn't make this a slow/flaky wall-clock test.
+        StepVerifier.withVirtualTime(() -> {
+                    solar.publish(new PowerReading(Instant.parse("2026-07-27T02:00:00Z"), 1000));
+                    return controller.stream();
+                })
+                .assertNext(s -> assertThat(s.solarW()).isEqualTo(1000.0)) // immediate seed
+                .then(() -> solar.publish(new PowerReading(Instant.parse("2026-07-27T02:00:02Z"), 2000)))
+                .thenAwait(PowerController.POLL)
+                .assertNext(s -> assertThat(s.solarW()).isEqualTo(2000.0)) // changed → re-emit
+                // No new reading over the next poll → distinctUntilChanged suppresses the duplicate
+                // (nothing is emitted until the much-later keep-alive heartbeat).
+                .expectNoEvent(PowerController.POLL)
+                .thenCancel()
+                .verify(Duration.ofSeconds(5));
     }
 }
