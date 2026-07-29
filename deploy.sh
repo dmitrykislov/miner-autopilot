@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the miner-controller jar locally and deploy it to the Raspberry Pi over SSH.
+# Build the miner-autopilot jar locally and deploy it to the Raspberry Pi over SSH.
 #
 # Pipeline: build (Maven, incl. UI + tests) → checksum → scp to a staged path →
 # verify checksum on the Pi → stop the old app → FREE THE PORT → swap the jar
@@ -73,10 +73,10 @@ ssh "${SSH_OPTS[@]}" "$USER@$HOST" 'echo ok >/dev/null' \
 log "Building jar (mvn clean package${SKIP_TESTS:+, skipping tests})"
 MVN_ARGS=(-q clean package)
 [[ "${SKIP_TESTS:-0}" == "1" ]] && MVN_ARGS+=(-DskipTests)
-( cd backend && mvn "${MVN_ARGS[@]}" )
+mvn "${MVN_ARGS[@]}"   # reactor root (SCRIPT_DIR) builds all modules + repackages the launcher
 
-JAR="$(ls -t backend/launcher/target/miner-controller-launcher-*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
-[[ -n "$JAR" && -f "$JAR" ]] || die "build produced no jar under backend/launcher/target"
+JAR="$(ls -t autopilot-launcher/target/autopilot-launcher-*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
+[[ -n "$JAR" && -f "$JAR" ]] || die "build produced no jar under autopilot-launcher/target"
 JAR_NAME="$(basename "$JAR")"
 
 # sha256 for an integrity check after transfer (macOS: shasum, Linux: sha256sum).
@@ -98,7 +98,7 @@ log "Deploying on the Pi (stop old · free port · swap · start · health-check
 ssh "${SSH_OPTS[@]}" "$USER@$HOST" bash -s -- "$JAR_NAME" "$DIR" "$JAR_SHA" <<'REMOTE'
 set -euo pipefail
 JAR_NAME="$1"; DIR="$2"; JAR_SHA="$3"
-PAT='[j]ava .*-jar .*miner-controller-launcher'   # matches our app, not this session
+PAT='[j]ava .*-jar .*autopilot-launcher'   # matches our app, not this session
 cd "$DIR"
 
 # Load remote config (ports, AUTOPILOT_ENABLED, optional JAVA_OPTS) from the Pi's .env.
@@ -162,9 +162,9 @@ free_port() {                                      # ensure nothing holds $1
 }
 
 start_app() {                                      # start detached; rotate one previous log
-  [[ -f miner-controller.log ]] && mv -f miner-controller.log miner-controller.log.1
+  [[ -f miner-autopilot.log ]] && mv -f miner-autopilot.log miner-autopilot.log.1
   # JAVA_OPTS (optional, from .env) is intentionally word-split for multiple flags.
-  setsid java ${JAVA_OPTS:-} -jar "$JAR_NAME" < /dev/null > miner-controller.log 2>&1 &
+  setsid java ${JAVA_OPTS:-} -jar "$JAR_NAME" < /dev/null > miner-autopilot.log 2>&1 &
   echo "  started (autopilot enabled = ${AUTOPILOT_ENABLED:-<default:false>}, JAVA_OPTS='${JAVA_OPTS:-}')"
 }
 
@@ -182,7 +182,7 @@ healthy() {                                        # 0 if the app is serving wit
     # 200 = serving; 401 = serving AND the access-control filter is active (auth enabled).
     # Both mean the app is up; only a connection failure (000) means "not yet / down".
     [[ "$code" == "200" || "$code" == "401" ]] && return 0
-    grep -qiE "APPLICATION FAILED TO START|Error starting|Web server failed to start" miner-controller.log 2>/dev/null && return 1
+    grep -qiE "APPLICATION FAILED TO START|Error starting|Web server failed to start" miner-autopilot.log 2>/dev/null && return 1
     sleep 3
   done
   return 1
@@ -202,9 +202,9 @@ start_app
 if healthy "$APP_PORT"; then
   code="$(curl -s $CURL_K --max-time 5 -o /dev/null -w '%{http_code}' "$SCHEME://localhost:$APP_PORT/api/system" 2>/dev/null || echo '?')"
   echo "  ✓ healthy on :$APP_PORT ($SCHEME /api/system → HTTP $code${code:+; 401 = auth active})"
-  grep -E "Started MinerControllerApplication" miner-controller.log | tail -1 || true
+  grep -E "Started MinerControllerApplication" miner-autopilot.log | tail -1 || true
 else
-  echo "  ✗ new jar did not become healthy — rolling back"; tail -20 miner-controller.log || true
+  echo "  ✗ new jar did not become healthy — rolling back"; tail -20 miner-autopilot.log || true
   stop_app; free_port "$APP_PORT" || true
   if [[ -f "$JAR_NAME.bak" ]]; then
     mv -f "$JAR_NAME.bak" "$JAR_NAME"

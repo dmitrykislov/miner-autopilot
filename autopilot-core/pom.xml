@@ -6,13 +6,13 @@
 
     <parent>
         <groupId>io.dmitrykislov</groupId>
-        <artifactId>miner-controller</artifactId>
+        <artifactId>miner-autopilot</artifactId>
         <version>1.4.0</version>
-        <relativePath>../../pom.xml</relativePath>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>miner-controller-core</artifactId>
-    <name>miner-controller-core</name>
+    <artifactId>autopilot-core</artifactId>
+    <name>autopilot-core</name>
     <description>The hexagon core: ports, domain value objects, and shared primitives. Framework-free.</description>
 
     <dependencies>

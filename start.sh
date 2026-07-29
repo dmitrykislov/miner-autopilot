@@ -30,15 +30,15 @@ PORT="${SERVER_PORT:-8080}"
 # --- prerequisites ----------------------------------------------------------
 require() { command -v "$1" >/dev/null 2>&1 || { echo "✖ '$1' not found on PATH"; exit 1; }; }
 
-find_jar() { ls -t backend/launcher/target/*.jar 2>/dev/null | grep -v 'original' | head -1; }
+find_jar() { ls -t autopilot-launcher/target/*.jar 2>/dev/null | grep -v 'original' | head -1; }
 
 build() {
   require node; require npm; require mvn; require java
   echo "▶ building React UI + packaging Spring Boot jar (UI bundled inside)"
-  rm -rf backend/launcher/src/main/resources/static   # avoid stale bundles accumulating
+  rm -rf autopilot-launcher/src/main/resources/static   # avoid stale bundles accumulating
   # The Maven build already builds the UI (exec-maven-plugin: npm ci + vite build, bound
   # to generate-resources), so the UI is built exactly once here — no separate npm step.
-  ( cd backend && mvn -q -DskipTests clean package )   # clean drops stale bundled assets
+  mvn -q -DskipTests clean package   # reactor root; clean drops stale bundled assets
   local jar; jar="$(find_jar)"
   echo "✔ built: $jar ($(du -h "$jar" | cut -f1))"
 }
@@ -54,7 +54,7 @@ run() {
 run_dev() {
   require node; require npm; require mvn
   echo "▶ dev mode: backend :${PORT} + Vite :${FRONTEND_PORT:-5173}"
-  ( cd backend && mvn -q spring-boot:run ) &  BACK=$!
+  mvn -q -DskipUi=true -pl autopilot-launcher -am spring-boot:run &  BACK=$!
   ( cd frontend && (npm ci || npm install) && npm run dev ) &  FRONT=$!
   trap 'echo; echo "▶ stopping"; kill $BACK $FRONT 2>/dev/null || true' INT TERM
   wait $BACK $FRONT

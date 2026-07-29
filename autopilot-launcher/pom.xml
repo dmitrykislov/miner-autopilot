@@ -6,19 +6,19 @@
 
     <parent>
         <groupId>io.dmitrykislov</groupId>
-        <artifactId>miner-controller</artifactId>
+        <artifactId>miner-autopilot</artifactId>
         <version>1.4.0</version>
-        <relativePath>../../pom.xml</relativePath>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>miner-controller-launcher</artifactId>
-    <name>miner-controller-launcher</name>
+    <artifactId>autopilot-launcher</artifactId>
+    <name>autopilot-launcher</name>
     <description>Composition root: the Spring Boot application that wires the adapters, bundles the UI, and produces the runnable jar.</description>
 
     <dependencies>
         <dependency>
             <groupId>io.dmitrykislov</groupId>
-            <artifactId>miner-controller-adapters</artifactId>
+            <artifactId>autopilot-adapters</artifactId>
         </dependency>
         <!-- The embedded reactive web server that hosts the API + the bundled UI. -->
         <dependency>

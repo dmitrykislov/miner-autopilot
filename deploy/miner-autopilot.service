@@ -1,4 +1,4 @@
-# systemd unit to run the miner-controller on boot (and restart it if it crashes).
+# systemd unit to run the miner-autopilot on boot (and restart it if it crashes).
 #
 # This is a TEMPLATE — edit the two marked lines, then install it:
 #
@@ -6,16 +6,16 @@
 #   2. Confirm the jar + .env live in that user's home dir (%h below). If they live
 #      elsewhere, replace every %h with the absolute path.
 #
-#   sudo cp deploy/miner-controller.service /etc/systemd/system/
-#   sudo nano /etc/systemd/system/miner-controller.service     # set User=
+#   sudo cp deploy/miner-autopilot.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/miner-autopilot.service     # set User=
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now miner-controller               # start now + on every boot
-#   systemctl status miner-controller                          # check it's running
-#   journalctl -u miner-controller -f                          # follow its logs
+#   sudo systemctl enable --now miner-autopilot               # start now + on every boot
+#   systemctl status miner-autopilot                          # check it's running
+#   journalctl -u miner-autopilot -f                          # follow its logs
 #
 # NOTE on deploys: once this unit owns the process, don't also use deploy.sh's built-in
 # start (you'd get two instances fighting for the port). After copying a new jar over,
-# run:  sudo systemctl restart miner-controller
+# run:  sudo systemctl restart miner-autopilot
 
 [Unit]
 Description=Solar-surplus miner autopilot
@@ -32,7 +32,7 @@ WorkingDirectory=%h
 # Source .env with shell semantics (exactly like start.sh / deploy.sh — handles quotes,
 # inline comments and the multi-word JAVA_OPTS), then exec the newest deployed jar so we
 # never have to hard-code a version number.
-ExecStart=/usr/bin/env bash -c 'set -a; . %h/.env; set +a; exec java $JAVA_OPTS -jar "$(ls -t %h/miner-controller-backend-*.jar | head -n1)"'
+ExecStart=/usr/bin/env bash -c 'set -a; . %h/.env; set +a; exec java $JAVA_OPTS -jar "$(ls -t %h/autopilot-launcher-*.jar | head -n1)"'
 # Auto-restart on crash; 143 = clean SIGTERM shutdown, treated as success.
 Restart=always
 RestartSec=5

@@ -45,7 +45,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: miner-controller-jar
-          path: backend/launcher/target/*.jar
+          name: miner-autopilot-jar
+          path: autopilot-launcher/target/*.jar
           if-no-files-found: warn
           retention-days: 7

@@ -121,24 +121,23 @@ You'll see three names in the code. There's **no separate "planner"** — people
 - **Frontend:** React + Vite. The browser only *listens* to the SSE streams (no polling from the browser). It's built into the backend so `mvn package` bundles everything into one jar.
 
 ```
-miner-controller/
-├─ pom.xml                       # reactor root: Spring Boot parent + module aggregator
-├─ start.sh · deploy.sh          # build + run locally / deploy to a remote host over SSH
-├─ .env / .env.example           # all configuration
-├─ backend/                      # the Java hexagon (io.dmitrykislov.miner.*) — 4 Maven modules,
-│  │                             #   dependencies point strictly inward: launcher→adapters→engine→core
-│  ├─ core/                      # the hexagon: ports + domain value objects + shared primitives
-│  │     port/ · util/ · stream/ #   FRAMEWORK-FREE (reactor-core only, since the ports speak Flux)
-│  ├─ engine/                    # application core: the autopilot + telemetry warm-up + config  → core
-│  │     autopilot/ · config/
-│  ├─ adapters/                  # the adapter ring  → engine
-│  │     api/ · security/        #   inbound  (driving): REST/SSE + password auth
-│  │     braiins/ · inverter/ · solaranalytics/ · history/   # outbound (driven): devices + persistence
-│  └─ launcher/                  # composition root: Boot main + application.yml + UI bundle + fat jar  → adapters
-└─ frontend/                     # React + Vite UI (built into the launcher jar)
+miner-autopilot/                    # reactor root (io.dmitrykislov.miner.*) — 4 Maven modules,
+│                                   #   dependencies point strictly inward: launcher→adapters→engine→core
+├─ pom.xml                          # reactor root: Spring Boot parent + module aggregator
+├─ start.sh · deploy.sh             # build + run locally / deploy to a remote host over SSH
+├─ .env / .env.example              # all configuration
+├─ autopilot-core/                  # the hexagon: ports + domain value objects + shared primitives
+│     port/ · util/ · stream/       #   FRAMEWORK-FREE (reactor-core only, since the ports speak Flux)
+├─ autopilot-engine/                # application core: the autopilot + telemetry warm-up + config  → core
+│     autopilot/ · config/
+├─ autopilot-adapters/              # the adapter ring  → engine
+│     api/ · security/              #   inbound  (driving): REST/SSE + password auth
+│     braiins/ · inverter/ · solaranalytics/ · history/   # outbound (driven): devices + persistence
+├─ autopilot-launcher/              # composition root: Boot main + application.yml + UI bundle + fat jar  → adapters
+└─ frontend/                        # React + Vite UI (built into the launcher jar)
 ```
 
-The four modules make the hexagonal layering a **compile-time guarantee**, not a convention: `core` literally cannot import Spring or an adapter, an adapter cannot import another adapter's internals, and only `launcher` produces the runnable jar. The bootable artifact is `backend/launcher/target/miner-controller-launcher-<version>.jar`.
+The four modules make the hexagonal layering a **compile-time guarantee**, not a convention: `autopilot-core` literally cannot import Spring or an adapter, an adapter cannot import another adapter's internals, and only `autopilot-launcher` produces the runnable jar. The bootable artifact is `autopilot-launcher/target/autopilot-launcher-<version>.jar`.
 
 ### Pluggable sources & miner (ports & adapters)
 
@@ -199,7 +198,7 @@ DEPLOY_HOST=<ip> DEPLOY_PORT=<port> DEPLOY_USER=<user> DEPLOY_KEY=<path.pem> ./d
 SKIP_TESTS=1 ./deploy.sh   # skip the test suites for a faster redeploy
 ```
 
-> **Note:** by default the app runs detached, not as a system service, so it won't restart on reboot. To survive reboots (and auto-restart on crash), install the ready-made unit in [`deploy/miner-controller.service`](deploy/miner-controller.service) — `sudo cp` it to `/etc/systemd/system/`, set `User=`, then `sudo systemctl enable --now miner-controller`.
+> **Note:** by default the app runs detached, not as a system service, so it won't restart on reboot. To survive reboots (and auto-restart on crash), install the ready-made unit in [`deploy/miner-autopilot.service`](deploy/miner-autopilot.service) — `sudo cp` it to `/etc/systemd/system/`, set `User=`, then `sudo systemctl enable --now miner-autopilot`.
 
 ---
 
@@ -414,7 +413,7 @@ Coverage includes: config binding + guards, power-balance math, label mapping, J
 
 - **The miner needs a live pool to actually hash.** With no reachable pool, BOSMiner starts but sits **Suspended** — there's no way to force hashing without a pool. On an internet-isolated network it also can't reach a mining pool.
 - **Plain HTTP by default** — optional built-in **HTTPS** is available (see [HTTPS / TLS](#https--tls)).
-- **Auto-start on boot** isn't on by default, but a ready `systemd` unit ships in [`deploy/miner-controller.service`](deploy/miner-controller.service) — install it to survive reboots and auto-restart on crash.
+- **Auto-start on boot** isn't on by default, but a ready `systemd` unit ships in [`deploy/miner-autopilot.service`](deploy/miner-autopilot.service) — install it to survive reboots and auto-restart on crash.
 
 ---
 

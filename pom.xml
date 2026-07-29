@@ -12,10 +12,10 @@
     </parent>
 
     <groupId>io.dmitrykislov</groupId>
-    <artifactId>miner-controller</artifactId>
+    <artifactId>miner-autopilot</artifactId>
     <version>1.4.0</version>
     <packaging>pom</packaging>
-    <name>miner-controller</name>
+    <name>miner-autopilot</name>
     <description>Solar-surplus miner controller — hexagonal (ports &amp; adapters) architecture</description>
 
     <!--
@@ -29,10 +29,10 @@
                                        + config)     framework-free)
     -->
     <modules>
-        <module>backend/core</module>
-        <module>backend/engine</module>
-        <module>backend/adapters</module>
-        <module>backend/launcher</module>
+        <module>autopilot-core</module>
+        <module>autopilot-engine</module>
+        <module>autopilot-adapters</module>
+        <module>autopilot-launcher</module>
     </modules>
 
     <properties>
@@ -49,17 +49,17 @@
             <!-- Our own modules — version managed here so children reference them without a version. -->
             <dependency>
                 <groupId>io.dmitrykislov</groupId>
-                <artifactId>miner-controller-core</artifactId>
+                <artifactId>autopilot-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.dmitrykislov</groupId>
-                <artifactId>miner-controller-engine</artifactId>
+                <artifactId>autopilot-engine</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.dmitrykislov</groupId>
-                <artifactId>miner-controller-adapters</artifactId>
+                <artifactId>autopilot-adapters</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

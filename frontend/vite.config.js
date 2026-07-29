@@ -13,7 +13,7 @@ const BACKEND_PORT = process.env.SERVER_PORT || '8080'
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: '../backend/launcher/src/main/resources/static',
+    outDir: '../autopilot-launcher/src/main/resources/static',
     emptyOutDir: true,
   },
   server: {

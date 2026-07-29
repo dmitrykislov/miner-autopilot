@@ -6,19 +6,19 @@
 
     <parent>
         <groupId>io.dmitrykislov</groupId>
-        <artifactId>miner-controller</artifactId>
+        <artifactId>miner-autopilot</artifactId>
         <version>1.4.0</version>
-        <relativePath>../../pom.xml</relativePath>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>miner-controller-engine</artifactId>
-    <name>miner-controller-engine</name>
+    <artifactId>autopilot-engine</artifactId>
+    <name>autopilot-engine</name>
     <description>Application core: the autopilot control engine, telemetry warm-up, and config. Depends only on the ports.</description>
 
     <dependencies>
         <dependency>
             <groupId>io.dmitrykislov</groupId>
-            <artifactId>miner-controller-core</artifactId>
+            <artifactId>autopilot-core</artifactId>
         </dependency>
         <!-- Context/scheduling/config-binding only — NO web. The engine knows nothing about HTTP. -->
         <dependency>

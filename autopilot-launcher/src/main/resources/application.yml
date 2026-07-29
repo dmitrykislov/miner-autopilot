@@ -23,7 +23,7 @@ auth:
 
 spring:
   application:
-    name: ${APP_NAME:miner-controller}
+    name: ${APP_NAME:miner-autopilot}
   task:
     scheduling:
       pool:

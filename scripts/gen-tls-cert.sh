@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# gen-tls-cert.sh — generate a self-signed TLS certificate + key for the miner-controller.
+# gen-tls-cert.sh — generate a self-signed TLS certificate + key for the miner-autopilot.
 #
 # For LAN / home use. Browsers show a one-time "not trusted" warning for a self-signed
 # cert; to avoid it on your own devices, generate with `mkcert` instead and install its
@@ -40,7 +40,7 @@ mkdir -p "$OUT"
 # to read it unattended); 10-year validity since it's a self-managed LAN cert.
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -keyout "$OUT/key.pem" -out "$OUT/cert.pem" -days 3650 \
-  -subj "/CN=miner-controller" -addext "subjectAltName=${san_csv}"
+  -subj "/CN=miner-autopilot" -addext "subjectAltName=${san_csv}"
 chmod 600 "$OUT/key.pem"
 
 echo "✔ wrote $OUT/cert.pem and $OUT/key.pem"

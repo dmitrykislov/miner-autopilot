@@ -15,8 +15,8 @@ else
 fi
 
 # Resolve the jar by glob so a version bump doesn't require editing this script.
-JAR="$(ls -t miner-controller-launcher-*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
-[[ -n "$JAR" && -f "$JAR" ]] || { echo "✖ no miner-controller-launcher-*.jar found in $(pwd)"; exit 1; }
+JAR="$(ls -t autopilot-launcher-*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
+[[ -n "$JAR" && -f "$JAR" ]] || { echo "✖ no autopilot-launcher-*.jar found in $(pwd)"; exit 1; }
 
 echo "▶ running $JAR on :${SERVER_PORT:-8080}"
 # JAVA_OPTS (optional, from .env) is intentionally word-split for multiple flags.

@@ -6,19 +6,19 @@
 
     <parent>
         <groupId>io.dmitrykislov</groupId>
-        <artifactId>miner-controller</artifactId>
+        <artifactId>miner-autopilot</artifactId>
         <version>1.4.0</version>
-        <relativePath>../../pom.xml</relativePath>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>miner-controller-adapters</artifactId>
-    <name>miner-controller-adapters</name>
+    <artifactId>autopilot-adapters</artifactId>
+    <name>autopilot-adapters</name>
     <description>The adapter ring: inbound REST/SSE + auth, and outbound inverter/meter/miner clients + telemetry persistence.</description>
 
     <dependencies>
         <dependency>
             <groupId>io.dmitrykislov</groupId>
-            <artifactId>miner-controller-engine</artifactId>
+            <artifactId>autopilot-engine</artifactId>
         </dependency>
         <!-- Reactive web for the REST/SSE controllers and the WebClient/WebSocket device clients. -->
         <dependency>
