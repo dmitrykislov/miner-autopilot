@@ -4,12 +4,110 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+
     <groupId>io.dmitrykislov</groupId>
     <artifactId>miner-controller</artifactId>
     <version>1.4.0</version>
     <packaging>pom</packaging>
+    <name>miner-controller</name>
+    <description>Solar-surplus miner controller — hexagonal (ports &amp; adapters) architecture</description>
 
+    <!--
+      Hexagonal module reactor. Dependencies point strictly inward:
+
+          launcher ──▶ adapters ──▶ engine ──▶ core
+                                                 ▲
+        (composition   (inbound +    (autopilot   (ports + domain
+         root, fat jar)  outbound      engine +     model + shared
+                         adapters)     telemetry     primitives —
+                                       + config)     framework-free)
+    -->
     <modules>
-        <module>backend</module>
+        <module>backend/core</module>
+        <module>backend/engine</module>
+        <module>backend/adapters</module>
+        <module>backend/launcher</module>
     </modules>
+
+    <properties>
+        <java.version>21</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- frontend build/test toggles: -DskipUi skips the UI build; -DskipTests skips all tests -->
+        <skipUi>false</skipUi>
+        <skipTests>false</skipTests>
+        <frontend.dir>${maven.multiModuleProjectDirectory}/frontend</frontend.dir>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Our own modules — version managed here so children reference them without a version. -->
+            <dependency>
+                <groupId>io.dmitrykislov</groupId>
+                <artifactId>miner-controller-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.dmitrykislov</groupId>
+                <artifactId>miner-controller-engine</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.dmitrykislov</groupId>
+                <artifactId>miner-controller-adapters</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- WebFlux with HTTP/3 (QUIC) excluded — its native libs bundle ~11 MB across 5
+                 platforms and are unused. Managed once here so every module inherits the slimming. -->
+            <dependency>
+                <!-- Version pinned to the Spring Boot parent above (4.1.0). Kept literal because a
+                     managed entry's version is interpolated in each child's context, where
+                     ${project.parent.version} would resolve to this project's version, not Boot's. -->
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-webflux</artifactId>
+                <version>4.1.0</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>io.netty</groupId>
+                        <artifactId>netty-codec-native-quic</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>io.netty</groupId>
+                        <artifactId>netty-codec-classes-quic</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>io.netty</groupId>
+                        <artifactId>netty-codec-http3</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.wiremock</groupId>
+                <artifactId>wiremock-standalone</artifactId>
+                <version>3.9.2</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!-- Test stack shared by every module (test scope only — never on the main classpath, so the
+         framework-free 'core' stays framework-free where it counts). -->
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 </project>

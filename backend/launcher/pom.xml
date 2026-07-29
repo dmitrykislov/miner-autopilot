@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.dmitrykislov</groupId>
+        <artifactId>miner-controller</artifactId>
+        <version>1.4.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>miner-controller-launcher</artifactId>
+    <name>miner-controller-launcher</name>
+    <description>Composition root: the Spring Boot application that wires the adapters, bundles the UI, and produces the runnable jar.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.dmitrykislov</groupId>
+            <artifactId>miner-controller-adapters</artifactId>
+        </dependency>
+        <!-- The embedded reactive web server that hosts the API + the bundled UI. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+
+        <!-- test: full-application @SpringBootTest boots (WebTestClient + WireMock-simulated devices) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webflux-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Repackage into the executable fat jar. Declared ONLY here, so the library
+                 modules (core/engine/adapters) stay plain jars usable as dependencies. -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Wipe the bundled UI on `mvn clean` so no stale JS/CSS bundles linger. -->
+            <plugin>
+                <artifactId>maven-clean-plugin</artifactId>
+                <configuration>
+                    <filesets>
+                        <fileset><directory>${project.basedir}/src/main/resources/static</directory></fileset>
+                    </filesets>
+                </configuration>
+            </plugin>
+
+            <!-- Build + test the React UI as part of the Maven lifecycle, using the system Node/npm.
+                 The built UI lands in this module's src/main/resources/static (see vite.config.js)
+                 and is bundled into the runnable jar. `mvn clean install` runs the UI tests too. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>ui-install</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <workingDirectory>${frontend.dir}</workingDirectory>
+                            <executable>npm</executable>
+                            <arguments><argument>install</argument><argument>--no-audit</argument><argument>--no-fund</argument></arguments>
+                            <skip>${skipUi}</skip>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>ui-build</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <workingDirectory>${frontend.dir}</workingDirectory>
+                            <executable>npm</executable>
+                            <arguments><argument>run</argument><argument>build</argument></arguments>
+                            <skip>${skipUi}</skip>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>ui-test</id>
+                        <phase>test</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <workingDirectory>${frontend.dir}</workingDirectory>
+                            <executable>npm</executable>
+                            <arguments><argument>run</argument><argument>test</argument></arguments>
+                            <skip>${skipTests}</skip>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

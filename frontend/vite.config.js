@@ -8,12 +8,12 @@ import react from '@vitejs/plugin-react'
 const FRONTEND_PORT = parseInt(process.env.FRONTEND_PORT || '5173', 10)
 const BACKEND_PORT = process.env.SERVER_PORT || '8080'
 
-// The production build is emitted straight into the Spring Boot static folder,
+// The production build is emitted straight into the launcher module's static folder,
 // so `mvn package` bundles the UI inside the runnable jar (served at "/").
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: '../backend/src/main/resources/static',
+    outDir: '../backend/launcher/src/main/resources/static',
     emptyOutDir: true,
   },
   server: {

@@ -75,8 +75,8 @@ MVN_ARGS=(-q clean package)
 [[ "${SKIP_TESTS:-0}" == "1" ]] && MVN_ARGS+=(-DskipTests)
 ( cd backend && mvn "${MVN_ARGS[@]}" )
 
-JAR="$(ls -t backend/target/miner-controller-backend-*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
-[[ -n "$JAR" && -f "$JAR" ]] || die "build produced no jar under backend/target"
+JAR="$(ls -t backend/launcher/target/miner-controller-launcher-*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
+[[ -n "$JAR" && -f "$JAR" ]] || die "build produced no jar under backend/launcher/target"
 JAR_NAME="$(basename "$JAR")"
 
 # sha256 for an integrity check after transfer (macOS: shasum, Linux: sha256sum).
@@ -98,7 +98,7 @@ log "Deploying on the Pi (stop old · free port · swap · start · health-check
 ssh "${SSH_OPTS[@]}" "$USER@$HOST" bash -s -- "$JAR_NAME" "$DIR" "$JAR_SHA" <<'REMOTE'
 set -euo pipefail
 JAR_NAME="$1"; DIR="$2"; JAR_SHA="$3"
-PAT='[j]ava .*-jar .*miner-controller-backend'   # matches our app, not this session
+PAT='[j]ava .*-jar .*miner-controller-launcher'   # matches our app, not this session
 cd "$DIR"
 
 # Load remote config (ports, AUTOPILOT_ENABLED, optional JAVA_OPTS) from the Pi's .env.

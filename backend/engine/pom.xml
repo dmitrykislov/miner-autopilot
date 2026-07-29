@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.dmitrykislov</groupId>
+        <artifactId>miner-controller</artifactId>
+        <version>1.4.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>miner-controller-engine</artifactId>
+    <name>miner-controller-engine</name>
+    <description>Application core: the autopilot control engine, telemetry warm-up, and config. Depends only on the ports.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.dmitrykislov</groupId>
+            <artifactId>miner-controller-core</artifactId>
+        </dependency>
+        <!-- Context/scheduling/config-binding only — NO web. The engine knows nothing about HTTP. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

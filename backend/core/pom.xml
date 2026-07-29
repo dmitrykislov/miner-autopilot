@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.dmitrykislov</groupId>
+        <artifactId>miner-controller</artifactId>
+        <version>1.4.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>miner-controller-core</artifactId>
+    <name>miner-controller-core</name>
+    <description>The hexagon core: ports, domain value objects, and shared primitives. Framework-free.</description>
+
+    <dependencies>
+        <!-- The ONLY main-scope dependency: the ports speak Reactor (Flux), and the shared
+             broadcaster uses Reactor Sinks. Deliberately no Spring here — this is the pure core. -->
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-core</artifactId>
+        </dependency>
+    </dependencies>
+</project>

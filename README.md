@@ -122,32 +122,33 @@ You'll see three names in the code. There's **no separate "planner"** — people
 
 ```
 miner-controller/
-├─ pom.xml                 # aggregator
-├─ start.sh                # build + run locally
-├─ deploy.sh               # build here + deploy to a remote host over SSH
-├─ .env / .env.example     # all configuration
-├─ backend/                # Spring Boot app (io.dmitrykislov.miner)
-│  ├─ config/              # settings bound from .env (house.*, auth.*)
-│  ├─ port/                # ports: SolarSource, ConsumptionSource, MinerDriver, MinerStatusSource
-│  ├─ inverter/            # Sungrow WiNet-S adapter → feeds SolarSource
-│  ├─ solaranalytics/      # Solar Analytics adapter → feeds ConsumptionSource
-│  ├─ braiins/             # Braiins adapter → implements MinerDriver
-│  ├─ autopilot/           # the engine: Averager + Governor + Autopilot loop (depends only on ports)
-│  ├─ history/             # file-backed telemetry log + chart API
-│  ├─ security/            # password auth: bcrypt + signed bearer tokens
-│  ├─ stream/ · util/      # SSE broadcast helper + small utilities
-│  └─ api/                 # SSE + REST controllers
-└─ frontend/               # React + Vite UI
+├─ pom.xml                       # reactor root: Spring Boot parent + module aggregator
+├─ start.sh · deploy.sh          # build + run locally / deploy to a remote host over SSH
+├─ .env / .env.example           # all configuration
+├─ backend/                      # the Java hexagon (io.dmitrykislov.miner.*) — 4 Maven modules,
+│  │                             #   dependencies point strictly inward: launcher→adapters→engine→core
+│  ├─ core/                      # the hexagon: ports + domain value objects + shared primitives
+│  │     port/ · util/ · stream/ #   FRAMEWORK-FREE (reactor-core only, since the ports speak Flux)
+│  ├─ engine/                    # application core: the autopilot + telemetry warm-up + config  → core
+│  │     autopilot/ · config/
+│  ├─ adapters/                  # the adapter ring  → engine
+│  │     api/ · security/        #   inbound  (driving): REST/SSE + password auth
+│  │     braiins/ · inverter/ · solaranalytics/ · history/   # outbound (driven): devices + persistence
+│  └─ launcher/                  # composition root: Boot main + application.yml + UI bundle + fat jar  → adapters
+└─ frontend/                     # React + Vite UI (built into the launcher jar)
 ```
+
+The four modules make the hexagonal layering a **compile-time guarantee**, not a convention: `core` literally cannot import Spring or an adapter, an adapter cannot import another adapter's internals, and only `launcher` produces the runnable jar. The bootable artifact is `backend/launcher/target/miner-controller-launcher-<version>.jar`.
 
 ### Pluggable sources & miner (ports & adapters)
 
-The autopilot engine depends only on three interfaces (`io.dmitrykislov.miner.port`), so you can run it on your own hardware without touching the engine:
+The autopilot engine depends only on the ports in the `core` module (`io.dmitrykislov.miner.port`), so you can run it on your own hardware without touching the engine:
 
 - **`SolarSource`** — solar generation in
 - **`ConsumptionSource`** — whole-home consumption in
 - **`MinerDriver`** — start / stop / set-power out
 - **`MinerStatusSource`** — the miner's live status/draw in (feeds the surplus + the dashboard)
+- **`TelemetryHistory`** — read access to recorded history (warm-up + restore across restarts); the file-backed store is the adapter that implements it
 
 The built-in adapters (Sungrow inverter, Solar Analytics, Braiins) are just the default implementations, and each can be switched off by config so your own takes over:
 

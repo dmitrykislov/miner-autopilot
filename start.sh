@@ -30,12 +30,12 @@ PORT="${SERVER_PORT:-8080}"
 # --- prerequisites ----------------------------------------------------------
 require() { command -v "$1" >/dev/null 2>&1 || { echo "✖ '$1' not found on PATH"; exit 1; }; }
 
-find_jar() { ls -t backend/target/*.jar 2>/dev/null | grep -v 'original' | head -1; }
+find_jar() { ls -t backend/launcher/target/*.jar 2>/dev/null | grep -v 'original' | head -1; }
 
 build() {
   require node; require npm; require mvn; require java
   echo "▶ building React UI + packaging Spring Boot jar (UI bundled inside)"
-  rm -rf backend/src/main/resources/static   # avoid stale bundles accumulating
+  rm -rf backend/launcher/src/main/resources/static   # avoid stale bundles accumulating
   # The Maven build already builds the UI (exec-maven-plugin: npm ci + vite build, bound
   # to generate-resources), so the UI is built exactly once here — no separate npm step.
   ( cd backend && mvn -q -DskipTests clean package )   # clean drops stale bundled assets

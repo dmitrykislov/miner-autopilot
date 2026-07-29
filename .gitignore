@@ -41,7 +41,7 @@ build/
 .env
 node_modules/
 frontend/dist/
-backend/src/main/resources/static/
+backend/launcher/src/main/resources/static/
 
 ### Secrets / keys / local artifacts ###
 *.pem
@@ -50,8 +50,11 @@ pikey2_openssh.pem
 miner-controller.zip
 # ...but DO commit the throwaway self-signed test cert (valid only for localhost, used
 # by the TLS integration test — protects nothing, not a real secret).
-!backend/src/test/resources/tls/*.pem
+!backend/launcher/src/test/resources/tls/*.pem
 
 ### Claude Code local project data ###
 .claude/
 data/
+
+# Portfolio draft — deliberately never committed
+LINKEDIN_POST.md

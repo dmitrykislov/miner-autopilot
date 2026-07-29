@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.dmitrykislov</groupId>
+        <artifactId>miner-controller</artifactId>
+        <version>1.4.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>miner-controller-adapters</artifactId>
+    <name>miner-controller-adapters</name>
+    <description>The adapter ring: inbound REST/SSE + auth, and outbound inverter/meter/miner clients + telemetry persistence.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.dmitrykislov</groupId>
+            <artifactId>miner-controller-engine</artifactId>
+        </dependency>
+        <!-- Reactive web for the REST/SSE controllers and the WebClient/WebSocket device clients. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <!-- BCrypt for the single-password bearer-token access control (crypto only, not the starter). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- test: @WebFluxTest controller slices + WireMock for the device-client transport tests -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webflux-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
