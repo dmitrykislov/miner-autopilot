@@ -2,7 +2,10 @@ package io.dmitrykislov.miner;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import io.dmitrykislov.miner.braiins.MinerService;
+import io.dmitrykislov.miner.port.ConsumptionSource;
 import io.dmitrykislov.miner.port.MinerStatus;
+import io.dmitrykislov.miner.port.PowerReading;
+import io.dmitrykislov.miner.port.PowerSnapshot;
 import io.dmitrykislov.miner.inverter.InverterPoller;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -17,6 +20,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
+import java.time.Instant;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
@@ -69,6 +73,7 @@ class FullApplicationWireMockTest {
 
     @Autowired MinerService minerService;
     @Autowired InverterPoller inverterPoller;
+    @Autowired ConsumptionSource consumption;
     @Value("${local.server.port}") int port;
 
     private WebTestClient client() {
@@ -146,5 +151,36 @@ class FullApplicationWireMockTest {
         // 6) The app really called the simulated miner.
         WM.verify(postRequestedFor(urlEqualTo("/graphql"))
                 .withRequestBody(matchingJsonPath("$[?(@.operationName == 'Status')]")));
+    }
+
+    /**
+     * The source-agnostic power feed, proven in a full boot with the standard bean graph (the ingest
+     * e2e disables the built-in adapters; here they're all present). Asserts the endpoint + SSE are
+     * registered and served, and that a reading on the consumption port surfaces on the feed — i.e.
+     * PowerController reads the very same singleton port bean the adapters write to.
+     */
+    @Test
+    void powerFeedIsServedAndReflectsThePorts() {
+        var web = client();
+        awaitRoutesReady(web);
+
+        web.get().uri("/api/power/latest").exchange().expectStatus().isOk();
+
+        // SSE stream is live and emits a snapshot over the real server.
+        FluxExchangeResult<PowerSnapshot> sse = web.get().uri("/api/power/stream")
+                .accept(MediaType.TEXT_EVENT_STREAM).exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM)
+                .returnResult(PowerSnapshot.class);
+        StepVerifier.create(sse.getResponseBody())
+                .expectNextCount(1).thenCancel().verify(Duration.ofSeconds(5));
+
+        // Solar Analytics is disabled, so nothing else touches the consumption port — publish a
+        // reading and assert it comes back out of the feed end-to-end over HTTP.
+        consumption.publish(new PowerReading(Instant.parse("2026-07-27T02:00:00Z"), 1750));
+        web.get().uri("/api/power/latest").exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.consumptionW").isEqualTo(1750.0);
     }
 }
