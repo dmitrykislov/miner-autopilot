@@ -60,6 +60,13 @@ public class SolarAnalyticsClient {
     private final String authHeader;
     private volatile String siteId;
 
+    // Outage handling: warn about a persistent failure loudly once (then quietly), and after this
+    // many consecutive failures mark consumption UNAVAILABLE so the surplus goes unknown → the
+    // autopilot safely stops, instead of acting on the last reading until it ages out.
+    private static final int FAILURES_BEFORE_UNAVAILABLE = 3;
+    private volatile boolean loggedFailure = false;
+    private volatile int consecutiveFailures = 0;
+
     public SolarAnalyticsClient(HouseProperties props, HouseConsumptionState consumption,
                                 HousePowerStreamService stream, InverterStreamService inverter,
                                 ConsumptionSource consumptionSource) {
@@ -111,10 +118,44 @@ public class SolarAnalyticsClient {
             consumption.update(reading);
             stream.publish(reading); // push to the UI immediately
             consumptionSource.publish(new PowerReading(readingAt, consumedW)); // feed the engine's port
+            consecutiveFailures = 0;   // healthy poll → reset the outage counter and re-arm the warning
+            loggedFailure = false;
             log.debug("House consumption {} W (site {})", reading.powerW(), site);
         } catch (Exception e) {
-            log.warn("Solar Analytics poll failed: {}", e.toString());
+            onPollFailure(e);
         }
+    }
+
+    /**
+     * A poll failed. Warn loudly once, then stay quiet while it persists (a sustained outage must
+     * not flood the log). After {@link #FAILURES_BEFORE_UNAVAILABLE} <em>consecutive</em> failures,
+     * mark consumption UNAVAILABLE so the surplus goes unknown and the autopilot safely stops —
+     * rather than acting on the last reading until it ages out. A one-off blip is ridden out.
+     */
+    private void onPollFailure(Exception e) {
+        consecutiveFailures++;
+        if (loggedFailure) {
+            log.debug("Solar Analytics still failing (attempt {}): {}", consecutiveFailures, e.toString());
+        } else if (isAuthError(e)) {
+            log.warn("Solar Analytics auth failed — check SOLARANALYTICS_USER / SOLARANALYTICS_PASSWORD: {}",
+                    e.toString());
+            loggedFailure = true;
+        } else {
+            log.warn("Solar Analytics poll failed: {}", e.toString());
+            loggedFailure = true;
+        }
+        if (consecutiveFailures >= FAILURES_BEFORE_UNAVAILABLE) {
+            HousePower none = HousePower.unavailable(Instant.now());
+            consumption.update(none);
+            stream.publish(none);
+            consumptionSource.clear(); // surplus unknown → autopilot safely stops
+        }
+    }
+
+    /** A 401/403 means the credentials are wrong — retrying won't fix it, so flag it distinctly. */
+    private static boolean isAuthError(Throwable e) {
+        String m = e.getMessage();
+        return m != null && (m.contains("HTTP 401") || m.contains("HTTP 403"));
     }
 
     /** Live solar generation (watts) from the latest inverter snapshot; 0 if none/offline. */

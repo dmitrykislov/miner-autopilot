@@ -35,6 +35,8 @@ public class InverterPoller {
     private final SolarSource solarSource;
 
     private volatile DeviceInfo device;
+    // Warn about a persistent poll failure loudly once, then quietly, so an outage can't flood the log.
+    private volatile boolean loggedFailure = false;
 
     public InverterPoller(WiNetWebSocketClient client, InverterStreamService stream,
                           HouseConsumptionState houseConsumption, SolarSource solarSource) {
@@ -59,6 +61,7 @@ public class InverterPoller {
             DirectResponse direct = safeDirect(device);
             InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, houseKw(), now);
             stream.publish(snapshot);
+            loggedFailure = false; // a good poll re-arms the loud warning for the next outage
             // Feed the generic solar port too (the engine reads that, not this Sungrow snapshot).
             // Offline → clear it so the surplus becomes unknown immediately, not after an age-out.
             if (snapshot.online() && snapshot.powerBalance() != null) {
@@ -73,7 +76,12 @@ public class InverterPoller {
             device = null; // force full reconnect
             publishOffline(now, "session expired");
         } catch (Exception e) {
-            log.warn("Poll failed: {}", e.toString());
+            if (loggedFailure) {
+                log.debug("Inverter still unreachable: {}", e.toString());
+            } else {
+                log.warn("Inverter poll failed: {}", e.toString());
+                loggedFailure = true;
+            }
             device = null;
             publishOffline(now, e.getMessage());
         }
