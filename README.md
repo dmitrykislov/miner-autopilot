@@ -159,7 +159,15 @@ The built-in adapters (Sungrow inverter, Solar Analytics, Braiins) are just the 
 
 Your adapter can obtain data however it likes — poll on a timer, subscribe to a `Flux`, react to a WebSocket — it just pushes readings into the port. Emit a reading only when you have a genuine live value, and call `clear()` when you don't, so the engine treats the surplus as unknown (and safely stops the miner) rather than acting on stale data.
 
-> The engine, the REST/SSE API, and the safety logic are all unchanged by a swap. A custom miner provides **both** the `MinerDriver` (control) and a feed into `MinerStatusSource` (its live status/draw) — together those make the miner fully pluggable. One remaining caveat: the detailed inverter view and the history chart still read the Sungrow snapshot, so they'd be empty for a non-Sungrow *solar* source (the autopilot itself works fine).
+**No JVM code required.** With `INGEST_ENABLED=true`, a source in *any* language/process can push readings over HTTP (behind the auth token):
+
+```bash
+curl -X POST "https://<host>/api/ingest/solar?watts=4200"        -H "Authorization: Bearer $TOKEN"
+curl -X POST "https://<host>/api/ingest/consumption?watts=900"   -H "Authorization: Bearer $TOKEN"
+curl -X POST "https://<host>/api/ingest/solar/clear"             -H "Authorization: Bearer $TOKEN"  # source down
+```
+
+> The engine, the REST/SSE API, the safety logic, and the **history chart** are all unchanged by a swap (the recorder reads the same ports). A custom miner provides **both** the `MinerDriver` (control) and a feed into `MinerStatusSource` (its live status/draw). One remaining caveat: the *live* dashboard's inverter-detail section + the Solar/Home flow tiles still read the Sungrow/Solar-Analytics streams, so those would be empty for a non-Sungrow source — the autopilot and the history chart work fine.
 
 ---
 
@@ -272,6 +280,7 @@ All live streams are **Server-Sent Events** (`text/event-stream`).
 | `GET /api/autopilot` · `/stream` | Autopilot status: enabled, last decision, last change |
 | `POST /api/autopilot/enable` · `/disable` | Turn the autopilot on/off at runtime |
 | `GET /api/history?from=&to=` | Recorded samples + change events for a window (or `?hours=n`) |
+| `POST /api/ingest/solar` · `/consumption` `?watts=` (+ `/clear`) | Push readings into the source ports (opt-in: `INGEST_ENABLED=true`) — see below |
 | `GET /api/system` | App version, start time, uptime |
 | `POST /api/auth/login` | Exchange `{password}` for a bearer token (the one open endpoint) |
 
@@ -391,8 +400,8 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install      # 303 backend + 89 UI tests (UI tests run as part of the build)
-cd backend && mvn test # backend only (303)
+mvn clean install      # 308 backend + 89 UI tests (UI tests run as part of the build)
+cd backend && mvn test # backend only (308)
 ```
 
 Coverage includes: config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, every poller/service (mocked clients) and controller; the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards); the autopilot **wiring** (live-state re-verification, restore-from-history, window warm-up); a real-HTTP **transport** test (odd content types, error handling); and an **end-to-end** test that boots the full app against simulated devices and asserts the exact commands sent. The **history** layer and the React chart/auth UI have their own suites.

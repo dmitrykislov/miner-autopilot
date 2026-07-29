@@ -43,6 +43,9 @@ spring:
 house:
   # --- Sungrow SG10RS / WiNet-S dongle: local WebSocket API (wss on 443) ---
   inverter:
+    # false = disable the built-in Sungrow SOLAR adapter so a custom SolarSource can take over
+    # (see README → "Pluggable sources & miner"). Default: on.
+    enabled: ${INVERTER_ENABLED:true}
     host: ${INVERTER_HOST:}
     port: ${INVERTER_PORT:443}
     ws-path: ${INVERTER_WS_PATH:/ws/home/overview}
@@ -67,6 +70,9 @@ house:
   # --- Braiins OS+ miner (Antminer S19k Pro): local GraphQL API on port 80 ---
   miner:
     enabled: ${MINER_ENABLED:true}
+    # Which MinerDriver implementation. "braiins" = built-in; anything else disables it so you can
+    # supply your own MinerDriver bean (see README → "Pluggable sources & miner").
+    driver: ${MINER_DRIVER:braiins}
     host: ${MINER_HOST:}
     poll-interval-ms: ${MINER_POLL_INTERVAL_MS:10000}
     request-timeout-ms: ${MINER_REQUEST_TIMEOUT_MS:8000}
@@ -75,6 +81,10 @@ house:
     # Hard power-target limits (W) — the miner can't run below min; never exceed max.
     min-power-w: ${MINER_MIN_POWER_W:800}
     max-power-w: ${MINER_MAX_POWER_W:3600}
+  # --- Optional HTTP ingest: push solar/consumption readings from an external (any-language)
+  # source into the engine's ports. Off by default; still behind the auth token. See README. ---
+  ingest:
+    enabled: ${INGEST_ENABLED:false}
   # --- Smoothed solar-surplus autopilot: ladder-tracks the time-averaged surplus ---
   # Drives the miner across a power ladder (floor-w .. miner.max-power-w by step-w) to follow the
   # averaged surplus, riding through brief clouds. Ceiling = miner.max-power-w. See AutopilotGovernor.

@@ -2,18 +2,17 @@ package io.dmitrykislov.miner.history;
 
 import io.dmitrykislov.miner.autopilot.AutopilotStatus;
 import io.dmitrykislov.miner.autopilot.AutopilotStreamService;
+import io.dmitrykislov.miner.autopilot.ConsumptionSourceHub;
+import io.dmitrykislov.miner.autopilot.SolarSourceHub;
 import io.dmitrykislov.miner.braiins.MinerStatus;
-import io.dmitrykislov.miner.braiins.MinerStreamService;
-import io.dmitrykislov.miner.inverter.InverterStreamService;
-import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
-import io.dmitrykislov.miner.inverter.model.PowerBalance;
+import io.dmitrykislov.miner.port.MinerStatusSource;
+import io.dmitrykislov.miner.port.PowerReading;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -21,27 +20,26 @@ import static org.mockito.Mockito.*;
 
 class TelemetryRecorderTest {
 
-    private InverterStreamService inverter;
-    private MinerStreamService miner;
+    private SolarSourceHub solar;
+    private ConsumptionSourceHub consumption;
+    private MinerStatusSource miner;
     private AutopilotStreamService autopilot;
     private TelemetryStore store;
     private TelemetryRecorder recorder;
 
     @BeforeEach
     void setup() {
-        inverter = mock(InverterStreamService.class);
-        miner = mock(MinerStreamService.class);
+        solar = new SolarSourceHub();
+        consumption = new ConsumptionSourceHub();
+        miner = mock(MinerStatusSource.class);
         autopilot = mock(AutopilotStreamService.class);
         store = mock(TelemetryStore.class);
         recorder = new TelemetryRecorder(new HistoryProperties(true, "data", 60_000, 31),
-                store, inverter, miner, autopilot);
+                store, solar, consumption, miner, autopilot);
     }
 
-    private InverterSnapshot snap(boolean online, boolean metered, double solarKw, double houseKw) {
-        PowerBalance pb = metered ? PowerBalance.metered(solarKw, houseKw) : PowerBalance.unmetered(solarKw);
-        return new InverterSnapshot(online, "SG10RS", "SN", online ? "Running" : "Offline",
-                Instant.now(), Map.of(), pb, List.of(), List.of(), null);
-    }
+    private void emitSolar(double watts) { solar.publish(new PowerReading(Instant.now(), watts)); }
+    private void emitConsumption(double watts) { consumption.publish(new PowerReading(Instant.now(), watts)); }
 
     private MinerStatus miner(boolean reachable, boolean running, String state, Integer powerTargetW, Integer drawW) {
         return new MinerStatus(reachable, running, state, null, "S19k", powerTargetW, true,
@@ -54,8 +52,9 @@ class TelemetryRecorderTest {
         return cap.getValue();
     }
 
-    @Test void capturesSolarConsumptionAndMinerFromLiveFeed() {
-        when(inverter.latest()).thenReturn(snap(true, true, 3.5, 1.8));       // 3500 W solar, 1800 W house
+    @Test void capturesSolarConsumptionAndMinerFromTheSourcePorts() {
+        emitSolar(3500);
+        emitConsumption(1800);
         when(miner.latest()).thenReturn(miner(true, true, MinerStatus.MINING, 2400, 2350));
         when(autopilot.latest()).thenReturn(null);
 
@@ -70,8 +69,8 @@ class TelemetryRecorderTest {
         verify(store).prune(any());
     }
 
-    @Test void offlineInverterAndUnreachableMinerYieldNulls() {
-        when(inverter.latest()).thenReturn(snap(false, false, 0, 0));
+    @Test void absentSolarConsumptionAndUnreachableMinerYieldNulls() {
+        // Neither source has a live reading (inverter offline / meter stale → cleared).
         when(miner.latest()).thenReturn(miner(false, false, MinerStatus.OFFLINE, null, null));
         when(autopilot.latest()).thenReturn(null);
 
@@ -84,8 +83,8 @@ class TelemetryRecorderTest {
         assertThat(s.minerState()).isEqualTo("OFFLINE");
     }
 
-    @Test void unmeteredSolarPresentButConsumptionNull() {
-        when(inverter.latest()).thenReturn(snap(true, false, 2.0, 0)); // online, generating, but not metered
+    @Test void solarPresentButConsumptionAbsentGivesNullConsumption() {
+        emitSolar(2000);                               // generating, but no consumption reading
         when(miner.latest()).thenReturn(miner(true, false, MinerStatus.STOPPED, 2400, null));
         when(autopilot.latest()).thenReturn(null);
 
@@ -100,7 +99,8 @@ class TelemetryRecorderTest {
 
     @Test void suspendedMinerChartsNoPowerOrDraw() {
         // SUSPENDED = service up but ~0 W draw → the miner line must not plot its target.
-        when(inverter.latest()).thenReturn(snap(true, true, 3.0, 1.0));
+        emitSolar(3000);
+        emitConsumption(1000);
         when(miner.latest()).thenReturn(miner(true, false, MinerStatus.SUSPENDED, 2400, null));
         when(autopilot.latest()).thenReturn(null);
 
@@ -113,7 +113,8 @@ class TelemetryRecorderTest {
     }
 
     @Test void recordsEachAutopilotChangeExactlyOnce() {
-        when(inverter.latest()).thenReturn(snap(true, true, 3.0, 1.0));
+        emitSolar(3000);
+        emitConsumption(1000);
         when(miner.latest()).thenReturn(miner(true, true, MinerStatus.MINING, 2400, 2350));
 
         Instant t1 = Instant.now().minusSeconds(120);
@@ -139,7 +140,6 @@ class TelemetryRecorderTest {
         // recorder must not write that already-persisted event again as a duplicate row.
         Instant t1 = Instant.parse("2026-07-27T12:00:00Z");
         when(store.latestEvent()).thenReturn(new PowerChangeEvent(t1, "START", null, 1200, "restart"));
-        when(inverter.latest()).thenReturn(null);
         when(miner.latest()).thenReturn(null);
         when(autopilot.latest()).thenReturn(new AutopilotStatus(true, t1, "restart", t1,
                 new AutopilotStatus.Change(t1, "START", null, 1200, "restart")));
@@ -157,7 +157,7 @@ class TelemetryRecorderTest {
 
     @Test void disabledRecorderDoesNothing() {
         var disabled = new TelemetryRecorder(new HistoryProperties(false, "data", 60_000, 31),
-                store, inverter, miner, autopilot);
+                store, solar, consumption, miner, autopilot);
         disabled.record();
         verifyNoInteractions(store);
     }
