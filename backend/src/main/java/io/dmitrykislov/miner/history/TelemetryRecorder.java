@@ -3,7 +3,7 @@ package io.dmitrykislov.miner.history;
 import io.dmitrykislov.miner.autopilot.AutopilotStatus;
 import io.dmitrykislov.miner.autopilot.AutopilotStreamService;
 import io.dmitrykislov.miner.braiins.MinerStatus;
-import io.dmitrykislov.miner.braiins.MinerStreamService;
+import io.dmitrykislov.miner.port.MinerStatusSource;
 import io.dmitrykislov.miner.inverter.InverterStreamService;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
 import io.dmitrykislov.miner.inverter.model.PowerBalance;
@@ -24,14 +24,14 @@ public class TelemetryRecorder {
     private final HistoryProperties cfg;
     private final TelemetryStore store;
     private final InverterStreamService inverter;
-    private final MinerStreamService miner;
+    private final MinerStatusSource miner;
     private final AutopilotStreamService autopilot;
 
     private volatile Instant lastEventAt; // dedup: the timestamp of the last event we wrote
     private volatile boolean seeded;      // false until lastEventAt is seeded from persisted history
 
     public TelemetryRecorder(HistoryProperties cfg, TelemetryStore store, InverterStreamService inverter,
-                             MinerStreamService miner, AutopilotStreamService autopilot) {
+                             MinerStatusSource miner, AutopilotStreamService autopilot) {
         this.cfg = cfg;
         this.store = store;
         this.inverter = inverter;

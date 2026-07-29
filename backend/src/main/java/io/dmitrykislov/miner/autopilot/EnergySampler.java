@@ -1,8 +1,8 @@
 package io.dmitrykislov.miner.autopilot;
 
 import io.dmitrykislov.miner.braiins.MinerStatus;
-import io.dmitrykislov.miner.braiins.MinerStreamService;
 import io.dmitrykislov.miner.port.ConsumptionSource;
+import io.dmitrykislov.miner.port.MinerStatusSource;
 import io.dmitrykislov.miner.port.PowerReading;
 import io.dmitrykislov.miner.port.SolarSource;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -31,7 +31,7 @@ public class EnergySampler {
 
     private final SolarSource solarSource;
     private final ConsumptionSource consumptionSource;
-    private final MinerStreamService miner;
+    private final MinerStatusSource miner;
     private final EnergyAverages energy;
 
     // A stopped Braiins miner reports its API as unreachable, so we can only carry the last-known
@@ -45,7 +45,7 @@ public class EnergySampler {
     private volatile int unreachableStreak; // consecutive samples with no confident draw
 
     public EnergySampler(SolarSource solarSource, ConsumptionSource consumptionSource,
-                         MinerStreamService miner, EnergyAverages energy) {
+                         MinerStatusSource miner, EnergyAverages energy) {
         this.solarSource = solarSource;
         this.consumptionSource = consumptionSource;
         this.miner = miner;

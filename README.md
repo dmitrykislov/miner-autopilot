@@ -128,7 +128,7 @@ miner-controller/
 ├─ .env / .env.example     # all configuration
 ├─ backend/                # Spring Boot app (io.dmitrykislov.miner)
 │  ├─ config/              # settings bound from .env (house.*, auth.*)
-│  ├─ port/                # ports (interfaces): SolarSource, ConsumptionSource, MinerDriver
+│  ├─ port/                # ports: SolarSource, ConsumptionSource, MinerDriver, MinerStatusSource
 │  ├─ inverter/            # Sungrow WiNet-S adapter → feeds SolarSource
 │  ├─ solaranalytics/      # Solar Analytics adapter → feeds ConsumptionSource
 │  ├─ braiins/             # Braiins adapter → implements MinerDriver
@@ -147,6 +147,7 @@ The autopilot engine depends only on three interfaces (`io.dmitrykislov.miner.po
 - **`SolarSource`** — solar generation in
 - **`ConsumptionSource`** — whole-home consumption in
 - **`MinerDriver`** — start / stop / set-power out
+- **`MinerStatusSource`** — the miner's live status/draw in (feeds the surplus + the dashboard)
 
 The built-in adapters (Sungrow inverter, Solar Analytics, Braiins) are just the default implementations, and each can be switched off by config so your own takes over:
 
@@ -154,11 +155,11 @@ The built-in adapters (Sungrow inverter, Solar Analytics, Braiins) are just the 
 |---|---|---|
 | **Solar source** | `INVERTER_ENABLED=false` | a `@Component` that calls `SolarSource.publish(reading)` (and `clear()` on an outage) |
 | **Consumption source** | `SOLARANALYTICS_ENABLED=false` | a `@Component` that feeds `ConsumptionSource` the same way |
-| **Miner** | `MINER_DRIVER=<anything but `braiins`>` | a `@Bean` implementing `MinerDriver` |
+| **Miner** | `MINER_DRIVER=<anything but `braiins`>` | a `@Bean` implementing `MinerDriver`, publishing status to `MinerStatusSource` |
 
 Your adapter can obtain data however it likes — poll on a timer, subscribe to a `Flux`, react to a WebSocket — it just pushes readings into the port. Emit a reading only when you have a genuine live value, and call `clear()` when you don't, so the engine treats the surplus as unknown (and safely stops the miner) rather than acting on stale data.
 
-> The engine, the REST/SSE API, and the safety logic are all unchanged by a swap. Two current caveats: the detailed inverter view + the history chart still read the Sungrow snapshot (so they'd be empty for a non-Sungrow solar source), and a custom `MinerDriver` should also publish `MinerStatus` to `MinerStreamService` so the engine sees the miner's live draw — the miner *status* feed isn't a separate port yet.
+> The engine, the REST/SSE API, and the safety logic are all unchanged by a swap. A custom miner provides **both** the `MinerDriver` (control) and a feed into `MinerStatusSource` (its live status/draw) — together those make the miner fully pluggable. One remaining caveat: the detailed inverter view and the history chart still read the Sungrow snapshot, so they'd be empty for a non-Sungrow *solar* source (the autopilot itself works fine).
 
 ---
 

@@ -2,6 +2,7 @@ package io.dmitrykislov.miner.braiins;
 
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.port.MinerDriver;
+import io.dmitrykislov.miner.port.MinerStatusSource;
 import io.dmitrykislov.miner.util.Rounding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,15 +23,15 @@ import java.util.List;
 @Service
 // The built-in Braiins OS+ MinerDriver. Set house.miner.driver to something other than "braiins"
 // to disable it and supply your own MinerDriver bean for different hardware. Default: braiins.
-// (A custom driver should also publish MinerStatus to MinerStreamService so the engine sees the
-// miner's live draw and the UI shows its state — that status feed is not yet a separate port.)
+// (A custom driver should also publish MinerStatus to the MinerStatusSource port so the engine sees
+// the miner's live draw and the UI shows its state.)
 @ConditionalOnProperty(name = "house.miner.driver", havingValue = "braiins", matchIfMissing = true)
 public class MinerService implements MinerDriver {
 
     private static final Logger log = LoggerFactory.getLogger(MinerService.class);
 
     private final BraiinsMinerClient client;
-    private final MinerStreamService stream;
+    private final MinerStatusSource stream;
     private final HouseProperties.Miner cfg;
 
     // Have we already logged the current genuine-error outage at WARN? Log a real transport failure
@@ -39,7 +40,7 @@ public class MinerService implements MinerDriver {
     // unavailable" is handled separately as a clean off — it never warns at all.)
     private volatile boolean loggedGenuineError = false;
 
-    public MinerService(BraiinsMinerClient client, MinerStreamService stream, HouseProperties props) {
+    public MinerService(BraiinsMinerClient client, MinerStatusSource stream, HouseProperties props) {
         this.client = client;
         this.stream = stream;
         this.cfg = props.miner();

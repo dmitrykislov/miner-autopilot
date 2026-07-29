@@ -1,8 +1,8 @@
 package io.dmitrykislov.miner.api;
 
 import io.dmitrykislov.miner.braiins.MinerStatus;
-import io.dmitrykislov.miner.braiins.MinerStreamService;
 import io.dmitrykislov.miner.port.MinerDriver;
+import io.dmitrykislov.miner.port.MinerStatusSource;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -26,9 +26,9 @@ import reactor.core.scheduler.Schedulers;
 public class MinerController {
 
     private final MinerDriver miner;
-    private final MinerStreamService stream;
+    private final MinerStatusSource stream;
 
-    public MinerController(MinerDriver miner, MinerStreamService stream) {
+    public MinerController(MinerDriver miner, MinerStatusSource stream) {
         this.miner = miner;
         this.stream = stream;
     }
