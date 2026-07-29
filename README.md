@@ -23,13 +23,13 @@ From those it works out your **spare solar** ("surplus") and drives the miner to
 - **Autopilot (optional)** — the headline feature: automatically start / step / stop the miner to track your spare solar, without ever paying the grid to mine. Flip it on or off live from the UI.
 - **History & trends** — a lightweight, file-based log of the last month, drawn as an interactive chart (solar vs house vs miner over time), with a marker at every automatic power change so you can see exactly what the autopilot did and why.
 - **Password-protected** — one password (stored only as a secure hash) locks the whole thing.
-- **One file to run** — the web UI and the server are built into a **single ~22 MB jar**. All settings live in one `.env` file — no IPs, accounts, or passwords baked into the code.
+- **One file to run** — the web UI and server build into a **single ~22 MB jar**, configured entirely through one `.env` file.
 
 ---
 
 ## Runs anywhere — including a Raspberry Pi
 
-It's a normal Java app, so it runs on any laptop, server, or mini-PC. But it was built deliberately lean so it also runs comfortably on a **tiny, cheap board**.
+It's a normal Java app, so it runs on any laptop, server, or mini-PC — and it's lean enough to run comfortably on a **tiny, cheap board**.
 
 Measured **live on a Raspberry Pi Zero 2 W** (quad-core Cortex-A53 @ 1 GHz, **417 MB RAM**, Debian 12) with the small-device settings from `.env.example`:
 
@@ -44,7 +44,7 @@ Measured **live on a Raspberry Pi Zero 2 W** (quad-core Cortex-A53 @ 1 GHz, **41
 
 So the whole "solar-aware miner autopilot" costs roughly **one third of a $15 computer's memory and almost no CPU**.
 
-**It can be made even leaner.** The current footprint is mostly the Java runtime itself. Compiling it to a **GraalVM native image** would cut memory to tens of MB and make startup near-instant; trimming unused libraries and lowering the heap cap further would help too. None of that is needed today — there's comfortable headroom — but the room is there if you want to run it on something even smaller.
+**It can go leaner still.** The footprint is mostly the JVM itself — a **GraalVM native image** would cut it to tens of MB with near-instant startup, and trimming unused libraries or lowering the heap cap would help further. There's headroom to spare already; the option is there for even smaller hardware.
 
 ---
 
@@ -72,7 +72,7 @@ Clouds come and go, so it never reacts to a single reading. It smooths the numbe
 
 ### Gentle on the miner (why this won't wear it out)
 
-Bitcoin miners don't love being power-cycled or having their power jerked around. This design protects the hardware on purpose:
+Bitcoin miners don't love being power-cycled or having their power jerked around. Several parts of the design protect the hardware:
 
 - **Fixed notches, not a continuous knob** → far fewer re-tunes than tracking every watt.
 - **Slow ramp-up** (≤ 2 notches per ~15 min, only on sustained surplus) → no sudden jumps in heat and fan speed.
@@ -82,7 +82,7 @@ Bitcoin miners don't love being power-cycled or having their power jerked around
 
 ### "Governor / autopilot" — what those parts are
 
-You'll see three names in the code. There's **no separate "planner"** — people sometimes call the decision-maker a planner; here that role is the **Governor**. The brain has three small, independent pieces:
+You'll see three names in the code — three small, independent pieces:
 
 1. **The Averager** (`RollingWindow` + `EnergyAverages`) — smooths the noisy solar/house readings into a trustworthy short (3 min) and long (15 min) spare-solar figure, and flags when data is too old or too sparse to trust.
 2. **The Governor** (`AutopilotGovernor`) — the **pure decision-maker**. Given the smoothed surplus and the miner's current state, it returns a single decision: *start / step up / step down / stop / hold* — with a plain-English reason. It has no clock and touches no hardware, which is why it can be tested exhaustively.
@@ -93,10 +93,10 @@ You'll see three names in the code. There's **no separate "planner"** — people
 ## The dashboard (UI)
 
 - **Header** with the device name and an **Overview / Advanced** tab switch.
-- **Live Power Flow** — Solar → Home → Grid with animated flows, plus a **self-sufficiency ring** and the **surplus margin** (`solar − house`). House usage comes from Solar Analytics and updates live; if that feed is quiet, house and margin show as **unavailable** (nothing is assumed).
+- **Live Power Flow** — Solar → Home → Grid with animated flows, plus a **self-sufficiency ring** and the **surplus margin** (`solar − house`). House usage comes from Solar Analytics and updates live; if that feed goes quiet, house and margin show as **unavailable**.
 - **KPIs** — today's and lifetime yield, grid frequency, inverter temperature.
 - **History chart** — solar / house / miner over time. Pick **Today**, a **1h / 4h / 8h / 12h** span, or **type any number of hours**; step **back and forward** in time. Hover for exact values; hover a marker to see each autopilot change (what, from→to, why).
-- **Miner card** — honest state: **Mining / Suspended / Stopped / Off** with the reason, live hashrate, power draw, **fan RPM**, uptime, pools, an editable **power target**, and **Start / Stop**. A cleanly-stopped miner simply reads **"Off"** — no scary error.
+- **Miner card** — state (**Mining / Suspended / Stopped / Off**) with the reason, live hashrate, power draw, **fan RPM**, uptime, pools, an editable **power target**, and **Start / Stop**. A cleanly-stopped miner reads **Off**, not an error.
 - **Autopilot card** — an On/Off toggle, the last decision (including "holding"), and the last change it actually made.
 - **Advanced tab** — all the detailed inverter readings (energy, power, grid, DC/PV strings, device status), each with an explanation tooltip.
 - Light/dark theme, responsive, and a **Log out** button in the footer.
@@ -254,7 +254,7 @@ SKIP_TESTS=1 ./deploy.sh   # skip the test suites for a faster redeploy
 
 ## Configuration (`.env`)
 
-Every environment-specific value comes from an env var — there are **no** hardcoded IPs, accounts, or secrets in the source (`.env` is git-ignored). `.env.example` mirrors it with the sensitive values blanked.
+All configuration comes from environment variables, loaded from a git-ignored `.env`. Copy `.env.example` — it lists every variable — and fill in your values.
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -368,7 +368,7 @@ AUTH_TOKEN_TTL_DAYS=30
 
 ## HTTPS / TLS
 
-Optional, **off by default** (plain HTTP keeps dev/CI simple). When on, Spring Boot terminates TLS itself — no reverse proxy, no extra process, which suits the tiny Pi.
+Optional, **off by default**. When enabled, Spring Boot terminates TLS itself — no reverse proxy and no extra process, which keeps the footprint small on the Pi.
 
 **Turn it on in three steps:**
 
@@ -396,7 +396,7 @@ Optional, **off by default** (plain HTTP keeps dev/CI simple). When on, Spring B
 
 ## The autopilot, precisely
 
-The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers the idea. This is the exact mechanism, for reference.
+The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers the idea; this is the exact mechanism.
 
 **Assumption:** the miner is part of the Solar-Analytics-monitored home, so its draw is inside the measured house usage. The spare solar a running miner can draw is therefore `avg(solar − house) + its own current draw` (i.e. solar minus the *base* house load, which is miner-independent). If the miner is on a separate supply, this assumption breaks — check before enabling.
 
