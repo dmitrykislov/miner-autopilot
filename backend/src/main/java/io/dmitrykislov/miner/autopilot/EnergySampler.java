@@ -2,35 +2,35 @@ package io.dmitrykislov.miner.autopilot;
 
 import io.dmitrykislov.miner.braiins.MinerStatus;
 import io.dmitrykislov.miner.braiins.MinerStreamService;
-import io.dmitrykislov.miner.inverter.InverterStreamService;
-import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
-import io.dmitrykislov.miner.inverter.model.PowerBalance;
+import io.dmitrykislov.miner.port.ConsumptionSource;
+import io.dmitrykislov.miner.port.PowerReading;
+import io.dmitrykislov.miner.port.SolarSource;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 
 /**
- * Feeds {@link EnergyAverages} from the latest inverter snapshot, which already folds together
- * solar generation (inverter) and whole-home consumption (Solar Analytics). Runs on its own
- * schedule (the inverter poll cadence) so the rolling windows are sampled finely, independent of
- * the coarser autopilot tick.
+ * Feeds {@link EnergyAverages} from the pluggable {@link SolarSource} and {@link ConsumptionSource}
+ * ports. Runs on its own schedule (the inverter poll cadence) so the rolling windows are sampled
+ * finely, independent of the coarser autopilot tick.
  *
- * <p>Each feed is recorded at most once per snapshot timestamp — deduping on the snapshot's own
- * timestamp, not wall-clock — so a held (unchanged) snapshot is never re-recorded. Re-recording a
- * held value would over-weight it in the mean (the "step-hold" bias {@link RollingWindow} is
- * explicitly designed to avoid).
+ * <p>Each feed is recorded at most once per source-reading timestamp — deduping on the reading's own
+ * timestamp, not wall-clock — so a held (unchanged) reading is never re-recorded (which would
+ * over-weight it in the count-mean {@link RollingWindow} computes). Because a source only publishes
+ * a fresh reading while it has a genuine live value, this also gives the safety gate for free: when a
+ * source stops publishing (inverter offline, or the meter goes stale/gated), its {@code latest()}
+ * timestamp stops advancing → nothing new is recorded → that window ages out → the surplus becomes
+ * unknown and the autopilot safely stops the miner.
  *
- * <p>Consumption is recorded only when the snapshot is <b>metered</b> (a live Solar Analytics
- * reading). When it isn't (feed offline, or gated off at low solar), consumption simply stops being
- * recorded and its window goes stale — which the autopilot treats as an unknown surplus (safe stop).
- * The miner's own draw is recorded alongside each consumption sample (0 when it isn't mining) so the
+ * <p>The miner's own draw is co-sampled with each consumption reading (0 when it isn't mining) so the
  * averaged surplus can subtract the miner out consistently even across a power change.
  */
 @Component
 public class EnergySampler {
 
-    private final InverterStreamService inverter;
+    private final SolarSource solarSource;
+    private final ConsumptionSource consumptionSource;
     private final MinerStreamService miner;
     private final EnergyAverages energy;
 
@@ -44,35 +44,33 @@ public class EnergySampler {
     private volatile double lastKnownDrawW; // carried through a transient miner-status blip
     private volatile int unreachableStreak; // consecutive samples with no confident draw
 
-    public EnergySampler(InverterStreamService inverter, MinerStreamService miner, EnergyAverages energy) {
-        this.inverter = inverter;
+    public EnergySampler(SolarSource solarSource, ConsumptionSource consumptionSource,
+                         MinerStreamService miner, EnergyAverages energy) {
+        this.solarSource = solarSource;
+        this.consumptionSource = consumptionSource;
         this.miner = miner;
         this.energy = energy;
     }
 
-    // Same cadence and initial delay as the inverter poller (there's nothing to sample until it has
-    // published a snapshot); keying the initial delay to the interval — rather than a fixed short
+    // Same cadence and initial delay as the inverter poller (there's nothing new to sample faster
+    // than the sources publish); keying the initial delay to the interval — rather than a fixed short
     // value — also keeps the sampler quiet during fast manually-driven tests.
     @Scheduled(fixedDelayString = "${house.inverter.poll-interval-ms:10000}",
                initialDelayString = "${house.inverter.poll-interval-ms:10000}")
     public void sample() {
-        InverterSnapshot snap = inverter.latest();
-        if (snap == null || snap.timestamp() == null) return;
-        Instant ts = snap.timestamp();
-        PowerBalance pb = snap.powerBalance();
-        if (pb == null) return;
-
-        if (snap.online() && isNew(ts, lastSolarTs)) {
-            energy.recordSolar(ts, pb.solarPowerKw() * 1000.0);
-            lastSolarTs = ts;
+        PowerReading solar = solarSource.latest().orElse(null);
+        if (solar != null && isNew(solar.at(), lastSolarTs)) {
+            energy.recordSolar(solar.at(), solar.watts());
+            lastSolarTs = solar.at();
         }
-        if (pb.consumptionMetered() && pb.houseConsumptionKw() != null && isNew(ts, lastConsumptionTs)) {
-            energy.recordConsumption(ts, pb.houseConsumptionKw() * 1000.0);
+        PowerReading cons = consumptionSource.latest().orElse(null);
+        if (cons != null && isNew(cons.at(), lastConsumptionTs)) {
+            energy.recordConsumption(cons.at(), cons.watts());
             // Co-sample the miner's draw so surplus = avg(solar) − avg(consumption) + avg(draw)
             // stays exact across a power change. 0 unless it is actually mining (a suspended/off
             // miner draws ~0 and its target is not "consumed").
-            energy.recordMinerDraw(ts, currentMinerDrawW());
-            lastConsumptionTs = ts;
+            energy.recordMinerDraw(cons.at(), currentMinerDrawW());
+            lastConsumptionTs = cons.at();
         }
     }
 

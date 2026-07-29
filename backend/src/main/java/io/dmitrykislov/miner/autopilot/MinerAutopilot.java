@@ -1,12 +1,13 @@
 package io.dmitrykislov.miner.autopilot;
 
 import io.dmitrykislov.miner.braiins.MinerStatus;
-import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.history.PowerChangeEvent;
 import io.dmitrykislov.miner.history.TelemetryStore;
-import io.dmitrykislov.miner.inverter.InverterStreamService;
-import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
+import io.dmitrykislov.miner.port.ConsumptionSource;
+import io.dmitrykislov.miner.port.MinerDriver;
+import io.dmitrykislov.miner.port.PowerReading;
+import io.dmitrykislov.miner.port.SolarSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -31,8 +32,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * <ul>
  *   <li>every tick starts with a <b>live</b> {@link MinerService#refresh()} — never a cached
  *       status — so decisions use the miner's actual on/off state and power target;</li>
- *   <li>the surplus is trusted only when the live feed is valid <em>now</em> (inverter online,
- *       consumption metered, snapshot fresh) <b>and</b> the rolling windows are fresh — otherwise
+ *   <li>the surplus is trusted only when the live feed is valid <em>now</em> (the solar and
+ *       consumption source ports both have a fresh reading) <b>and</b> the rolling windows are fresh — otherwise
  *       the governor is told {@code dataFresh = false} and stops a running miner for safety;</li>
  *   <li>each mutating operation <b>re-verifies</b> the miner state immediately before it runs
  *       (start only if still off, step only if still mining, stop only if still running), so a
@@ -45,7 +46,8 @@ public class MinerAutopilot {
     private static final Logger log = LoggerFactory.getLogger(MinerAutopilot.class);
 
     private final EnergyAverages energy;
-    private final InverterStreamService inverter;
+    private final SolarSource solarSource;
+    private final ConsumptionSource consumptionSource;
     private final MinerDriver minerService;
     private final HouseProperties.Miner minerCfg;
     private final AutopilotGovernor governor;
@@ -66,11 +68,12 @@ public class MinerAutopilot {
     // not the last state — so a one-off null/garbled state can't be mistaken for "never observed".
     private volatile boolean minerObserved;
 
-    public MinerAutopilot(EnergyAverages energy, InverterStreamService inverter,
+    public MinerAutopilot(EnergyAverages energy, SolarSource solarSource, ConsumptionSource consumptionSource,
                           MinerDriver minerService, HouseProperties props,
                           AutopilotStreamService statusStream, TelemetryStore history) {
         this.energy = energy;
-        this.inverter = inverter;
+        this.solarSource = solarSource;
+        this.consumptionSource = consumptionSource;
         this.minerService = minerService;
         this.minerCfg = props.miner();
         this.statusStream = statusStream;
@@ -156,8 +159,8 @@ public class MinerAutopilot {
         trackMiningSince(st, now);
 
         // The surplus is trustworthy only if the live feed is valid right now AND the rolling
-        // windows are fresh. feedValid catches an offline/unmetered/stalled inverter immediately
-        // (a stronger, instantaneous signal than window staleness); energy.dataFresh catches a
+        // windows are fresh. feedValid catches a stale solar/consumption source immediately (a
+        // stronger, instantaneous signal than window staleness); energy.dataFresh catches a
         // dead sampler. Either failing → the governor treats the surplus as unknown.
         boolean dataFresh = feedValid(now) && energy.dataFresh(now);
         EnergyAverages.Signals sig = energy.signals(now);
@@ -173,13 +176,14 @@ public class MinerAutopilot {
         apply(d);
     }
 
-    /** True when the latest inverter snapshot is online, consumption-metered, and fresh. */
+    /** True when BOTH the solar and consumption source ports have a reading fresh enough to trust. */
     private boolean feedValid(Instant now) {
-        InverterSnapshot snap = inverter.latest();
-        return snap != null && snap.online()
-                && snap.powerBalance() != null && snap.powerBalance().consumptionMetered()
-                && snap.timestamp() != null
-                && Duration.between(snap.timestamp(), now).compareTo(maxSnapshotAge) <= 0;
+        return isFresh(solarSource.latest().orElse(null), now)
+                && isFresh(consumptionSource.latest().orElse(null), now);
+    }
+
+    private boolean isFresh(PowerReading r, Instant now) {
+        return r != null && Duration.between(r.at(), now).compareTo(maxSnapshotAge) <= 0;
     }
 
     private void trackMiningSince(MinerStatus st, Instant now) {

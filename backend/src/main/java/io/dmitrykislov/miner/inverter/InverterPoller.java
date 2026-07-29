@@ -4,6 +4,8 @@ import io.dmitrykislov.miner.inverter.dto.DirectResponse;
 import io.dmitrykislov.miner.inverter.dto.RealResponse;
 import io.dmitrykislov.miner.inverter.model.DeviceInfo;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
+import io.dmitrykislov.miner.port.PowerReading;
+import io.dmitrykislov.miner.port.SolarSource;
 import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,14 +28,16 @@ public class InverterPoller {
     private final WiNetWebSocketClient client;
     private final InverterStreamService stream;
     private final HouseConsumptionState houseConsumption;
+    private final SolarSource solarSource;
 
     private volatile DeviceInfo device;
 
     public InverterPoller(WiNetWebSocketClient client, InverterStreamService stream,
-                          HouseConsumptionState houseConsumption) {
+                          HouseConsumptionState houseConsumption, SolarSource solarSource) {
         this.client = client;
         this.stream = stream;
         this.houseConsumption = houseConsumption;
+        this.solarSource = solarSource;
     }
 
     /** Measured house consumption (kW) if a fresh Solar Analytics reading exists, else null. */
@@ -51,6 +55,13 @@ public class InverterPoller {
             DirectResponse direct = safeDirect(device);
             InverterSnapshot snapshot = SnapshotMapper.map(device, real, direct, houseKw(), now);
             stream.publish(snapshot);
+            // Feed the generic solar port too (the engine reads that, not this Sungrow snapshot).
+            // Offline → clear it so the surplus becomes unknown immediately, not after an age-out.
+            if (snapshot.online() && snapshot.powerBalance() != null) {
+                solarSource.publish(new PowerReading(now, snapshot.powerBalance().solarPowerKw() * 1000.0));
+            } else {
+                solarSource.clear();
+            }
             log.debug("Published snapshot: state={} activePower={}",
                     snapshot.runningState(), snapshot.highlights().get("activePowerKw"));
         } catch (WiNetWebSocketClient.SessionExpiredException e) {
@@ -86,5 +97,6 @@ public class InverterPoller {
         String model = device != null ? device.model() : "SG10RS";
         String sn = device != null ? device.serialNumber() : null;
         stream.publish(InverterSnapshot.offline(model, sn, now, error));
+        solarSource.clear(); // inverter unreachable → no live solar reading
     }
 }

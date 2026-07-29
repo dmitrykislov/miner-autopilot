@@ -6,6 +6,7 @@ import io.dmitrykislov.miner.inverter.dto.RealPoint;
 import io.dmitrykislov.miner.inverter.dto.RealResponse;
 import io.dmitrykislov.miner.inverter.model.DeviceInfo;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
+import io.dmitrykislov.miner.port.SolarSource;
 import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,7 +34,7 @@ class InverterPollerTest {
         houseConsumption = mock(HouseConsumptionState.class);
         // house consumption 1.0 kW by default
         when(houseConsumption.measuredKw()).thenReturn(Optional.of(1.0));
-        poller = new InverterPoller(client, stream, houseConsumption);
+        poller = new InverterPoller(client, stream, houseConsumption, mock(SolarSource.class));
     }
 
     private InverterSnapshot capturePublished() {

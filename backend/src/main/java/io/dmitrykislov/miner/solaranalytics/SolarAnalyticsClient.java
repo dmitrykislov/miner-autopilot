@@ -3,6 +3,8 @@ package io.dmitrykislov.miner.solaranalytics;
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.inverter.InverterStreamService;
 import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
+import io.dmitrykislov.miner.port.ConsumptionSource;
+import io.dmitrykislov.miner.port.PowerReading;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -48,17 +50,20 @@ public class SolarAnalyticsClient {
     private final HouseConsumptionState consumption;
     private final HousePowerStreamService stream;
     private final InverterStreamService inverter;
+    private final ConsumptionSource consumptionSource;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final ObjectMapper mapper = JsonMapper.builder().build();
     private final String authHeader;
     private volatile String siteId;
 
     public SolarAnalyticsClient(HouseProperties props, HouseConsumptionState consumption,
-                                HousePowerStreamService stream, InverterStreamService inverter) {
+                                HousePowerStreamService stream, InverterStreamService inverter,
+                                ConsumptionSource consumptionSource) {
         this.cfg = props.solarAnalytics();
         this.consumption = consumption;
         this.stream = stream;
         this.inverter = inverter;
+        this.consumptionSource = consumptionSource;
         this.authHeader = "Basic " + Base64.getEncoder().encodeToString(
                 (cfg.user() + ":" + cfg.password()).getBytes(StandardCharsets.UTF_8));
         this.siteId = cfg.siteId();
@@ -83,6 +88,7 @@ public class SolarAnalyticsClient {
             HousePower none = HousePower.unavailable(Instant.now());
             consumption.update(none);
             stream.publish(none);
+            consumptionSource.clear(); // engine's port: no live reading → surplus unknown → safe stop
             return;
         }
         try {
@@ -96,9 +102,11 @@ public class SolarAnalyticsClient {
                 log.debug("Solar Analytics: no consumption in live data for site {}", site);
                 return;
             }
-            HousePower reading = HousePower.measured(consumedW, null, site, Instant.now());
+            Instant readingAt = Instant.now();
+            HousePower reading = HousePower.measured(consumedW, null, site, readingAt);
             consumption.update(reading);
             stream.publish(reading); // push to the UI immediately
+            consumptionSource.publish(new PowerReading(readingAt, consumedW)); // feed the engine's port
             log.debug("House consumption {} W (site {})", reading.powerW(), site);
         } catch (Exception e) {
             log.warn("Solar Analytics poll failed: {}", e.toString());

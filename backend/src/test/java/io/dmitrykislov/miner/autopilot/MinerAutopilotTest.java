@@ -5,9 +5,7 @@ import io.dmitrykislov.miner.braiins.MinerStatus;
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.history.PowerChangeEvent;
 import io.dmitrykislov.miner.history.TelemetryStore;
-import io.dmitrykislov.miner.inverter.InverterStreamService;
-import io.dmitrykislov.miner.inverter.model.InverterSnapshot;
-import io.dmitrykislov.miner.inverter.model.PowerBalance;
+import io.dmitrykislov.miner.port.PowerReading;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -22,7 +20,7 @@ import static org.mockito.Mockito.*;
 /**
  * Orchestration tests for the autopilot: it reads a FRESH miner state via
  * {@link MinerDriver#refresh()} each tick, derives the {@link AutopilotGovernor} inputs from the
- * live feed ({@link InverterStreamService} for validity + {@link EnergyAverages} for the averaged
+ * live feed (the SolarSource + ConsumptionSource ports for validity + {@link EnergyAverages} for the averaged
  * surplus), applies the decision, and re-verifies state immediately before every mutating op.
  *
  * <p>Config: floor 1200, ceil (miner max) 3600, step 400, headroom 200, start-surplus 1600,
@@ -33,7 +31,8 @@ import static org.mockito.Mockito.*;
 class MinerAutopilotTest {
 
     private MinerDriver miner;
-    private InverterStreamService inverterStream;
+    private SolarSourceHub solarSource;
+    private ConsumptionSourceHub consumptionSource;
     private EnergyAverages energy;
     private AutopilotStreamService stream;
     private TelemetryStore history;
@@ -42,7 +41,8 @@ class MinerAutopilotTest {
     void setup() {
         miner = mock(MinerDriver.class);
         history = mock(TelemetryStore.class); // no persisted history by default → latestEvent() == null
-        inverterStream = new InverterStreamService();
+        solarSource = new SolarSourceHub();
+        consumptionSource = new ConsumptionSourceHub();
         energy = new EnergyAverages(
                 Duration.ofMinutes(3), Duration.ofMinutes(3), Duration.ofSeconds(90),
                 Duration.ofMillis(1), Duration.ofMillis(1)); // tiny coverage → one sample pair suffices
@@ -71,7 +71,7 @@ class MinerAutopilotTest {
 
     private MinerAutopilot autopilot(boolean enabled) {
         stream = new AutopilotStreamService();
-        return new MinerAutopilot(energy, inverterStream, miner, props(enabled), stream, history);
+        return new MinerAutopilot(energy, solarSource, consumptionSource, miner, props(enabled), stream, history);
     }
 
     private MinerStatus status(boolean reachable, boolean running, Integer powerTargetW) {
@@ -112,11 +112,14 @@ class MinerAutopilotTest {
                 powerTargetW, true, 0, 1, null, null, List.of(), 600L, Instant.now(), null);
     }
 
-    /** Publish an inverter snapshot with the given liveness/metered flags and timestamp. */
+    /**
+     * Make the feed valid/invalid at {@code ts} by publishing to the source ports (values don't
+     * matter here — the surplus comes from {@link #feedEnergy}; this only drives feedValid): a fresh
+     * solar reading when "online", a fresh consumption reading when also "metered".
+     */
     private void publishSnapshot(boolean online, boolean metered, Instant ts) {
-        PowerBalance pb = metered ? PowerBalance.metered(2.0, 1.0) : PowerBalance.unmetered(2.0);
-        inverterStream.publish(new InverterSnapshot(online, "SG10RS", "SN",
-                online ? "Running" : "Offline", ts, Map.of(), pb, List.of(), List.of(), null));
+        if (online) solarSource.publish(new PowerReading(ts, 2000));
+        if (online && metered) consumptionSource.publish(new PowerReading(ts, 1000));
     }
 
     /**
