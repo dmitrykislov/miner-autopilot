@@ -217,7 +217,7 @@ curl -X POST "https://<host>/api/ingest/consumption?watts=900"   -H "Authorizati
 curl -X POST "https://<host>/api/ingest/solar/clear"             -H "Authorization: Bearer $TOKEN"  # source down
 ```
 
-> The engine, the safety logic, the **history chart**, and the dashboard's **live power flow** are all unchanged by a swap — the flow reads a source-agnostic feed (`GET /api/power/stream`, straight off the ports), and the recorder reads the same ports, so both work for whatever source you plug in. A custom miner provides **both** the `MinerDriver` (control) and a feed into `MinerStatusSource` (its live status/draw). The only Sungrow-specific part of the UI is the *optional* inverter detail (the Advanced tab, the yield/temperature KPIs, model/serial); it simply doesn't render for a non-Sungrow solar source, and everything else keeps working.
+> **A swap changes nothing else.** The engine, the safety logic, the **history chart**, and the dashboard's **live power flow** all read the *ports* — never a specific device — so they work with whatever you plug in. (The flow reads a source-agnostic feed, `GET /api/power/stream`; the recorder reads those same ports.) A custom miner supplies two things: the `MinerDriver` to control it, and a feed into `MinerStatusSource` for its live status/draw. The one Sungrow-only piece of the UI is the *optional* inverter detail — the Advanced tab, the yield/temperature KPIs, the model/serial — which simply doesn't appear for a non-Sungrow source. Everything else keeps working.
 
 ---
 
@@ -386,7 +386,7 @@ Optional, **off by default** (plain HTTP keeps dev/CI simple). When on, Spring B
 # 3. Restart. The app now serves https://<host>:<SERVER_PORT>.
 ```
 
-**How it works:** with `TLS_ENABLED=true`, `application.yml` hands Spring Boot the two PEM files via `server.ssl.certificate` / `server.ssl.certificate-private-key`; Spring builds an in-memory keystore and configures the embedded Netty server to do the TLS handshake. The React UI and the SSE streams use relative URLs, so they follow the scheme automatically — nothing else changes. When `TLS_ENABLED=false`, the certificate paths are ignored and it's plain HTTP. `deploy.sh` reads `TLS_ENABLED` and runs its post-deploy health check over HTTPS (with `-k`) automatically, so deploys work the same either way.
+**How it works.** With `TLS_ENABLED=true`, `application.yml` passes the two PEM files to Spring Boot (`server.ssl.certificate` / `…-private-key`). Spring builds an in-memory keystore and lets the embedded Netty server do the TLS handshake — there's no keystore file to manage. The UI and the SSE streams use relative URLs, so they follow the scheme on their own; nothing else changes. With `TLS_ENABLED=false`, the cert paths are ignored and it serves plain HTTP. `deploy.sh` picks the right scheme for its health check automatically (HTTPS with `-k` when TLS is on), so deploys work the same either way.
 
 **A self-signed cert works, with a one-time browser warning.** To avoid the warning on your own devices, generate the cert with [`mkcert`](https://github.com/FiloSottile/mkcert) instead (it installs a local CA your devices trust) — same file names, no config change. `key.pem` is a secret and is git-ignored.
 
@@ -457,7 +457,14 @@ mvn -pl autopilot-engine test   # run a single module's tests (here, the engine'
 
 Backend tests live **with their module** — `autopilot-engine` 144 · `autopilot-adapters` 135 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **97** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
 
-Coverage includes: config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, every poller/service (mocked clients) and controller; the **pluggable ports** — the source-agnostic `/api/power` feed (ports → snapshot, stream re-emit + dedup) and the HTTP `/api/ingest` path (push → port → feed), each proven both as a slice and in a full boot; the **autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards); the autopilot **wiring** (live-state re-verification, restore-from-history, window warm-up); a real-HTTP **transport** test (odd content types, error handling); and an **end-to-end** test that boots the full app against simulated devices and asserts the exact commands sent + the power feed served. The **history** layer and the React chart/auth UI (including a dashboard integration test that renders the live flow from the feed with no inverter present) have their own suites.
+What's covered:
+
+- **Adapters & plumbing** — config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, and every poller/service (with mocked clients) and controller.
+- **Pluggable ports** — the source-agnostic `/api/power` feed (ports → snapshot, stream re-emit + dedup) and the HTTP `/api/ingest` path (push → port → feed), each proven both as a slice *and* in a full boot.
+- **Autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards).
+- **Autopilot wiring** — live-state re-verification, restore-from-history, window warm-up.
+- **End-to-end** — a real-HTTP transport test (odd content types, error handling) and a full-boot test against simulated devices that asserts the exact commands sent + the power feed served.
+- **History & UI** — the history layer, plus the React chart/auth suites (including a dashboard integration test that renders the live flow from the feed with no inverter present).
 
 ---
 
