@@ -5,6 +5,7 @@ import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.util.Rounding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
@@ -19,6 +20,11 @@ import java.util.List;
  * (refreshing status immediately after).
  */
 @Service
+// The built-in Braiins OS+ MinerDriver. Set house.miner.driver to something other than "braiins"
+// to disable it and supply your own MinerDriver bean for different hardware. Default: braiins.
+// (A custom driver should also publish MinerStatus to MinerStreamService so the engine sees the
+// miner's live draw and the UI shows its state — that status feed is not yet a separate port.)
+@ConditionalOnProperty(name = "house.miner.driver", havingValue = "braiins", matchIfMissing = true)
 public class MinerService implements MinerDriver {
 
     private static final Logger log = LoggerFactory.getLogger(MinerService.class);

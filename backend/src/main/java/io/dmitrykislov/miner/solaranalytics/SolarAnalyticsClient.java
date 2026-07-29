@@ -7,6 +7,7 @@ import io.dmitrykislov.miner.port.ConsumptionSource;
 import io.dmitrykislov.miner.port.PowerReading;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -42,6 +43,9 @@ import java.util.Base64;
  * inverter snapshot (a lock-free in-memory value), so it never blocks the poll.
  */
 @Component
+// The built-in whole-home consumption adapter. Turn it off (house.solar-analytics.enabled=false)
+// to feed the ConsumptionSource port from a custom adapter instead. Default: on.
+@ConditionalOnProperty(name = "house.solar-analytics.enabled", havingValue = "true", matchIfMissing = true)
 public class SolarAnalyticsClient {
 
     private static final Logger log = LoggerFactory.getLogger(SolarAnalyticsClient.class);

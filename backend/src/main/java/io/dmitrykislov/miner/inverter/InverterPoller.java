@@ -9,6 +9,7 @@ import io.dmitrykislov.miner.port.SolarSource;
 import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -21,6 +22,9 @@ import java.time.Instant;
  * reconnects/re-logs-in on any failure.
  */
 @Component
+// The built-in Sungrow solar adapter. Turn it off (house.inverter.enabled=false) to feed the
+// SolarSource port from a custom adapter instead. Default: on.
+@ConditionalOnProperty(name = "house.inverter.enabled", havingValue = "true", matchIfMissing = true)
 public class InverterPoller {
 
     private static final Logger log = LoggerFactory.getLogger(InverterPoller.class);
