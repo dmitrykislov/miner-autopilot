@@ -252,7 +252,10 @@ public final class AutopilotGovernor {
         int upTarget = rungAtOrBelow(sLong - cfg.headroomW());
         if (upTarget > cur) {
             int capped = rungAtOrBelow(Math.min(upTarget, cur + cfg.upMaxRungsPerCycle() * cfg.stepW()));
-            if (capped > cur) {
+            // capped can be the sub-floor sentinel (rungAtOrBelow returns floorW−1 when the long
+            // surplus can't support the floor) if the miner is already running below the floor —
+            // never command an off-ladder, sub-floor target; hold instead.
+            if (capped > cur && capped >= cfg.floorW()) {
                 return decision(Action.STEP_UP, capped, String.format(
                         "surplus %dW → up to %dW", Math.round(sLong), capped));
             }

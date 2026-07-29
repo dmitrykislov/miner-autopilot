@@ -22,7 +22,10 @@ public class LatestBroadcaster<T> {
     private final Sinks.Many<T> sink = Sinks.many().multicast().directBestEffort();
     private final AtomicReference<T> latest = new AtomicReference<>();
 
-    public void publish(T value) {
+    // synchronized so concurrent publishers (e.g. the miner's scheduled poll and a user start/stop
+    // command, which run on different threads) can't race the multicast sink into a dropped
+    // (FAIL_NON_SERIALIZED) emission — directBestEffort requires serialized emitNext calls.
+    public synchronized void publish(T value) {
         latest.set(value);
         sink.tryEmitNext(value);
     }

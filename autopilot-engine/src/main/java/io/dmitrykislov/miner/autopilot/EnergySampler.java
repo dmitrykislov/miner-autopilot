@@ -88,8 +88,11 @@ public class EnergySampler {
      */
     private double currentMinerDrawW() {
         MinerStatus m = miner.latest();
-        if (m != null && MinerStatus.MINING.equals(m.state()) && m.powerDrawW() != null) {
-            lastKnownDrawW = m.powerDrawW();
+        if (m != null && MinerStatus.MINING.equals(m.state())) {
+            // Mining: use the reported draw; if the realtime stats momentarily omit it, keep carrying
+            // the last known draw — the rig is still mining and drawing, so recording 0 here would
+            // under-state its draw (and the surplus).
+            if (m.powerDrawW() != null) lastKnownDrawW = m.powerDrawW();
             unreachableStreak = 0;
         } else if (m != null && m.reachable()) {
             lastKnownDrawW = 0.0;                 // reachable and not mining → not drawing

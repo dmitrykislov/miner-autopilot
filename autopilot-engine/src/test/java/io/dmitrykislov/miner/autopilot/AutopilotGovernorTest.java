@@ -270,6 +270,15 @@ class AutopilotGovernorTest {
         assertThat(d.targetPowerW()).isEqualTo(1600);
     }
 
+    @Test void subFloorRunningMinerIsNeverSteppedToAnOffLadderSubFloorTarget() {
+        // Running below the floor (1100). Short surplus is high enough to avoid a stop
+        // (1500−200=1300 ≥ 1200), but the long surplus can only support below the floor
+        // (1300−200=1100 < 1200), so the up-ramp target computes to the sub-floor sentinel (1199).
+        // It must NOT command 1199 (off-ladder, below the floor) — hold instead.
+        var d = gov.decide(runningSL(1100, 1500, 1300, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isEqualTo(Action.NONE);
+    }
+
     @Test void nullCurrentPowerWhileRunningTreatedAsFloor() {
         Input in = new Input(NOW, true, true, false, null, MINED_LONG, LONG_AGO,
                 true, OptionalDouble.of(1600), OptionalDouble.of(1600)); // surplus 1600, cur→floor 1200

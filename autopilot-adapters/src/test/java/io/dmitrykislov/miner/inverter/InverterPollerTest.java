@@ -23,6 +23,7 @@ class InverterPollerTest {
     private WiNetWebSocketClient client;
     private InverterStreamService stream;
     private HouseConsumptionState houseConsumption;
+    private SolarSource solarSource;
     private InverterPoller poller;
 
     private static final DeviceInfo DEV = new DeviceInfo(1, 21, "SG10RS", "A24A0965660");
@@ -34,7 +35,8 @@ class InverterPollerTest {
         houseConsumption = mock(HouseConsumptionState.class);
         // house consumption 1.0 kW by default
         when(houseConsumption.measuredKw()).thenReturn(Optional.of(1.0));
-        poller = new InverterPoller(client, stream, houseConsumption, mock(SolarSource.class));
+        solarSource = mock(SolarSource.class);
+        poller = new InverterPoller(client, stream, houseConsumption, solarSource);
     }
 
     private InverterSnapshot capturePublished() {
@@ -64,6 +66,9 @@ class InverterPollerTest {
         assertThat(s.powerBalance().houseConsumptionKw()).isEqualTo(1.0);
         assertThat(s.powerBalance().netSurplusKw()).isEqualTo(2.0);
         assertThat(s.powerBalance().gridPowerKw()).isEqualTo(-2.0);
+        // Feeds the source-agnostic SolarSource port with solar in WATTS (3.0 kW → 3000 W).
+        verify(solarSource).publish(argThat(r -> r.watts() == 3000.0));
+        verify(solarSource, never()).clear();
     }
 
     @Test
@@ -167,5 +172,8 @@ class InverterPollerTest {
         assertThat(s.online()).isFalse();
         assertThat(s.deviceModel()).isEqualTo("SG10RS");
         assertThat(s.error()).contains("boom");
+        // Inverter unreachable → clear the solar port so the surplus becomes unknown immediately.
+        verify(solarSource).clear();
+        verify(solarSource, never()).publish(any());
     }
 }

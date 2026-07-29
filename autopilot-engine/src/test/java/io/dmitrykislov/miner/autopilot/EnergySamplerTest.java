@@ -107,6 +107,25 @@ class EnergySamplerTest {
                 .isCloseTo(3000, within(1e-6));
     }
 
+    @Test void carriesLastKnownDrawWhenMiningButTheDrawIsMomentarilyMissing() {
+        // Rig mining at 2000 W (base 1000, house 3000) → surplus 3000.
+        minerStream.publish(miner(MinerStatus.MINING, 2000));
+        emitSolar(T0, 4000);
+        emitConsumption(T0, 3000);
+        sampler.sample();
+        // Still MINING, but the realtime stats momentarily omit the draw (powerDrawW == null). The
+        // rig is still drawing ~2000, so the draw must be CARRIED, not zeroed.
+        minerStream.publish(miner(MinerStatus.MINING, null));
+        emitSolar(T0.plusSeconds(10), 4000);
+        emitConsumption(T0.plusSeconds(10), 3000);
+        sampler.sample();
+
+        // Carried → both samples surplus 3000. If the null-draw sample recorded 0 W (the bug),
+        // avg(draw) would be 1000 → surplus 2000 (understated → could spuriously stop the miner).
+        assertThat(energy.signals(T0.plusSeconds(11)).shortSurplusW().getAsDouble())
+                .isCloseTo(3000, within(1e-6));
+    }
+
     @Test void decaysCarriedDrawToZeroOnSustainedUnreachability() {
         // A stopped miner reads as unreachable; carrying its old draw forever would over-state the
         // surplus. After the short carry window the draw must decay to 0 (miner assumed stopped).
