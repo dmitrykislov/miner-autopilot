@@ -105,20 +105,34 @@ You'll see three names in the code. There's **no separate "planner"** — people
 
 ## Architecture
 
+The app is built as a **hexagon** — the *ports & adapters* pattern. The idea is small and pays off big:
+
+> Keep the decision-making **core** in the middle. Push everything that touches the outside world — the inverter, the meter, the miner, the web UI, the file store — out to the edge as swappable **adapters**. The core never talks to any of them directly; it only talks through **ports** (plain Java interfaces). And every dependency points **inward**, toward the core.
+
 ```
-                           ┌─────────────────────────────────────────────┐
-   Sungrow SG10RS  ──wss──▶│ WiNetWebSocketClient  ─poll 10s→ SSE         │
-   (WiNet-S :443)          │                                             │
-   Solar Analytics ─HTTPS─▶│ SolarAnalyticsClient  ─poll 15s→ SSE         │──▶ React UI
-   (cloud API)             │                                             │   (bundled in the jar)
-   Braiins miner  ─GraphQL▶│ BraiinsMinerClient    ─poll 10s→ SSE         │
-   (:80 /graphql)          │                                             │
-                           └─────────────────────────────────────────────┘
-                                   Spring Boot 4 (WebFlux) — one jar
+        inbound adapters                                     outbound adapters
+     (the world drives it)                                (it drives the world)
+       REST / SSE · auth                          Sungrow · Solar Analytics · Braiins · file store
+              │                                                     ▲
+              │  call the core                        the core calls out  │
+              ▼  through its ports                    through its ports    │
+        ┌────────────────────────────────────────────────────────────────┐
+        │                              CORE                                │
+        │        ports (interfaces)  +  autopilot engine  +  domain        │
+        │        no HTTP · no device code · no frameworks                  │
+        └────────────────────────────────────────────────────────────────┘
+                   ▲  the core has zero outward dependencies  ▲
 ```
 
-- **Backend:** Spring Boot 4.1 (Java 21, WebFlux, Jackson 3). Each device has a client → a service that polls it → a reactive broadcast → a live **Server-Sent Events (SSE)** endpoint.
-- **Frontend:** React + Vite. The browser only *listens* to the SSE streams (no polling from the browser). It's built into the backend so `mvn package` bundles everything into one jar.
+**Why build it this way?**
+
+- **Swap the hardware, keep the brain.** A different inverter, meter, or miner is just a new adapter — the autopilot logic is untouched (see [Pluggable sources & miner](#pluggable-sources--miner-ports--adapters)).
+- **The core is pure, so it's trustworthy.** With no frameworks or I/O in the middle, the decision logic is exhaustively unit-testable and a device outage can't leak in and corrupt it.
+- **The layering is enforced, not just documented** — see below.
+
+### Where it lives — four Maven modules
+
+Each ring of the hexagon is its own module, and dependencies point strictly **inward**. Maven turns that rule into a **compile error** if you break it: you can't accidentally drag the engine into an HTTP detail, and one adapter can't reach into another.
 
 ```
 miner-autopilot/                    # reactor root (io.dmitrykislov.miner.*) — 4 Maven modules,
@@ -137,7 +151,43 @@ miner-autopilot/                    # reactor root (io.dmitrykislov.miner.*) —
 └─ frontend/                        # React + Vite UI (built into the launcher jar)
 ```
 
-The four modules make the hexagonal layering a **compile-time guarantee**, not a convention: `autopilot-core` literally cannot import Spring or an adapter, an adapter cannot import another adapter's internals, and only `autopilot-launcher` produces the runnable jar. The bootable artifact is `autopilot-launcher/target/autopilot-launcher-<version>.jar`.
+| Ring | Module | Holds | Depends on |
+|---|---|---|---|
+| **Core** (the hexagon) | `autopilot-core` | the **ports** + domain value objects + shared primitives — **framework-free** | *nothing* (only `reactor-core`) |
+| **Application** | `autopilot-engine` | the autopilot engine, telemetry warm-up, config binding | core |
+| **Adapters** (the ring) | `autopilot-adapters` | inbound: REST/SSE + auth · outbound: inverter, meter, miner, persistence | engine, core |
+| **Composition root** | `autopilot-launcher` | Spring Boot `main`, `application.yml`, the UI bundle, the runnable fat jar | adapters |
+
+The runnable artifact is `autopilot-launcher/target/autopilot-launcher-<version>.jar`.
+
+**The five ports** live in `autopilot-core` (`io.dmitrykislov.miner.port`) — they're the entire vocabulary the engine speaks to the outside world:
+
+| Port | Direction | What crosses it |
+|---|---|---|
+| `SolarSource` | inbound | solar-generation readings come *in* |
+| `ConsumptionSource` | inbound | whole-home consumption comes *in* |
+| `MinerStatusSource` | inbound | the miner's live status / draw comes *in* |
+| `MinerDriver` | outbound | start / stop / set-power goes *out* |
+| `TelemetryHistory` | outbound | read recorded history (for restart warm-up + restore) |
+
+### How it runs (data flow)
+
+At runtime each outbound adapter polls its device on a timer and pushes readings through its port; the inbound web adapter turns the core's live state into **Server-Sent Events (SSE)** the browser listens to.
+
+```
+                           ┌─────────────────────────────────────────────┐
+   Sungrow SG10RS  ──wss──▶│ WiNetWebSocketClient  ─poll 10s→ SSE         │
+   (WiNet-S :443)          │                                             │
+   Solar Analytics ─HTTPS─▶│ SolarAnalyticsClient  ─poll 15s→ SSE         │──▶ React UI
+   (cloud API)             │                                             │   (bundled in the jar)
+   Braiins miner  ─GraphQL▶│ BraiinsMinerClient    ─poll 10s→ SSE         │
+   (:80 /graphql)          │                                             │
+                           └─────────────────────────────────────────────┘
+                                   Spring Boot 4 (WebFlux) — one jar
+```
+
+- **Backend:** Spring Boot 4.1 (Java 21, WebFlux, Jackson 3). Each device has a client → a service that polls it → a reactive broadcast → a live **SSE** endpoint.
+- **Frontend:** React + Vite. The browser only *listens* to the SSE streams (no polling from the browser). It's built into the backend so `mvn package` bundles everything into one jar.
 
 ### Pluggable sources & miner (ports & adapters)
 
