@@ -105,12 +105,12 @@ public class SolarAnalyticsClient {
         try {
             String site = resolveSiteId();
             if (site == null || site.isBlank()) {
-                log.warn("Solar Analytics: no active site available");
+                onPollFailure("no active site available", false);
                 return;
             }
             Double consumedW = latestConsumedWatts(getJson("/live_site_data?site_id=" + site + "&last_six=true"));
             if (consumedW == null) {
-                log.debug("Solar Analytics: no consumption in live data for site {}", site);
+                onPollFailure("no consumption in live data for site " + site, false);
                 return;
             }
             Instant readingAt = Instant.now();
@@ -122,33 +122,40 @@ public class SolarAnalyticsClient {
             loggedFailure = false;
             log.debug("House consumption {} W (site {})", reading.powerW(), site);
         } catch (Exception e) {
-            onPollFailure(e);
+            onPollFailure(e.toString(), isAuthError(e));
         }
     }
 
     /**
-     * A poll failed. Warn loudly once, then stay quiet while it persists (a sustained outage must
-     * not flood the log). After {@link #FAILURES_BEFORE_UNAVAILABLE} <em>consecutive</em> failures,
-     * mark consumption UNAVAILABLE so the surplus goes unknown and the autopilot safely stops —
-     * rather than acting on the last reading until it ages out. A one-off blip is ridden out.
+     * A poll produced no fresh reading (transport error, 200-with-no-data, or no active site). Warn
+     * loudly once, then stay quiet while it persists so a sustained outage can't flood the log.
+     *
+     * <p>After {@link #FAILURES_BEFORE_UNAVAILABLE} consecutive such polls, mark consumption
+     * UNAVAILABLE (clear the port). The autopilot is already safe without this — it ignores a
+     * consumption reading older than {@code ~4× the inverter poll} — but consumers that judge the
+     * port's {@code latest()} by <em>receipt</em> freshness would otherwise keep serving the stale
+     * value: the {@code /api/power} dashboard feed is kept "live" by the SSE keep-alive heartbeat,
+     * so without clearing it would show a frozen house figure as current. Clearing makes consumption
+     * read unavailable everywhere. A one-off blip is ridden out; the next good poll resets.
      */
-    private void onPollFailure(Exception e) {
+    private void onPollFailure(String detail, boolean authError) {
         consecutiveFailures++;
         if (loggedFailure) {
-            log.debug("Solar Analytics still failing (attempt {}): {}", consecutiveFailures, e.toString());
-        } else if (isAuthError(e)) {
-            log.warn("Solar Analytics auth failed — check SOLARANALYTICS_USER / SOLARANALYTICS_PASSWORD: {}",
-                    e.toString());
-            loggedFailure = true;
+            log.debug("Solar Analytics still failing (attempt {}): {}", consecutiveFailures, detail);
         } else {
-            log.warn("Solar Analytics poll failed: {}", e.toString());
+            if (authError) {
+                log.warn("Solar Analytics auth failed — check SOLARANALYTICS_USER / SOLARANALYTICS_PASSWORD: {}",
+                        detail);
+            } else {
+                log.warn("Solar Analytics poll failed: {}", detail);
+            }
             loggedFailure = true;
         }
         if (consecutiveFailures >= FAILURES_BEFORE_UNAVAILABLE) {
             HousePower none = HousePower.unavailable(Instant.now());
             consumption.update(none);
             stream.publish(none);
-            consumptionSource.clear(); // surplus unknown → autopilot safely stops
+            consumptionSource.clear();
         }
     }
 

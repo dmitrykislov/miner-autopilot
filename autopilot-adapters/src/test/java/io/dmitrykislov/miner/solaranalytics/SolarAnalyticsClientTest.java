@@ -125,4 +125,19 @@ class SolarAnalyticsClientTest {
         verify(consumptionSource, times(1)).publish(argThat(r -> r.watts() == 1234.0));
         verify(consumptionSource, never()).clear();
     }
+
+    @Test
+    void a200WithNoUsableDataCountsAsAFailureAndClearsAfterThree() {
+        // A 200 with an empty data array yields no reading — it must be treated like a transport
+        // failure (warn-once + clear-after-N), not silently leave the stale value in the port.
+        wm.stubFor(get(urlPathEqualTo(LIVE)).willReturn(okJson("{\"data\":[]}")));
+
+        client.poll();
+        client.poll();
+        verify(consumptionSource, never()).clear();
+        verify(consumptionSource, never()).publish(any());   // never a bogus reading
+
+        client.poll();                                        // third empty response
+        verify(consumptionSource, times(1)).clear();
+    }
 }
