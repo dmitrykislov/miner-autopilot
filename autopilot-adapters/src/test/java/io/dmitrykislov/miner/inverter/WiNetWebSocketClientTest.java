@@ -9,6 +9,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WiNetWebSocketClientTest {
@@ -71,6 +72,37 @@ class WiNetWebSocketClientTest {
         assertThat(real.isDone()).isFalse(); // still waiting, nothing spuriously completed
     }
 
+    // ---- stale-session isolation ------------------------------------------------------------
+    // sendClose() only STARTS a close handshake, so after a reconnect the old socket's reader thread
+    // can still deliver frames, and its listener shares this client's `pending` map.
+
+    @Test
+    void aFrameFromASupersededSessionCannotCompleteANewRequest() throws Exception {
+        var client = newClient();
+        int oldSession = client.nextSession();   // the socket that is about to be replaced
+        client.nextSession();                    // reconnect → this is the live session now
+        CompletableFuture<JsonNode> real = client.awaitService("real");
+
+        // A late 'real' response arrives on the DEAD socket, carrying a stale solar reading.
+        client.handleMessage("{\"result_code\":1,\"result_data\":{\"service\":\"real\",\"stale\":true}}", oldSession);
+
+        assertThat(real.isDone())
+                .as("a stale frame must not satisfy the new session's request — it would publish "
+                        + "old inverter data as a live reading into the autopilot")
+                .isFalse();
+    }
+
+    @Test
+    void aFrameFromTheCurrentSessionStillCompletesItsRequest() throws Exception {
+        var client = newClient();
+        int live = client.nextSession();
+        CompletableFuture<JsonNode> real = client.awaitService("real");
+
+        client.handleMessage("{\"result_code\":1,\"result_data\":{\"service\":\"real\"}}", live);
+
+        assertThat(real.get(1, TimeUnit.SECONDS).path("result_code").asInt()).isEqualTo(1);
+    }
+
     @Test
     void checkResultCodeThrowsOnSessionExpired() {
         JsonNode expired = JsonMapper.builder().build()
@@ -83,10 +115,16 @@ class WiNetWebSocketClientTest {
     @Test
     void checkResultCodePassesOnSuccessAndMissingCode() {
         var mapper = JsonMapper.builder().build();
-        // code 1 = success
-        WiNetWebSocketClient.checkResultCode(mapper.readTree("{\"result_code\":1}"), "real");
-        // missing code defaults to success (1)
-        WiNetWebSocketClient.checkResultCode(mapper.readTree("{}"), "real");
+        // Assert explicitly that these do NOT throw. Previously this test called the method twice with
+        // no assertion at all, so it passed whatever the method did short of throwing.
+        assertThatNoException().isThrownBy(() ->
+                WiNetWebSocketClient.checkResultCode(mapper.readTree("{\"result_code\":1}"), "real"));
+        assertThatNoException().isThrownBy(() ->            // missing code defaults to success (1)
+                WiNetWebSocketClient.checkResultCode(mapper.readTree("{}"), "real"));
+        // A non-success, non-expiry code is currently tolerated too — pinning that so a future change
+        // to stricter checking is a deliberate decision rather than a surprise.
+        assertThatNoException().isThrownBy(() ->
+                WiNetWebSocketClient.checkResultCode(mapper.readTree("{\"result_code\":215}"), "real"));
     }
 
     @Test

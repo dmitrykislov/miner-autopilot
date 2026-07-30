@@ -67,12 +67,20 @@ public class WiNetWebSocketClient {
     private final ObjectMapper mapper = JsonMapper.builder().build();
     private final HttpClient httpClient;
 
+    /** Guard against a single peer growing the frame buffer without limit via endless continuations. */
+    private static final int MAX_FRAME_CHARS = 1_000_000;
+
     /** service name -> future awaiting that service's next response */
     private final Map<String, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
-    private final StringBuilder inbound = new StringBuilder();
 
     private volatile WebSocket webSocket;
     private volatile String token = "";
+
+    /**
+     * Transport session counter, bumped on every (re)connect. Frames delivered by a previous
+     * session's listener are ignored — see {@link #handleMessage(String, int)}.
+     */
+    private volatile int session;
 
     public WiNetWebSocketClient(HouseProperties house) {
         this.props = house.inverter();
@@ -101,13 +109,15 @@ public class WiNetWebSocketClient {
     public synchronized void connectAndLogin() throws Exception {
         closeQuietly();
         pending.clear();
-        inbound.setLength(0);
         token = "";
+        // Bump the session BEFORE building the new socket, so the outgoing listener is already
+        // superseded and anything it still delivers is ignored.
+        int mySession = nextSession();
 
         log.info("Connecting to WiNet-S at {}", props.wsUri());
         this.webSocket = httpClient.newWebSocketBuilder()
                 .connectTimeout(CONNECT_TIMEOUT)
-                .buildAsync(URI.create(props.wsUri()), new Listener())
+                .buildAsync(URI.create(props.wsUri()), new Listener(mySession))
                 .get(CONNECT_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
 
         JsonNode connect = call("connect", null);
@@ -211,8 +221,33 @@ public class WiNetWebSocketClient {
         return future;
     }
 
-    /** Parses one complete text frame and completes the matching pending request. */
+    /**
+     * Start a new transport session and return its id. Frames arriving from any earlier session are
+     * ignored from this point on. Package-private so tests can simulate a reconnect.
+     */
+    synchronized int nextSession() {
+        return ++session;
+    }
+
+    /** Parses one complete text frame and completes the matching pending request (current session). */
     void handleMessage(String message) {
+        handleMessage(message, session);
+    }
+
+    /**
+     * As {@link #handleMessage(String)}, but attributed to the session that received the frame.
+     *
+     * <p>A frame from a superseded session is discarded. {@code sendClose} only *starts* a close
+     * handshake, so after a reconnect the old socket's reader thread can still deliver frames, and its
+     * listener shares this object's {@code pending} map. Without this guard a late {@code real}
+     * response from the dead socket could satisfy the new session's request — publishing stale inverter
+     * data as a live reading, straight into the autopilot's surplus calculation.
+     */
+    void handleMessage(String message, int session) {
+        if (session != this.session) {
+            log.debug("Ignoring frame from superseded WiNet session {} (current {})", session, this.session);
+            return;
+        }
         JsonNode root;
         try {
             root = mapper.readTree(message);
@@ -227,11 +262,27 @@ public class WiNetWebSocketClient {
         if (future != null) future.complete(root);
     }
 
+    /**
+     * Release the current socket and fail anything waiting on it.
+     *
+     * <p>{@code sendClose} is only a courtesy: it starts a close handshake and the connection is not
+     * released until the peer answers with its own close frame. A hung dongle — the very reason we are
+     * usually reconnecting — never answers, so relying on it alone leaked a TLS connection per
+     * reconnect attempt. {@code abort()} closes the channel immediately, so the socket is gone whether
+     * or not the peer cooperates. Sending the close frame first is still worth doing for a healthy
+     * peer; aborting straight after may cut it short, which is an acceptable trade for a guaranteed
+     * release.
+     */
     private void closeQuietly() {
         WebSocket ws = this.webSocket;
         if (ws != null) {
             try {
                 ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye");
+            } catch (Exception ignore) {
+                // best effort
+            }
+            try {
+                ws.abort(); // force-release the TCP/TLS connection; safe to call after sendClose
             } catch (Exception ignore) {
                 // best effort
             }
@@ -241,7 +292,21 @@ public class WiNetWebSocketClient {
         pending.clear();
     }
 
+    /**
+     * Per-socket listener. Each one owns its <b>own</b> frame buffer and remembers which session it
+     * belongs to, so a superseded socket that is still delivering frames cannot corrupt the live
+     * session's frame assembly or complete its requests.
+     */
     private final class Listener implements WebSocket.Listener {
+
+        private final int mySession;
+        /** Assembles a multi-frame message. Per-listener, so two sockets can never interleave text. */
+        private final StringBuilder inbound = new StringBuilder();
+
+        Listener(int mySession) {
+            this.mySession = mySession;
+        }
+
         @Override
         public void onOpen(WebSocket ws) {
             ws.request(Long.MAX_VALUE); // unlimited demand: always deliver frames
@@ -249,12 +314,19 @@ public class WiNetWebSocketClient {
 
         @Override
         public CompletableFuture<?> onText(WebSocket ws, CharSequence data, boolean last) {
+            if (mySession != session) return null; // superseded socket — ignore whatever it sends
+            if (inbound.length() + data.length() > MAX_FRAME_CHARS) {
+                // A peer sending endless continuation frames would otherwise grow this without limit.
+                log.warn("Discarding oversized WiNet frame (> {} chars)", MAX_FRAME_CHARS);
+                inbound.setLength(0);
+                return null;
+            }
             inbound.append(data);
             if (last) {
                 String full = inbound.toString();
                 inbound.setLength(0);
                 try {
-                    handleMessage(full);
+                    handleMessage(full, mySession);
                 } catch (Exception e) {
                     log.warn("Error handling frame", e);
                 }
@@ -264,6 +336,12 @@ public class WiNetWebSocketClient {
 
         @Override
         public void onError(WebSocket ws, Throwable error) {
+            // Without the session guard, a dead socket's error would fail the NEW session's in-flight
+            // requests and clear its pending map.
+            if (mySession != session) {
+                log.debug("Ignoring error from superseded WiNet session: {}", error.toString());
+                return;
+            }
             log.warn("WebSocket error: {}", error.toString());
             pending.values().forEach(f -> f.completeExceptionally(error));
             pending.clear();
