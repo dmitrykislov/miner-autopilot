@@ -39,6 +39,13 @@ class LogTimeTest {
                 .isEqualTo("2026-01-15T16:00:00.000+11:00");
     }
 
+    @Test void theProductionEntryPointUsesTheMachineZoneNotUtc() {
+        // Without this, LogTime.of(Instant) could be changed to render UTC and every other test here
+        // would still pass — reintroducing the exact mismatch the class exists to prevent.
+        Instant at = Instant.parse("2026-07-30T05:16:08.193Z");
+        assertThat(LogTime.of(at)).isEqualTo(LogTime.of(at, ZoneId.systemDefault()));
+    }
+
     @Test void nullIsReportedRatherThanCrashing() {
         assertThat(LogTime.of(null)).isEqualTo("unknown");
     }

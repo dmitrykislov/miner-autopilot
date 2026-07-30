@@ -37,13 +37,21 @@ class SolarAnalyticsClientTest {
     @Test
     void theGlobalKillSwitchWouldOtherwiseDisableThatCheck() {
         // Pins WHY the explicit setting is needed: a default-built client inherits the global flag, so
-        // it ends up with no endpoint identification at all. If this ever stops being true, the
-        // override above is redundant rather than load-bearing — worth knowing either way.
-        System.setProperty("jdk.internal.httpclient.disableHostnameVerification", "true");
-        assertThat(java.net.http.HttpClient.newHttpClient().sslParameters()
-                .getEndpointIdentificationAlgorithm())
-                .as("a default client inherits the global disable — hence the explicit override")
-                .isNotEqualTo("HTTPS");
+        // it ends up with NO endpoint identification at all. Assert null specifically — isNotEqualTo
+        // ("HTTPS") also passes when the property had no effect, so it proved nothing.
+        final String key = "jdk.internal.httpclient.disableHostnameVerification";
+        String previous = System.getProperty(key);
+        try {
+            System.setProperty(key, "true");
+            assertThat(java.net.http.HttpClient.newHttpClient().sslParameters()
+                    .getEndpointIdentificationAlgorithm())
+                    .as("a default client inherits the global disable — hence the explicit override")
+                    .isNull();
+        } finally {
+            // Restore it. Leaving it set leaked hostname-verification-off into every later test in this
+            // module — the exact setting the test above exists to guard.
+            if (previous == null) System.clearProperty(key); else System.setProperty(key, previous);
+        }
     }
 
 

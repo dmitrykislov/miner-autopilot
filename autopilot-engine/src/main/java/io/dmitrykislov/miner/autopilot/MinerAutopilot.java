@@ -62,11 +62,17 @@ public class MinerAutopilot {
     /** Previous decision with numbers masked, so a repeated hold whose watt figures drift stays quiet. */
     private String lastDecisionKey;
 
-    /** A start command we issued but have not yet seen take effect. */
-    private record PendingStart(int targetW, String reason, int ticksWaited) {}
+    /**
+     * A start command we issued but have not yet seen take effect. {@code ticksSinceIssue} paces the
+     * retry; {@code attempts} bounds it. They are separate because re-issuing must not reset the cap —
+     * with one counter, every retry zeroed it and the give-up path could never be reached.
+     */
+    private record PendingStart(int targetW, String reason, int ticksSinceIssue, int attempts) {}
     private volatile PendingStart pendingStart;
-    /** Ticks to keep waiting for a start to show up before giving up on confirming it. */
-    private static final int MAX_START_CONFIRM_TICKS = 10;
+    /** Wait this many ticks before re-issuing an unconfirmed start (~90 s), instead of every tick. */
+    private static final int START_RETRY_TICKS = 3;
+    /** Total start attempts before giving up on confirming one (~5 min at the retry pacing above). */
+    private static final int MAX_START_ATTEMPTS = 4;
     // When the miner began continuously mining (null when not mining). Drives the governor's
     // "mined long enough for a valid up-average" guard; seeded from the miner's uptime on the FIRST
     // observation (so a long-running miner can ramp soon after a restart), but reset to
@@ -303,14 +309,25 @@ public class MinerAutopilot {
             log.info("autopilot: miner already running — skipping start");
             return;
         }
+        // A pending start leaves lastChangeAt alone, so the governor keeps deciding START every tick.
+        // Without this the commands would be re-sent every 30 s at a miner that is most likely still
+        // booting; pace the retry instead.
+        PendingStart p = pendingStart;
+        if (p != null && p.ticksSinceIssue() < START_RETRY_TICKS) {
+            log.debug("autopilot: start already issued, awaiting confirmation ({} ticks, attempt {})",
+                    p.ticksSinceIssue(), p.attempts());
+            return;
+        }
+        int attempts = p != null ? p.attempts() : 0;
         minerService.setPowerTarget(target, true); // aim for the floor power target
         MinerStatus after = minerService.start();
-        if (isUp(after)) {
+        if (confirms(after)) {
             enforceTargetAndRecord(after, target, reason);
             return;
         }
-        pendingStart = new PendingStart(target, reason, 0);
-        log.info("autopilot: start issued but the miner is not up yet — will confirm on a later tick");
+        pendingStart = new PendingStart(target, reason, 0, attempts + 1);
+        log.info("autopilot: start issued but the miner is not mining yet — will confirm on a later tick "
+                + "(attempt {} of {})", attempts + 1, MAX_START_ATTEMPTS);
     }
 
     /** True when the miner is genuinely up: reachable AND its service running. */
@@ -319,43 +336,56 @@ public class MinerAutopilot {
     }
 
     /**
-     * Once a pending start is seen running, enforce the target we asked for and record the change.
+     * True when the miner is not merely up but actually <b>mining</b> — the only state that confirms a
+     * start. {@code running} alone is too weak: a Braiins miner with dead pools reports running and
+     * {@code SUSPENDED} while drawing ~0 W. The governor refuses to act on that state, and so must
+     * confirmation, or it would record a START and push a power target at a rig that isn't hashing.
+     */
+    private static boolean confirms(MinerStatus st) {
+        return isUp(st) && MinerStatus.MINING.equals(st.state());
+    }
+
+    /**
+     * A confirmed start: bring the miner to the target we asked for, then record <b>what it actually
+     * reports</b>.
      *
-     * <p>Enforcing matters because a miner that boots on its own comes up at <b>whatever target it had
-     * before it stopped</b>, not the floor. In production a miner restarted at 2000 W (left from an
-     * earlier step-down) while the autopilot believed it had started at 1200 W. With a healthy surplus
-     * that was harmless, but the same sequence at a marginal surplus imports: the over-draw sits under
-     * {@code emergencyGapW}, so the routine down-step is throttled and it persists for up to one
-     * {@code downInterval}. Re-applying the floor costs a slower climb back, which the ramp-up path
-     * exists to handle, and that is the right trade against silently drawing more than intended.
+     * <p>Recording the requested value regardless was the original bug in a new disguise. A miner that
+     * boots on its own comes back at whatever target it had before it stopped — 2000 W in the incident
+     * that prompted this — so the floor is re-applied. But that re-apply can fail too, and claiming the
+     * floor anyway would put a number in history that the hardware never ran at. So the recorded value
+     * is read back from the miner: the correction is best-effort, the record is honest either way.
      */
     private void enforceTargetAndRecord(MinerStatus st, int target, String reason) {
         Integer actual = st != null ? st.powerTargetW() : null;
         if (actual != null && actual != target) {
             log.info("autopilot: miner came up at {}W, not the requested {}W — re-applying", actual, target);
-            minerService.setPowerTarget(target, true);
+            MinerStatus after = minerService.setPowerTarget(target, true);
+            // Trust the read-back, not the request. An unreachable/failed correction leaves the miner
+            // where it was, and that is what history must show.
+            if (after != null && after.reachable() && after.powerTargetW() != null) {
+                actual = after.powerTargetW();
+            }
         }
-        recordChange("START", null, target, reason);
+        recordChange("START", null, actual != null ? actual : target, reason);
     }
 
     /**
      * Resolve a start we commanded but could not confirm at the time. Called once per tick with the
-     * live status. Abandoned after {@link #MAX_START_CONFIRM_TICKS} so a start that never lands cannot
-     * leave the autopilot waiting forever; the governor is free to decide START again in the meantime.
+     * live status, and only when this tick is not about to stop the miner.
      */
     private void confirmPendingStart(MinerStatus st) {
         PendingStart p = pendingStart;
         if (p == null) return;
-        if (isUp(st)) {
+        if (confirms(st)) {
             pendingStart = null;
             enforceTargetAndRecord(st, p.targetW(), p.reason());
             return;
         }
-        if (p.ticksWaited() + 1 >= MAX_START_CONFIRM_TICKS) {
-            discardPendingStart("never confirmed after " + MAX_START_CONFIRM_TICKS + " ticks");
+        if (p.attempts() >= MAX_START_ATTEMPTS && p.ticksSinceIssue() + 1 >= START_RETRY_TICKS) {
+            discardPendingStart("not confirmed after " + p.attempts() + " attempts");
             return;
         }
-        pendingStart = new PendingStart(p.targetW(), p.reason(), p.ticksWaited() + 1);
+        pendingStart = new PendingStart(p.targetW(), p.reason(), p.ticksSinceIssue() + 1, p.attempts());
     }
 
     /** Forget a pending start we are no longer waiting on, saying why. */

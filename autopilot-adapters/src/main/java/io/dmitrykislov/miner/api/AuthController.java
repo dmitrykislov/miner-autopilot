@@ -101,19 +101,42 @@ public class AuthController {
         return ResponseEntity.ok(new TicketResponse(auth.issueSseTicket()));
     }
 
+    /** Cheap sanity check: only accept something that looks like an IPv4/IPv6 literal. */
+    private static boolean isIpLiteral(String s) {
+        if (s.isEmpty() || s.length() > 45) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            boolean ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+                    || c == '.' || c == ':';
+            if (!ok) return false;
+        }
+        return true;
+    }
+
     /**
-     * The client IP the rate limiter keys on: the socket address, or the first
+     * The client IP the rate limiter keys on: the socket address, or the <b>last</b>
      * {@code X-Forwarded-For} hop when {@code auth.trust-forwarded-for} is enabled.
      *
-     * <p>That header is honoured only when explicitly enabled, because any client can send it. On a
-     * directly-reachable box, trusting it unconditionally lets an attacker rotate the value to get a
-     * fresh budget every request — defeating the limiter entirely — and forge a real user's address
-     * to lock them out. Enable it only behind a proxy that overwrites the header.
+     * <p>The header is honoured only when explicitly enabled, because any client can send it. On a
+     * directly-reachable box, trusting it lets an attacker rotate the value for a fresh budget every
+     * request — defeating the limiter entirely — and forge a real user's address to lock them out.
+     * Enable it only when a proxy you control sits in front.
      */
     private String clientIp(ServerWebExchange exchange) {
         if (cfg.trustForwardedFor()) {
             String xff = exchange.getRequest().getHeaders().getFirst("X-Forwarded-For");
-            if (xff != null && !xff.isBlank()) return xff.split(",")[0].trim();
+            if (xff != null && !xff.isBlank()) {
+                // The LAST hop, not the first. Caddy and nginx (`$proxy_add_x_forwarded_for`) both
+                // APPEND the peer they saw, so the header arrives as "<whatever the client sent>,
+                // <real client IP>". Reading element [0] would therefore trust a value the attacker
+                // chose — a fresh rate-limit budget on every request, and a way to pin a victim's
+                // address. The last element is the one our own proxy added.
+                String[] hops = xff.split(",");
+                String candidate = hops[hops.length - 1].trim();
+                // Ignore anything that isn't an address; an 8 KB junk header would otherwise become an
+                // attacker-sized key in the limiter's map.
+                if (isIpLiteral(candidate)) return candidate;
+            }
         }
         InetSocketAddress remote = exchange.getRequest().getRemoteAddress();
         return remote != null && remote.getAddress() != null ? remote.getAddress().getHostAddress() : "unknown";

@@ -101,37 +101,39 @@ class LatestBroadcasterTest {
         StepVerifier.create(b.stream()).expectNext("nobody-listening").thenCancel().verify(Duration.ofSeconds(5));
     }
 
-    @Test void concurrentPublishersDoNotLoseTheLatestValue() throws Exception {
-        // publish() is synchronized because directBestEffort requires serialized emitNext: the miner's
-        // scheduled poll and a user start/stop command publish from different threads. Without it,
-        // emissions fail with FAIL_NON_SERIALIZED. Assert the final state is one of the published
-        // values and that nothing throws under contention.
+    @Test void concurrentPublishersDoNotDropEmissionsToASubscriber() throws Exception {
+        // publish() is synchronized because directBestEffort REQUIRES serialized emitNext: concurrent
+        // callers otherwise get FAIL_NON_SERIALIZED, which tryEmitNext returns rather than throwing —
+        // so a dropped emission is silent. Assert it via a subscriber's receive count, which is the
+        // only place the failure is observable. (The previous version of this test asserted a value
+        // range that every outcome satisfied, so removing `synchronized` broke nothing.)
         var b = new LatestBroadcaster<Integer>();
-        int threads = 8, perThread = 200;
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
-        var errors = new CopyOnWriteArrayList<Throwable>();
+        int threads = 8, perThread = 100, expected = threads * perThread;
+        var received = new java.util.concurrent.atomic.AtomicInteger();
+        var done = new CountDownLatch(expected);
+        b.stream().subscribe(v -> { received.incrementAndGet(); done.countDown(); });
+
         var start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
         try {
-            List<Integer> ids = IntStream.range(0, threads).boxed().toList();
-            for (int t : ids) {
+            for (int t = 0; t < threads; t++) {
                 pool.submit(() -> {
                     try {
                         start.await();
-                        for (int i = 0; i < perThread; i++) b.publish(t * perThread + i);
-                    } catch (Throwable e) {
-                        errors.add(e);
+                        for (int i = 0; i < perThread; i++) b.publish(i);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     }
                 });
             }
             start.countDown();
-            pool.shutdown();
-            assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(done.await(10, TimeUnit.SECONDS))
+                    .as("every publish must reach the subscriber; a non-serialized emit is silently dropped")
+                    .isTrue();
         } finally {
             pool.shutdownNow();
         }
-        assertThat(errors).isEmpty();
-        assertThat(b.latest()).isNotNull();
-        assertThat(b.latest()).isBetween(0, threads * perThread);
+        assertThat(received.get()).isEqualTo(expected);
     }
 
     @Test void aSlowSubscriberDoesNotStallOrBacklogTheOthers() {

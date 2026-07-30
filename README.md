@@ -204,7 +204,7 @@ The built-in adapters (Sungrow inverter, Solar Analytics, Braiins) are just the 
 |---|---|---|
 | **Solar source** | `INVERTER_ENABLED=false` | a `@Component` that calls `SolarSource.publish(reading)` (and `clear()` on an outage) |
 | **Consumption source** | `SOLARANALYTICS_ENABLED=false` | a `@Component` that feeds `ConsumptionSource` the same way |
-| **Miner** | `MINER_DRIVER=<anything but `braiins`>` | a `@Bean` implementing `MinerDriver`, publishing status to `MinerStatusSource` |
+| **Miner** | set `MINER_DRIVER` to anything other than `braiins` | a `@Bean` implementing `MinerDriver`, publishing status to `MinerStatusSource` |
 
 Your adapter can obtain data however it likes — poll on a timer, subscribe to a `Flux`, react to a WebSocket — it just pushes readings into the port. Emit a reading only when you have a genuine live value, and call `clear()` when you don't, so the engine treats the surplus as unknown (and safely stops the miner) rather than acting on stale data.
 
@@ -258,10 +258,13 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 | Variable | Default | Notes |
 |---|---|---|
 | `SERVER_PORT` | `8080` | Backend + bundled UI (`.env.example` ships `8899`) |
+| `SERVER_ADDRESS` | _(all interfaces)_ | set `127.0.0.1` when a reverse proxy fronts the app, so the origin can't be reached directly |
+| `NETTY_CONNECTION_TIMEOUT` | `20s` | how long a connection may take to send a request before it's dropped |
+| `NETTY_IDLE_TIMEOUT` | `75s` | idle connections are closed. Keep it above the 20 s SSE heartbeat, or live streams die |
 | `FRONTEND_PORT` | `5173` | Vite dev-server port — used by `./start.sh --dev` only (a shell var, not an app setting) |
 | `LOG_LEVEL` | `INFO` | App log level. Timestamps in log messages use the machine's local time with an explicit offset, matching each line's own prefix — the JSON API and the history files stay on UTC, which the browser localises |
 | `SCHEDULING_POOL_SIZE` | `6` | One thread per scheduled job so none blocks the others |
-| `JAVA_OPTS` | _(blank)_ | Extra JVM flags. On a small Pi use the footprint caps in `.env.example` (`-Xmx128m` + SerialGC + …) → ~140 MB RSS |
+| `JAVA_OPTS` | _(blank)_ | Extra JVM flags. On a small Pi use the footprint caps in `.env.example` (`-Xmx128m` + SerialGC + …) → ~148 MB RSS |
 | **Inverter** (Sungrow SG10RS / WiNet-S) | | |
 | `INVERTER_HOST` | — | dongle LAN IP (required) |
 | `INVERTER_PORT` | `443` | |
@@ -319,7 +322,7 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 | `MINER_DRIVER` | `braiins` | which `MinerDriver` to use; anything else disables the built-in one so you can supply your own |
 | `INGEST_ENABLED` | `false` | expose `POST /api/ingest/**` so an external source can push readings |
 
-**Two settings will stop the app from booting if they contradict each other** (deliberately — both would otherwise cause silent misbehaviour):
+**Some settings will stop the app from booting if they contradict each other** (deliberately — the alternative is silent misbehaviour). The full set is enforced in `HouseProperties` and `AutopilotGovernor.Config`; the two you're most likely to hit:
 
 - `AUTOPILOT_ENABLED=true` currently requires `SOLARANALYTICS_ENABLED=true`. The check is on that flag, not on whether *some* consumption source exists, so a custom `ConsumptionSource` does **not** satisfy it — the app refuses to boot. If you feed consumption yourself, leave Solar Analytics enabled without credentials, or drive the miner manually.
 - `SOLARANALYTICS_MIN_SOLAR_W` must be **below** both `AUTOPILOT_START_SURPLUS_W` and `AUTOPILOT_FLOOR_W + AUTOPILOT_HEADROOM_W`. Otherwise the app would stop asking for house data at exactly the light levels where the autopilot needs it. Worth knowing if you retune the ladder.
@@ -380,7 +383,7 @@ If the password hash is ever missing, the app refuses *every* request instead of
 
 ### Is it safe to put on the internet?
 
-**Yes — with one setup step: put it behind a real HTTPS certificate.** Everything else it needs is already built in.
+**Yes, with four changes** — a real HTTPS certificate in front, the app bound to localhost so nobody can skip the proxy, `AUTH_TRUST_FORWARDED_FOR=true` so the rate limiter sees real client IPs, and a shorter `AUTH_TOKEN_TTL_DAYS`. Each is one line, and all four are covered below. Everything else it needs is already built in.
 
 Out of the box:
 
@@ -399,11 +402,11 @@ Out of the box:
 
 **The one thing to change for public use:** the built-in HTTPS uses a *self-signed* certificate, which browsers don't trust and you'd have to renew by hand. Put a small reverse proxy like **[Caddy](https://caddyserver.com)** in front (a ~5-line config) for a real, auto-renewing Let's Encrypt certificate. Never expose it over plain HTTP — the password would cross in cleartext.
 
-If you do put a proxy in front, set `AUTH_TRUST_FORWARDED_FOR=true` so the rate limiter sees each visitor's real address instead of the proxy's. Only do this when the proxy overwrites the header; on a directly-reachable box it would hand attackers a way around the limit.
+If you do put a proxy in front, set `AUTH_TRUST_FORWARDED_FOR=true` so the rate limiter sees each visitor's real address instead of the proxy's. The app reads the **last** hop in `X-Forwarded-For`, which is the one your proxy appended — Caddy and nginx both append rather than replace, so the earlier entries are whatever the client sent and can't be trusted. Leave this off on a directly-reachable box, where the whole header is attacker-controlled.
 
 **Two things to know before exposing it, both about the token.** It is signed with a key derived from your password hash, so anyone who can read `AUTH_PASSWORD_HASH` (the `.env` file, `/proc/<pid>/environ`) can mint tokens — keep `.env` readable only by the account that runs the app. And a token **cannot be revoked before it expires**; logging out only discards the browser's copy. On a public box shorten `AUTH_TOKEN_TTL_DAYS` to 1-7, keep `AUTH_LOGIN_MAX_PER_MINUTE` small, and use a long random password. Changing the password invalidates every existing token, which is the recovery path if one leaks.
 
-**If you put a proxy in front, also bind the app to localhost** (or firewall `SERVER_PORT`). Otherwise the origin stays directly reachable and anything the proxy enforces — its own rate limiting, for instance — can be bypassed by going straight to the app.
+**If you put a proxy in front, also bind the app to localhost**: set `SERVER_ADDRESS=127.0.0.1` (or firewall `SERVER_PORT`). Otherwise the origin stays directly reachable and anything the proxy enforces — its own rate limiting, for instance — can be bypassed by going straight to the app. This matters more than it sounds: the app itself has no cap on how many connections or TLS handshakes a stranger may open, and a 416 MB Pi shouldn't be the outermost thing on a public IP.
 
 On your home LAN the shipped defaults are fine as they are.
 
@@ -444,7 +447,7 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 **The three pieces** (all pure, clock-injected, no I/O):
 
 - **`RollingWindow`** — a time-bounded rolling **mean**. It degrades gracefully across missed polls (a plain mean won't carry a stale pre-gap value forward the way a step-hold would), and reports *empty* when data is stale or too sparse.
-- **`EnergyAverages`** — keeps solar, house and miner-draw windows and exposes the spare-solar average over a **short (3 min)** and **long (15 min)** window, plus a freshness flag. `EnergySampler` feeds it from each inverter snapshot.
+- **`EnergyAverages`** — keeps solar, house and miner-draw windows and exposes the spare-solar average over a **short (3 min)** and **long (15 min)** window, plus a freshness flag. `EnergySampler` feeds it from the solar and consumption **ports**, so it works with any source, not just the Sungrow adapter (it only borrows the inverter poll interval as its cadence).
 - **`AutopilotGovernor`** — the ladder controller. Deliberately **asymmetric**: ramps **up** slowly (long window, 15-min dampening, ≤ 2 notches/move) only on well-established surplus; steps **down / stops** fast (short window, uncapped, with an emergency bypass) to protect against import.
 
 **Decision model** (surplus `S`; target = highest notch ≤ `S − headroom`):
@@ -463,23 +466,22 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 - **Survives restarts** — on boot it **replays the last 15 min of stored telemetry** into the averaging windows (so it isn't blind for a whole window) and **restores its last change** from history (so cooldowns/dampening carry across a reboot).
 - **Leaves a `SUSPENDED` miner alone** (dead pools → ~0 W draw, nothing to protect against).
 - **Respects the hard [min, max]** on every change.
-- **Only confirmed changes count** — a command is recorded only once the miner reports it took effect, so the history and the UI never show a change that failed. See below.
+- **Starts and power steps are only recorded once confirmed** — so the history and the UI don't show a change that failed. (A stop is still recorded on issue; see below for why.)
 - **Safe-by-construction config** — the Governor validates its settings at boot and refuses to start on anything that would break an invariant (e.g. start-surplus must exceed the floor for hysteresis; up-interval ≥ long-window so a change can't contaminate the average driving the next one).
 
 **Runtime control:** `AUTOPILOT_ENABLED` sets the *boot* state; after that the UI's Autopilot card (or `POST /api/autopilot/enable|disable`) toggles it live.
 
 ### Only confirmed changes are recorded
 
-A power change is written to history — and shown on the dashboard — **only once the miner reports that it took effect**. That sounds like a detail; it isn't, because commands do fail:
+A **start** or a **power step** is written to history — and shown on the dashboard — only once the miner reports it took effect. Commands do fail, so this changes what the dashboard means:
 
 - A stopped Braiins miner reports itself unreachable, and so does one that is still booting. At the moment a start command is issued, "the miner didn't get it" and "it got it and is coming up" look identical.
 - So a start that can't be confirmed is held as **pending**, not recorded. Each following tick checks whether the miner has appeared; when it has, the change is recorded then. If it never appears, the pending start is dropped after ten ticks (~5 minutes), and turning the autopilot off drops it immediately.
-- A power **step** is recorded only if the miner reads back the target it was given. If it still reports the old one, the command didn't apply, so nothing is recorded and a warning is logged.
+- A power **step** is recorded unless the miner contradicts it: if the read-back is reachable and reports a *different* target, the command didn't apply, so nothing is recorded and a warning is logged. An unreachable read-back is inconclusive rather than a failure, so it still records — the miner was reachable moments earlier.
 
-Two things follow, both of which used to be wrong:
+**Two consequences:** the dashboard doesn't show a start or step that didn't land, and an unlanded command leaves the dampening intervals untouched, so it is retried (paced, roughly every 90 s) rather than blocked by a cooldown it never earned.
 
-1. **The dashboard never claims a change that didn't happen.** Previously a start whose commands both failed with "No route to host" was still recorded as "START off → 1200 W", while the miner sat off — and later powered up on its own at a different target.
-2. **A failed command is retried promptly.** The dampening intervals are measured from the last change, so recording a phantom one used to consume the restart cooldown: one observed failure blocked retries for six minutes while the surplus climbed. Now an unlanded command leaves the cooldown untouched.
+**A stop is the exception, deliberately.** A failed stop and a successful one look the same from the outside — both leave the miner's API unreachable — so there is no read-back that could confirm it. Stopping is also the safety action and isn't rate-limited by the cooldown, so if the first attempt didn't land the next tick simply stops it again. The cost is that a failed stop can leave a stop in history that didn't take effect.
 
 A start also **re-applies the power target once the miner is up**. A miner that boots on its own comes back at whatever target it had before it stopped, which can be well above the floor the autopilot asked for. Forcing it back to the floor costs a slower climb (the ramp-up path handles that) and avoids silently drawing more than intended.
 
@@ -508,11 +510,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 403 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
-mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 167)
+mvn clean install               # everything: 410 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 171)
 ```
 
-Backend tests live **with their module** — `autopilot-core` 15 · `autopilot-engine` 167 · `autopilot-adapters` 178 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
+Backend tests live **with their module** — `autopilot-core` 16 · `autopilot-engine` 171 · `autopilot-adapters` 180 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
 
 What's covered:
 

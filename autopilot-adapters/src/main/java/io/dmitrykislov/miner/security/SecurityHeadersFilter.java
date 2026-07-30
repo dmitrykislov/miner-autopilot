@@ -33,8 +33,8 @@ public class SecurityHeadersFilter implements WebFilter, Ordered {
     private static final String CSP = String.join("; ",
             "default-src 'self'",
             "script-src 'self'",
-            "style-src 'self' 'unsafe-inline'",   // the dashboard sets inline styles for the flow animation
-            "img-src 'self' data:",
+            "style-src 'self'",
+            "img-src 'self'",
             "connect-src 'self'",                 // fetch + EventSource
             "font-src 'self'",
             "object-src 'none'",

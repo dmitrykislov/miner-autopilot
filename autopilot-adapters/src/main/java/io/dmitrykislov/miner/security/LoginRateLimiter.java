@@ -7,11 +7,12 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * A small brute-force guard for the login endpoint: at most {@code auth.login-max-per-minute}
- * <b>failed</b> logins per client IP within a fixed one-minute window; beyond that the endpoint
- * refuses attempts (HTTP 429) until the window rolls. Only failures count — a successful login
- * resets that IP — so normal users are never throttled, but guessing is capped and expensive
- * bcrypt work is skipped once the limit is hit.
+ * A small brute-force guard for the login endpoint: at most {@code auth.login-max-per-minute} login
+ * <b>attempts</b> per client IP within a fixed one-minute window; beyond that the endpoint refuses
+ * them (HTTP 429) until the window rolls. Attempts are counted <b>before</b> the password is checked,
+ * which is what makes the limit hold under concurrency, and a successful login refunds the budget so
+ * ordinary use does not accumulate against it. A user can still be throttled — five wrong passwords
+ * in a minute is five, however they were spent.
  *
  * <p>State is a tiny in-memory map (single instance / one Pi). A crude size cap prevents unbounded
  * growth if an attacker rotates IPs. A limit of {@code ≤ 0} disables the guard entirely.
@@ -48,11 +49,24 @@ public class LoginRateLimiter {
      */
     public boolean tryAcquire(String ip, long nowMs) {
         if (maxPerMinute <= 0) return true; // disabled
-        if (byIp.size() > MAX_TRACKED_IPS) byIp.clear(); // guard against IP-rotation growth
+        if (byIp.size() > MAX_TRACKED_IPS) evictExpired(nowMs); // guard against IP-rotation growth
         Attempt updated = byIp.compute(ip, (k, a) -> (a == null || nowMs - a.windowStart() >= WINDOW_MS)
                 ? new Attempt(nowMs, 1)                            // new window
                 : new Attempt(a.windowStart(), a.failures() + 1));  // same window, one more attempt
         return updated.failures() <= maxPerMinute;
+    }
+
+    /**
+     * Drop entries whose window has already rolled, to bound the map without amnesty.
+     *
+     * <p>This used to be {@code byIp.clear()}, which wiped <b>every</b> IP's budget — so an attacker who
+     * sprayed enough distinct source addresses (trivial from a single IPv6 /64) reset their own lockout
+     * and everyone else's. Evicting only expired windows keeps live counters intact. If every entry is
+     * still live the map may briefly exceed the cap, which is the safe direction: bounded memory matters
+     * less than not handing out an amnesty on demand.
+     */
+    private void evictExpired(long nowMs) {
+        byIp.entrySet().removeIf(e -> nowMs - e.getValue().windowStart() >= WINDOW_MS);
     }
 
     /** A successful login clears the IP's failure budget. */

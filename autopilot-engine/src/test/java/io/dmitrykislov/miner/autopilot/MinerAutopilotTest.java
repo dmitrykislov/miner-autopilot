@@ -30,6 +30,9 @@ import static org.mockito.Mockito.*;
  */
 class MinerAutopilotTest {
 
+    /** Mirrors MinerAutopilot.START_RETRY_TICKS — how many ticks before an unconfirmed start retries. */
+    private static final int START_RETRY_TICKS = 3;
+
     private MinerDriver miner;
     private SolarSourceHub solarSource;
     private ConsumptionSourceHub consumptionSource;
@@ -313,17 +316,19 @@ class MinerAutopilotTest {
                 .isNull();
     }
 
-    @Test void aFailedStartDoesNotBurnTheRestartCooldown() {
+    @Test void aFailedStartRetriesWithoutWaitingForTheRestartCooldown() {
         when(miner.refresh()).thenReturn(status(true, false, null));
         stubFailingCommands("No route to host");
         liveFeed(3458, 0);
 
         var ap = autopilot(true);
-        ap.tick();                 // attempt 1 — fails
-        liveFeed(3500, 0);
-        ap.tick();                 // must try again rather than sit out the cooldown
+        ap.tick();                 // attempt 1 — fails, nothing recorded
+        for (int i = 0; i < START_RETRY_TICKS; i++) { liveFeed(3500, 0); ap.tick(); }
 
+        // The retry lands after ~3 ticks (90 s), not after the 5-minute restart cooldown that a
+        // wrongly-recorded change used to impose. Nothing is recorded, so the cooldown never starts.
         verify(miner, times(2)).start();
+        assertThat(ap.status().lastChange()).isNull();
     }
 
     @Test void aMinerThatComesUpAtAnOldHigherTargetIsBroughtBackToTheFloor() {
@@ -340,7 +345,11 @@ class MinerAutopilotTest {
         live.set(status(true, true, 2000));
         reset(miner);                               // count only what the confirming tick does
         when(miner.refresh()).thenAnswer(inv -> live.get());
-        when(miner.setPowerTarget(anyInt(), anyBoolean())).thenAnswer(inv -> live.get());
+        // The correction lands: the miner reads back the floor it was just given.
+        when(miner.setPowerTarget(anyInt(), anyBoolean())).thenAnswer(inv -> {
+            live.set(status(true, true, inv.getArgument(0)));
+            return live.get();
+        });
         liveFeed(3458, 2000);
         ap.tick();
 
@@ -350,6 +359,87 @@ class MinerAutopilotTest {
         assertThat(ap.status().lastChange().toPowerW())
                 .as("the recorded change must describe the floor the autopilot enforced")
                 .isEqualTo(1200);
+    }
+
+    @Test void whenTheFloorCannotBeReAppliedTheRecordShowsWhatTheMinerActuallyRuns() {
+        // The previous fix re-applied the floor on confirmation but recorded the floor regardless of
+        // whether that re-apply landed — reintroducing the phantom it was meant to remove. If the miner
+        // is up at 2000 W and the correction fails, history must say 2000 W, not 1200 W.
+        var live = new java.util.concurrent.atomic.AtomicReference<>(status(true, false, null));
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        stubFailingCommands("Connection refused");
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        ap.tick();                                        // start unconfirmable → pending
+
+        live.set(status(true, true, 2000));               // booted itself at the old target
+        reset(miner);
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        // The corrective setPowerTarget fails too (miner dropped off the network again).
+        when(miner.setPowerTarget(anyInt(), anyBoolean()))
+                .thenReturn(MinerStatus.offline(Instant.now(), "No route to host"));
+        liveFeed(3458, 2000);
+        ap.tick();
+
+        assertThat(ap.status().lastChange().toPowerW())
+                .as("record the target the miner reports, not the one we asked for")
+                .isEqualTo(2000);
+    }
+
+    @Test void aStartIsNotConfirmedWhileTheMinerIsOnlySuspended() {
+        // isUp() is reachable && running, but a Braiins miner with dead pools is "running" and
+        // SUSPENDED, drawing ~0 W. The governor refuses to act on that state, and confirmation must
+        // too — otherwise it records a START and sends a power command to a rig that isn't mining.
+        var live = new java.util.concurrent.atomic.AtomicReference<>(status(true, false, null));
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        stubFailingCommands("Connection refused");
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        ap.tick();                                        // pending
+
+        live.set(suspended(2000));                        // service up, but not mining
+        reset(miner);
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        liveFeed(3458, 0);
+        ap.tick();
+
+        assertThat(ap.status().lastChange())
+                .as("a suspended miner is not a confirmed start")
+                .isNull();
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
+    }
+
+    @Test void anUnconfirmableStartIsNotRetriedOnEverySingleTick() {
+        // Because a pending start deliberately leaves lastChangeAt alone, the governor keeps deciding
+        // START. Re-issuing the commands every 30 s tick hammers a miner that is most likely mid-boot;
+        // the retry should be paced instead.
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        stubFailingCommands("Connection refused");
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        ap.tick();                                        // attempt 1
+        ap.tick();                                        // should wait, not re-issue
+        ap.tick();
+
+        verify(miner, times(1)).start();
+    }
+
+    @Test void anUnconfirmableStartIsEventuallyAbandoned() {
+        // ticksWaited must survive the governor deciding START again, or the cap never fires and the
+        // pending start lives forever.
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        stubFailingCommands("Connection refused");
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        for (int i = 0; i < 12; i++) ap.tick();           // past MAX_START_CONFIRM_TICKS
+
+        // Nothing was ever confirmed, so nothing may be recorded — and the miner coming up later must
+        // not resurrect the abandoned attempt.
+        assertThat(ap.status().lastChange()).isNull();
     }
 
     @Test void disablingTheAutopilotDropsAnUnconfirmedStart() {

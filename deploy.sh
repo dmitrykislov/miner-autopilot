@@ -106,7 +106,10 @@ if [[ -f .env ]]; then set -a; . ./.env; set +a; else echo "  ⚠ no .env — us
 APP_PORT="${SERVER_PORT:-8080}"
 # When TLS is enabled the app serves HTTPS, so the health probe must use https and skip
 # cert verification (the self-signed cert isn't in the box's trust store). Otherwise http.
-if [[ "${TLS_ENABLED:-false}" == "true" ]]; then
+# Default TRUE to match the app and start.sh. Defaulting to false here meant a remote .env that
+# simply omits the variable would be probed over http:// while the app served https:// — the
+# health check then failed and rolled back a good build.
+if [[ "${TLS_ENABLED:-true}" == "true" ]]; then
   SCHEME="https"; CURL_K="-k"; WGET_K="--no-check-certificate"
 else
   SCHEME="http"; CURL_K=""; WGET_K=""

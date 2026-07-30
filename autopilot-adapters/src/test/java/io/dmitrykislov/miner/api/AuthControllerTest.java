@@ -116,6 +116,30 @@ class AuthControllerTest {
         assertThat(status(proxied, "nope", spoofing("5.5.5.2"))).isEqualTo(401); // a different hop is not
     }
 
+    @Test void behindAProxyTheLastForwardedHopIsUsedNotTheFirst() {
+        // Caddy and nginx APPEND the peer they saw, so the header arrives as
+        // "<client-supplied>, <real client IP>". Taking [0] would trust the attacker's value and hand
+        // out a fresh budget every request — which is what the README tells people to enable.
+        AuthController proxied = controllerWith(true);
+        // Same real client (appended last), attacker varying the part they control.
+        assertThat(status(proxied, "nope", spoofing("1.1.1.1, 8.8.8.8"))).isEqualTo(401);
+        assertThat(status(proxied, "nope", spoofing("2.2.2.2, 8.8.8.8"))).isEqualTo(401);
+        assertThat(status(proxied, "nope", spoofing("3.3.3.3, 8.8.8.8")))
+                .as("rotating the client-supplied hop must not escape the limit")
+                .isEqualTo(429);
+        // A different REAL client (different last hop) still has its own budget.
+        assertThat(status(proxied, "nope", spoofing("3.3.3.3, 9.9.9.1"))).isEqualTo(401);
+    }
+
+    @Test void aJunkForwardedForValueFallsBackToTheSocket() {
+        // An 8 KB junk header would otherwise become an attacker-sized key in the limiter's map.
+        AuthController proxied = controllerWith(true);
+        assertThat(status(proxied, "nope", spoofing("not-an-ip"))).isEqualTo(401);
+        assertThat(status(proxied, "nope", spoofing("also/bogus"))).isEqualTo(401);
+        // Both fell back to the same socket address, so the third attempt is refused.
+        assertThat(status(proxied, "nope", spoofing("<script>"))).isEqualTo(429);
+    }
+
     @Test void sseTicketEndpointReturnsANamespacedTicket() {
         // The auth filter (not this controller) guards the endpoint, so reaching it means the caller
         // is already authenticated — it just hands back a short-lived, SSE-scoped ticket.
