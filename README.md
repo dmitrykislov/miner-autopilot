@@ -361,9 +361,23 @@ AUTH_TOKEN_TTL_DAYS=30
 
 **3 — Restart and log in** with the plaintext password.
 
-**How it works:** the login checks your password against the hash and returns a stateless, signed token (valid for `AUTH_TOKEN_TTL_DAYS`, default 30 days), kept in the browser and sent on every request. **Log out** clears it. **Fail-closed:** if auth is on but no hash is set, *every* request is rejected — a misconfig can never accidentally leave it open. Use `AUTH_ENABLED=false` only for local dev.
+**How the token works (in plain terms).** A correct login mints a small **signed token** — literally `<expiry>.<HMAC-SHA256(expiry, key)>`. The signing key is derived from your stored bcrypt hash, so it's secret and stays stable across restarts (a login survives a reboot) with **no server-side session to store or lose**. The browser keeps the token and sends it on every request; the server re-checks the signature (a constant-time compare) and the expiry, and rejects anything tampered with or expired. It lasts `AUTH_TOKEN_TTL_DAYS` (default 30). **Log out** just discards it in the browser. **Fail-closed:** if auth is on but no hash is set, *every* request is rejected — a misconfig can never accidentally leave it open. Use `AUTH_ENABLED=false` only for local dev.
 
-> By default the UI is plain HTTP, so the password crosses the network in cleartext — fine on a trusted LAN. To encrypt it, turn on **HTTPS** (next section).
+### Can I expose it to the internet?
+
+Short answer: **yes — but only behind real HTTPS and with a couple of hardening steps, not with the shipped LAN defaults.** Here's the honest picture.
+
+**What's already solid:** the password is only ever stored as a **bcrypt hash**; the bearer token is **HMAC-signed and expiry-checked with a constant-time compare**; the access filter is **fail-closed** and guards *every* `/api/**` route (it matches on the normalized path, so encoded-slash / `%2f` tricks don't slip past it — the login and CORS pre-flight are the only openings); and no secrets live in the code.
+
+**Do these before going public:**
+
+1. **Terminate TLS with a *real* certificate.** Put **[Caddy](https://caddyserver.com)** (or nginx) in front for an auto-renewing Let's Encrypt cert — the built-in self-signed TLS is fine on a LAN but not for the public web. Never expose it over plain HTTP (the password and token would cross in cleartext).
+2. **Rate-limit the login.** There is **no built-in brute-force throttle** on `/api/auth/login` yet — bcrypt (cost 10) slows guesses but doesn't stop them. Add a limit at the proxy (Caddy `rate_limit`, or fail2ban on the access log), and use a long, random password.
+3. **Shorten the token lifetime** (`AUTH_TOKEN_TTL_DAYS`). The token is stateless, so it **can't be revoked before it expires** — 30 days is generous for a public box; 1–7 days is safer.
+
+**One known caveat being worked on:** the live SSE streams currently carry the token in the URL (`?token=…`), because browsers can't set headers on `EventSource`. A URL-borne credential can leak into proxy/access logs, so until the planned short-lived "SSE ticket" lands, either keep it LAN-only or make sure your proxy doesn't log query strings.
+
+For a personal tool on your home LAN, the shipped defaults are fine. For the public internet, do 1–3 first.
 
 ---
 
