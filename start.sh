@@ -43,17 +43,32 @@ build() {
   echo "✔ built: $jar ($(du -h "$jar" | cut -f1))"
 }
 
+# TLS is on by default; if it's enabled but no cert exists yet, generate a self-signed one so a
+# fresh checkout serves HTTPS without manual setup. Set TLS_ENABLED=false in .env for plain HTTP.
+ensure_tls_cert() {
+  [[ "${TLS_ENABLED:-true}" == "false" ]] && return 0
+  local cert="${TLS_CERT:-file:certs/cert.pem}"; cert="${cert#file:}"
+  if [[ ! -f "$cert" ]]; then
+    echo "▶ TLS is on but no cert at $cert — generating a self-signed one (LAN use)"
+    ./scripts/gen-tls-cert.sh
+  fi
+}
+
+scheme() { [[ "${TLS_ENABLED:-true}" == "false" ]] && echo http || echo https; }
+
 run() {
   require java
   local jar; jar="$(find_jar)"
   [[ -n "$jar" ]] || { echo "✖ no jar found — run './start.sh --build' first"; exit 1; }
-  echo "▶ starting on http://localhost:${PORT}  (inverter=${INVERTER_HOST:-?} miner=${MINER_HOST:-?})"
+  ensure_tls_cert
+  echo "▶ starting on $(scheme)://localhost:${PORT}  (inverter=${INVERTER_HOST:-?} miner=${MINER_HOST:-?})"
   exec java -jar "$jar"
 }
 
 run_dev() {
   require node; require npm; require mvn
-  echo "▶ dev mode: backend :${PORT} + Vite :${FRONTEND_PORT:-5173}"
+  ensure_tls_cert
+  echo "▶ dev mode: backend :${PORT} ($(scheme)) + Vite :${FRONTEND_PORT:-5173}"
   mvn -q -DskipUi=true -pl autopilot-launcher -am spring-boot:run &  BACK=$!
   ( cd frontend && (npm ci || npm install) && npm run dev ) &  FRONT=$!
   trap 'echo; echo "▶ stopping"; kill $BACK $FRONT 2>/dev/null || true' INT TERM

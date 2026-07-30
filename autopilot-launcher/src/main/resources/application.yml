@@ -1,13 +1,12 @@
 server:
   port: ${SERVER_PORT:8080}
-  # Optional HTTPS. Off by default → plain HTTP (keeps dev/CI simple). To serve the UI +
-  # API over TLS, set TLS_ENABLED=true and point TLS_CERT / TLS_KEY at PEM files — generate
-  # them with scripts/gen-tls-cert.sh. When disabled, the certificate paths are ignored.
-  # (See README → "HTTPS / TLS".)
+  # HTTPS. ON by default (secure by default). TLS_CERT / TLS_KEY point at PEM files — generate
+  # them with scripts/gen-tls-cert.sh (./start.sh does this automatically on first run). Set
+  # TLS_ENABLED=false for plain HTTP. (See README → "HTTPS / TLS".)
   ssl:
-    enabled: ${TLS_ENABLED:false}
-    certificate: ${TLS_CERT:}
-    certificate-private-key: ${TLS_KEY:}
+    enabled: ${TLS_ENABLED:true}
+    certificate: ${TLS_CERT:file:certs/cert.pem}
+    certificate-private-key: ${TLS_KEY:file:certs/key.pem}
 
 # Application version shown in the UI footer. Sourced from the Maven project version
 # (pom.xml, the single source of truth) via @...@ resource filtering; override with APP_VERSION.
@@ -20,6 +19,9 @@ auth:
   enabled: ${AUTH_ENABLED:true}
   password-hash: ${AUTH_PASSWORD_HASH:}     # blank ⇒ fail-closed (all requests rejected)
   token-ttl-days: ${AUTH_TOKEN_TTL_DAYS:30}
+  # Brute-force guard: max FAILED logins per client IP per minute before /api/auth/login returns
+  # 429. Small on purpose (a handful of users). 0 disables the limiter.
+  login-max-per-minute: ${AUTH_LOGIN_MAX_PER_MINUTE:5}
 
 spring:
   application:

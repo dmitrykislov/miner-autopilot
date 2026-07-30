@@ -313,6 +313,8 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 | `AUTH_ENABLED` | `true` | when off, everything is open (dev only) |
 | `AUTH_PASSWORD_HASH` | — | bcrypt hash of the UI password; blank while enabled ⇒ everything rejected |
 | `AUTH_TOKEN_TTL_DAYS` | `30` | how long a login stays valid |
+| `AUTH_LOGIN_MAX_PER_MINUTE` | `5` | max failed logins per client IP per minute → 429 (brute-force guard; `0` disables) |
+| `TLS_ENABLED` | `true` | serve HTTPS (on by default); `TLS_CERT` / `TLS_KEY` point at the PEM files |
 
 ---
 
@@ -367,12 +369,12 @@ AUTH_TOKEN_TTL_DAYS=30
 
 Short answer: **yes — but only behind real HTTPS and with a couple of hardening steps, not with the shipped LAN defaults.** Here's the honest picture.
 
-**What's already solid:** the password is only ever stored as a **bcrypt hash**; the bearer token is **HMAC-signed and expiry-checked with a constant-time compare**; the access filter is **fail-closed** and guards *every* `/api/**` route (it matches on the normalized path, so encoded-slash / `%2f` tricks don't slip past it — the login and CORS pre-flight are the only openings); and no secrets live in the code.
+**What's already solid:** the password is only ever stored as a **bcrypt hash**; the bearer token is **HMAC-signed and expiry-checked with a constant-time compare**; the access filter is **fail-closed** and guards *every* `/api/**` route (it matches on the normalized path, so encoded-slash / `%2f` tricks don't slip past it — the login and CORS pre-flight are the only openings); **login is rate-limited** per IP; **TLS is on by default**; and no secrets live in the code.
 
 **Do these before going public:**
 
-1. **Terminate TLS with a *real* certificate.** Put **[Caddy](https://caddyserver.com)** (or nginx) in front for an auto-renewing Let's Encrypt cert — the built-in self-signed TLS is fine on a LAN but not for the public web. Never expose it over plain HTTP (the password and token would cross in cleartext).
-2. **Rate-limit the login.** There is **no built-in brute-force throttle** on `/api/auth/login` yet — bcrypt (cost 10) slows guesses but doesn't stop them. Add a limit at the proxy (Caddy `rate_limit`, or fail2ban on the access log), and use a long, random password.
+1. **Use a *real* TLS certificate.** TLS is on by default, but with a *self-signed* cert (not browser-trusted). For the public web, put **[Caddy](https://caddyserver.com)** (or nginx) in front for an auto-renewing Let's Encrypt cert. Never serve the public internet over plain HTTP (the password and token would cross in cleartext).
+2. **Login rate-limiting is built in** — `AUTH_LOGIN_MAX_PER_MINUTE` (default **5** failed logins/min per IP → 429; `0` disables). Keep it small and use a long, random password; a proxy-level limit (Caddy `rate_limit` / fail2ban) is a good extra layer for a public box.
 3. **Shorten the token lifetime** (`AUTH_TOKEN_TTL_DAYS`). The token is stateless, so it **can't be revoked before it expires** — 30 days is generous for a public box; 1–7 days is safer.
 
 **One known caveat being worked on:** the live SSE streams currently carry the token in the URL (`?token=…`), because browsers can't set headers on `EventSource`. A URL-borne credential can leak into proxy/access logs, so until the planned short-lived "SSE ticket" lands, either keep it LAN-only or make sure your proxy doesn't log query strings.
@@ -383,22 +385,20 @@ For a personal tool on your home LAN, the shipped defaults are fine. For the pub
 
 ## HTTPS / TLS
 
-Optional, **off by default**. When enabled, Spring Boot terminates TLS itself — no reverse proxy and no extra process, which keeps the footprint small on the Pi.
+**On by default** — the app serves HTTPS. Spring Boot terminates TLS itself, so there's no reverse proxy or extra process (which suits the tiny Pi). `./start.sh` generates a self-signed cert on first run, so a fresh checkout is HTTPS with no setup. Set `TLS_ENABLED=false` for plain HTTP (handy in dev/CI).
 
-**Turn it on in three steps:**
+**Cert setup** (automatic on first `./start.sh`, or run it yourself):
 
 ```bash
-# 1. Generate a self-signed cert + key (SAN = localhost, this host's IP, + any you pass)
+# Generate a self-signed cert + key (SAN = localhost, this host's IP, + any you pass):
 ./scripts/gen-tls-cert.sh                       # writes certs/cert.pem + certs/key.pem
-#    or include the exact addresses you'll browse to:
-./scripts/gen-tls-cert.sh certs 192.168.1.50 pi.local
+./scripts/gen-tls-cert.sh certs 192.168.1.50 pi.local   # add the exact addresses you'll browse to
 
-# 2. Point .env at them and flip the switch:
+# .env points at them (these are the defaults):
 #      TLS_ENABLED=true
 #      TLS_CERT=file:certs/cert.pem
 #      TLS_KEY=file:certs/key.pem
-
-# 3. Restart. The app now serves https://<host>:<SERVER_PORT>.
+# The app serves https://<host>:<SERVER_PORT>.
 ```
 
 **How it works.** With `TLS_ENABLED=true`, `application.yml` passes the two PEM files to Spring Boot (`server.ssl.certificate` / `…-private-key`). Spring builds an in-memory keystore and lets the embedded Netty server do the TLS handshake — there's no keystore file to manage. The UI and the SSE streams use relative URLs, so they follow the scheme on their own; nothing else changes. With `TLS_ENABLED=false`, the cert paths are ignored and it serves plain HTTP. `deploy.sh` picks the right scheme for its health check automatically (HTTPS with `-k` when TLS is on), so deploys work the same either way.
@@ -466,11 +466,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 336 backend (JUnit) + 99 UI (Vitest), UI bundled into the jar
+mvn clean install               # everything: 345 backend (JUnit) + 99 UI (Vitest), UI bundled into the jar
 mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 144)
 ```
 
-Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 153 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **99** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
+Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 162 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **99** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
 
 What's covered:
 
