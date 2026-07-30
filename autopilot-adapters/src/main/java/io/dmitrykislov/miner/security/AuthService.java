@@ -67,6 +67,39 @@ public class AuthService {
         return payload + "." + sign(payload);
     }
 
+    /** Seconds an SSE ticket stays valid — long enough to open a stream, short enough that a leak is harmless. */
+    static final long SSE_TICKET_TTL_SECONDS = 60L;
+    private static final String SSE_PREFIX = "sse.";
+
+    /**
+     * Mint a short-lived, SSE-only ticket. {@code EventSource} can't send an {@code Authorization}
+     * header, so streams carry their credential in the URL ({@code ?token=…}) — where it can leak
+     * into proxy/access logs, history and {@code Referer}. This ticket bounds that risk: it lives
+     * ~60 s and (see {@link AuthWebFilter}) is accepted only on the stream endpoints, never to
+     * mutate anything. Namespaced ("sse.") so it can't be used as a full API token, and vice versa.
+     * Stateless like the main token — signed, not stored — so nothing grows and it survives restarts.
+     */
+    public String issueSseTicket() {
+        long exp = Instant.now().getEpochSecond() + SSE_TICKET_TTL_SECONDS;
+        String payload = SSE_PREFIX + exp;
+        return payload + "." + sign(payload);
+    }
+
+    /** True if the ticket is an authentic, unexpired SSE ticket (and not a full token). */
+    public boolean isValidSseTicket(String ticket) {
+        if (!cfg.configured() || ticket == null || !ticket.startsWith(SSE_PREFIX)) return false;
+        int lastDot = ticket.lastIndexOf('.');
+        if (lastDot <= SSE_PREFIX.length() - 1) return false; // need a payload after "sse." and before the sig
+        String payload = ticket.substring(0, lastDot);
+        String sig = ticket.substring(lastDot + 1);
+        if (sig.isEmpty() || !constantTimeEquals(sig, sign(payload))) return false;
+        try {
+            return Long.parseLong(payload.substring(SSE_PREFIX.length())) > Instant.now().getEpochSecond();
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
     /** True if the token is authentic (untampered) and not expired. */
     public boolean isValidToken(String token) {
         if (!cfg.configured() || token == null) return false;

@@ -33,6 +33,7 @@ public class AuthController {
 
     public record LoginRequest(String password) {}
     public record LoginResponse(String token) {}
+    public record TicketResponse(String ticket) {}
 
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@RequestBody(required = false) LoginRequest req,
@@ -51,6 +52,16 @@ public class AuthController {
         }
         rateLimiter.recordFailure(ip, now);
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+    }
+
+    /**
+     * Mint a short-lived ticket for opening SSE streams. Reaching here means the caller already
+     * holds a valid full token (the auth filter guards this path), so no extra checks are needed.
+     * The UI fetches a fresh ticket each time it (re)connects a stream — see {@link AuthService#issueSseTicket()}.
+     */
+    @PostMapping("/sse-ticket")
+    public ResponseEntity<TicketResponse> sseTicket() {
+        return ResponseEntity.ok(new TicketResponse(auth.issueSseTicket()));
     }
 
     /** Client IP: the first hop in X-Forwarded-For when behind a reverse proxy, else the socket. */

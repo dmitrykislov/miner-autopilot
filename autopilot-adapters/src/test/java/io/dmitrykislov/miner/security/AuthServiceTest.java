@@ -65,6 +65,33 @@ class AuthServiceTest {
         assertThat(new AuthService(new AuthProperties(true, HASH, 30, 5)).isValidToken(token)).isTrue();
     }
 
+    // ---- SSE tickets --------------------------------------------------------
+    @Test void issuedSseTicketValidates() {
+        assertThat(auth.isValidSseTicket(auth.issueSseTicket())).isTrue();
+    }
+
+    @Test void sseTicketAndFullTokenAreNotInterchangeable() {
+        // A full token must not pass as an SSE ticket, and an SSE ticket must not pass as a full
+        // token — the "sse." namespace keeps the lesser credential from escalating.
+        assertThat(auth.isValidSseTicket(auth.issueToken())).isFalse();
+        assertThat(auth.isValidToken(auth.issueSseTicket())).isFalse();
+    }
+
+    @Test void rejectsTamperedOrMalformedSseTicket() throws Exception {
+        assertThat(auth.isValidSseTicket(auth.issueSseTicket() + "x")).isFalse(); // mutated signature
+        assertThat(auth.isValidSseTicket("sse.9999999999.bad")).isFalse();        // wrong signature
+        assertThat(auth.isValidSseTicket("sse.")).isFalse();                       // no payload/sig
+        assertThat(auth.isValidSseTicket("garbage")).isFalse();                    // no prefix
+        assertThat(auth.isValidSseTicket("")).isFalse();
+        assertThat(auth.isValidSseTicket(null)).isFalse();
+        assertThat(auth.isValidSseTicket(signPayload("sse.notanumber"))).isFalse(); // signed but bad expiry
+    }
+
+    @Test void rejectsExpiredButAuthenticSseTicket() throws Exception {
+        assertThat(auth.isValidSseTicket(signPayload("sse." + (Instant.now().getEpochSecond() - 5)))).isFalse();
+        assertThat(auth.isValidSseTicket(signPayload("sse." + (Instant.now().getEpochSecond() + 30)))).isTrue();
+    }
+
     // ---- fail-closed --------------------------------------------------------
     @Test void failsClosedWhenNoHashConfigured() {
         String realToken = auth.issueToken(); // valid under the configured service

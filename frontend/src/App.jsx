@@ -3,7 +3,7 @@ import { ICONS, Sun, Info, ArrowUp, ArrowDown } from './icons.jsx'
 import { metaFor } from './metricMeta.js'
 import { fmt, flow, minerView, formatDuration, powerView } from './logic.js'
 import { useEventSource } from './hooks.js'
-import { isAuthed, clearToken, authHeaders, withToken } from './auth.js'
+import { isAuthed, clearToken, authHeaders } from './auth.js'
 import Login from './Login.jsx'
 import HistoryChart from './HistoryChart.jsx'
 
@@ -457,8 +457,9 @@ function Dashboard({ onLogout }) {
   }, [])
 
   // Source-agnostic power feed (reads the solar/consumption ports) — drives the live flow, so the
-  // dashboard works with any source. SSE carries the token as ?token= (EventSource can't set headers).
-  useEventSource(withToken('/api/power/stream'), (r) => {
+  // dashboard works with any source. The hook mints a short-lived SSE ticket per connection (see
+  // useEventSource / withSseTicket), since EventSource can't set an Authorization header.
+  useEventSource('/api/power/stream', (r) => {
     if (!r) return
     setPower(r)
     setPowerRecvMs(Date.now())
@@ -472,10 +473,10 @@ function Dashboard({ onLogout }) {
 
   // The Sungrow inverter's rich detail (KPIs, per-string DC, model/serial) — an optional
   // enhancement layered on top; absent for a non-Sungrow source, which is fine.
-  useEventSource(withToken('/api/inverter/stream'), setSnapshot)
+  useEventSource('/api/inverter/stream', setSnapshot)
 
-  useEventSource(withToken('/api/miner/stream'), setMiner)
-  useEventSource(withToken('/api/autopilot/stream'), setAutopilot)
+  useEventSource('/api/miner/stream', setMiner)
+  useEventSource('/api/autopilot/stream', setAutopilot)
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)

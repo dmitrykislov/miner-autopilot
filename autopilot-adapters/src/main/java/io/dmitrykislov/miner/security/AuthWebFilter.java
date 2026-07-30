@@ -18,9 +18,11 @@ import reactor.core.publisher.Mono;
  * Gates every {@code /api/**} request behind a valid bearer token (see {@link AuthService}).
  *
  * <p>Left open: static assets (anything not under {@code /api/}, so the SPA/login page can
- * load), the login endpoint itself, and CORS pre-flight ({@code OPTIONS}). The token is read
- * from the {@code Authorization: Bearer} header, or — because {@code EventSource} (SSE) cannot
- * set headers — from a {@code ?token=} query parameter. Rejections are a bare 401.
+ * load), the login endpoint itself, and CORS pre-flight ({@code OPTIONS}). The full token is read
+ * only from the {@code Authorization: Bearer} header — never the URL, so a long-lived credential
+ * can't leak into logs/history. Because {@code EventSource} (SSE) cannot set headers, the stream
+ * endpoints additionally accept a short-lived {@code ?token=} <i>SSE ticket</i> (see
+ * {@link AuthService#issueSseTicket()}). Rejections are a bare 401.
  *
  * <p>Path matching uses {@link PathPattern} against the request's parsed path — the <b>same</b>
  * representation the router uses — rather than the raw string. Matching the raw
@@ -32,6 +34,7 @@ public class AuthWebFilter implements WebFilter, Ordered {
 
     private static final PathPattern API_PATHS;
     private static final PathPattern LOGIN_PATH;
+    private static final PathPattern STREAM_PATHS;
     static {
         // Default parser config to match the router's (case-sensitive, "/" separator, no
         // trailing-slash match). Soundness depends on this agreeing with WebFlux's parser — if
@@ -39,6 +42,7 @@ public class AuthWebFilter implements WebFilter, Ordered {
         PathPatternParser parser = new PathPatternParser();
         API_PATHS = parser.parse("/api/**");
         LOGIN_PATH = parser.parse("/api/auth/login");
+        STREAM_PATHS = parser.parse("/api/*/stream"); // the SSE endpoints (…/power|inverter|miner|autopilot/stream)
     }
 
     private final AuthService auth;
@@ -64,15 +68,21 @@ public class AuthWebFilter implements WebFilter, Ordered {
         if (open || auth.isValidToken(tokenOf(req))) {
             return chain.filter(exchange);
         }
+        // Lesser credential: a short-lived SSE ticket in the query string, accepted only on the
+        // streaming endpoints. It can open a stream but can't act as a full API token elsewhere.
+        if (STREAM_PATHS.matches(path) && auth.isValidSseTicket(req.getQueryParams().getFirst("token"))) {
+            return chain.filter(exchange);
+        }
         exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
         return exchange.getResponse().setComplete();
     }
 
+    /** The full bearer token from the Authorization header only — never the URL (see class doc). */
     private static String tokenOf(ServerHttpRequest req) {
         String header = req.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (header != null && header.startsWith("Bearer ")) {
             return header.substring("Bearer ".length());
         }
-        return req.getQueryParams().getFirst("token"); // EventSource can't set headers
+        return null;
     }
 }

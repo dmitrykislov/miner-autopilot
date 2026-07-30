@@ -12,6 +12,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.test.StepVerifier;
 
 import java.time.Duration;
 
@@ -65,11 +66,37 @@ class AuthSecurityTest {
                 .exchange().expectStatus().isOk();
     }
 
-    @Test void queryParamTokenWorksForSseAndBogusIsRejected() {
+    @Test void fullTokenIsRejectedInTheUrlAndAsAnSseTicket() {
         String token = login("secret");
-        // EventSource can't set headers, so the token must also work as ?token=
-        web().get().uri("/api/system?token=" + token).exchange().expectStatus().isOk();
+        // The long-lived token must NOT authenticate via the URL (only the Authorization header) —
+        // this is the whole point of the SSE-ticket scheme: no long-lived credential in a URL.
+        web().get().uri("/api/system?token=" + token).exchange().expectStatus().isUnauthorized();
         web().get().uri("/api/system?token=bogus").exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test void sseTicketOpensAStreamButIsScopedToStreamPathsOnly() {
+        String token = login("secret");
+        String ticket = sseTicket(token);
+        assertThat(ticket).startsWith("sse.");
+
+        // Works on a stream endpoint via ?token= (EventSource can't set a header).
+        var sse = web().get().uri("/api/power/stream?token=" + ticket)
+                .accept(MediaType.TEXT_EVENT_STREAM).exchange()
+                .expectStatus().isOk()
+                .returnResult(String.class);
+        StepVerifier.create(sse.getResponseBody()).expectNextCount(1).thenCancel().verify(Duration.ofSeconds(10));
+
+        // But it is NOT a full token: rejected on a non-stream endpoint, and rejected as a Bearer header.
+        web().get().uri("/api/system?token=" + ticket).exchange().expectStatus().isUnauthorized();
+        web().get().uri("/api/system").header(HttpHeaders.AUTHORIZATION, "Bearer " + ticket)
+                .exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test void sseTicketEndpointItselfRequiresAFullToken() {
+        web().post().uri("/api/auth/sse-ticket").exchange().expectStatus().isUnauthorized();
+        web().post().uri("/api/auth/sse-ticket")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + login("secret"))
+                .exchange().expectStatus().isOk();
     }
 
     @Test void writeEndpointRequiresTokenAndWorksWithOne() {
@@ -119,5 +146,14 @@ class AuthSecurityTest {
                 .expectBody(AuthController.LoginResponse.class)
                 .returnResult().getResponseBody();
         return body != null ? body.token() : null;
+    }
+
+    private String sseTicket(String token) {
+        AuthController.TicketResponse body = web().post().uri("/api/auth/sse-ticket")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .exchange().expectStatus().isOk()
+                .expectBody(AuthController.TicketResponse.class)
+                .returnResult().getResponseBody();
+        return body != null ? body.ticket() : null;
     }
 }

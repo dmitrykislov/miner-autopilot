@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getToken, setToken, clearToken, isAuthed, authHeaders, withToken, login } from './auth.js'
+import { getToken, setToken, clearToken, isAuthed, authHeaders, withSseTicket, login } from './auth.js'
 
 beforeEach(() => {
   localStorage.clear()
@@ -34,15 +34,33 @@ describe('token storage', () => {
   })
 })
 
-describe('withToken (SSE query param)', () => {
-  it('appends ?token= / &token= when authed', () => {
+describe('withSseTicket (short-lived SSE credential in the query string)', () => {
+  it('mints a ticket with the bearer header and appends it as ?token= / &token=', async () => {
     setToken('t1')
-    expect(withToken('/api/x')).toBe('/api/x?token=t1')
-    expect(withToken('/api/x?a=1')).toBe('/api/x?a=1&token=t1')
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'sse.123.sig' }) })
+
+    expect(await withSseTicket('/api/x')).toBe('/api/x?token=sse.123.sig')
+    expect(await withSseTicket('/api/x?a=1')).toBe('/api/x?a=1&token=sse.123.sig')
+    expect(global.fetch).toHaveBeenCalledWith('/api/auth/sse-ticket',
+      expect.objectContaining({ method: 'POST', headers: { Authorization: 'Bearer t1' } }))
   })
 
-  it('leaves the URL unchanged when logged out', () => {
-    expect(withToken('/api/x')).toBe('/api/x')
+  it('url-encodes the ticket', async () => {
+    setToken('t1')
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'a b/c' }) })
+    expect(await withSseTicket('/api/x')).toBe('/api/x?token=a%20b%2Fc')
+  })
+
+  it('rejects when the mint fails (so the caller can back off)', async () => {
+    setToken('t1')
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 })
+    await expect(withSseTicket('/api/x')).rejects.toThrow()
+  })
+
+  it('rejects on an empty ticket response', async () => {
+    setToken('t1')
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    await expect(withSseTicket('/api/x')).rejects.toThrow()
   })
 })
 

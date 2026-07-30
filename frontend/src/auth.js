@@ -47,11 +47,20 @@ export function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {}
 }
 
-/** Append the token as a query param — for EventSource URLs, which can't set headers. */
-export function withToken(url) {
-  const t = getToken()
-  if (!t) return url
-  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t)
+/**
+ * Build a stream URL carrying a short-lived, single-use-ish SSE ticket in the query string.
+ * EventSource can't send an Authorization header, so streams authenticate via ?token=. We don't
+ * put the long-lived bearer token there (URLs leak into logs/history); instead we ask the server
+ * for a ~60s ticket that only works on the stream endpoints. Called fresh on every (re)connect.
+ * Rejects if we're logged out or the mint fails, so the caller can back off and retry.
+ */
+export async function withSseTicket(path) {
+  const res = await fetch('/api/auth/sse-ticket', { method: 'POST', headers: authHeaders() })
+  if (!res.ok) throw new Error(`sse-ticket failed: HTTP ${res.status}`)
+  const data = await res.json()
+  const ticket = data && data.ticket
+  if (!ticket) throw new Error('sse-ticket: empty response')
+  return path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(ticket)
 }
 
 /**
