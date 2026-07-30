@@ -179,6 +179,7 @@ class MinerAutopilotTest {
     @Test void unreachableMinerIsRestartedWhenSurplusReturns() {
         // The key recovery: a stopped Braiins miner reports unreachable; with surplus back, restart it.
         when(miner.refresh()).thenReturn(status(false, false, null)); // offline/unreachable
+        when(miner.start()).thenReturn(status(true, true, 1200));      // …and the start brings it up
         liveFeed(2000, 0);                                            // surplus 2000 ≥ start 1600
         var ap = autopilot(true);
         var io = inOrder(miner);
@@ -279,6 +280,107 @@ class MinerAutopilotTest {
         io.verify(miner).setPowerTarget(1200, true); // start at the floor
         io.verify(miner).start();
         verify(miner, never()).stop();
+    }
+
+    // ---------------------------------------------- commands that don't land
+    // Observed in production: the autopilot decided "restart at floor 1200W", both commands failed
+    // ("No route to host" — the miner was off the network), yet a START → 1200 W change was recorded.
+    // The miner later booted on its own at 2000 W, the target left over from an earlier step-down. So
+    // the dashboard showed "START off → 1200 W" while the hardware ran at 2000 W, and the phantom
+    // change also consumed the restart cooldown, blocking retries for six minutes while surplus rose.
+
+    /** What MinerService returns when a command throws: offline, carrying the error. */
+    private static MinerStatus commandFailed(String error) {
+        return MinerStatus.offline(Instant.now(), error);
+    }
+
+    private void stubFailingCommands(String error) {
+        when(miner.setPowerTarget(anyInt(), anyBoolean())).thenReturn(commandFailed(error));
+        when(miner.start()).thenReturn(commandFailed(error));
+    }
+
+    @Test void aStartWhoseCommandsFailedIsNotRecordedAsACompletedChange() {
+        when(miner.refresh()).thenReturn(status(true, false, null)); // off → START eligible
+        stubFailingCommands("No route to host");
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        ap.tick();
+
+        verify(miner).start();  // it did try
+        assertThat(ap.status().lastChange())
+                .as("a start whose commands never reached the miner must not show as a completed change")
+                .isNull();
+    }
+
+    @Test void aFailedStartDoesNotBurnTheRestartCooldown() {
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        stubFailingCommands("No route to host");
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        ap.tick();                 // attempt 1 — fails
+        liveFeed(3500, 0);
+        ap.tick();                 // must try again rather than sit out the cooldown
+
+        verify(miner, times(2)).start();
+    }
+
+    @Test void aMinerThatComesUpAtAnOldHigherTargetIsBroughtBackToTheFloor() {
+        var live = new java.util.concurrent.atomic.AtomicReference<>(status(true, false, null));
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        stubFailingCommands("Connection refused");  // BOSMiner still booting, API not up yet
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        ap.tick();                                  // start issued, cannot be confirmed
+        assertThat(ap.status().lastChange()).isNull();
+
+        // The miner finishes booting by itself — at 2000 W, left over from an earlier step-down.
+        live.set(status(true, true, 2000));
+        reset(miner);                               // count only what the confirming tick does
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        when(miner.setPowerTarget(anyInt(), anyBoolean())).thenAnswer(inv -> live.get());
+        liveFeed(3458, 2000);
+        ap.tick();
+
+        verify(miner).setPowerTarget(1200, true);   // the floor we actually asked for is enforced
+        assertThat(ap.status().lastChange()).isNotNull();
+        assertThat(ap.status().lastChange().action()).isEqualTo("START");
+        assertThat(ap.status().lastChange().toPowerW())
+                .as("the recorded change must describe the floor the autopilot enforced")
+                .isEqualTo(1200);
+    }
+
+    @Test void aPowerStepTheMinerDidNotApplyIsNotRecordedAsAChange() {
+        // The miner is reachable and mining, so the target is read back straight away. If it still
+        // reports the OLD target the command did not apply (MinerService logs "may not have applied").
+        // Recording it anyway would both misreport history and reset the interval that paces the next
+        // step, so a change that silently failed would also delay its own retry.
+        when(miner.refresh()).thenReturn(status(true, true, 1200));
+        when(miner.setPowerTarget(anyInt(), anyBoolean())).thenReturn(status(true, true, 1200)); // unchanged
+        liveFeed(3800, 1200);
+
+        var ap = autopilot(true);
+        ap.tick();
+
+        verify(miner).setPowerTarget(2000, true);   // it did try (1200 + 2 rungs)
+        assertThat(ap.status().lastChange())
+                .as("a power step the miner never applied must not show as a completed change")
+                .isNull();
+    }
+
+    @Test void aPowerStepTheMinerConfirmsIsRecorded() {
+        when(miner.refresh()).thenReturn(status(true, true, 1200));
+        when(miner.setPowerTarget(anyInt(), anyBoolean())).thenReturn(status(true, true, 2000)); // applied
+        liveFeed(3800, 1200);
+
+        var ap = autopilot(true);
+        ap.tick();
+
+        assertThat(ap.status().lastChange()).isNotNull();
+        assertThat(ap.status().lastChange().action()).isEqualTo("STEP_UP");
+        assertThat(ap.status().lastChange().toPowerW()).isEqualTo(2000);
     }
 
     @Test void doesNotStartBelowStartSurplus() {
@@ -408,6 +510,10 @@ class MinerAutopilotTest {
 
     @Test void recordsStartChangeWithDetails() {
         when(miner.refresh()).thenReturn(status(true, false, null));
+        // The start succeeds and the miner is up: MinerService.start() returns the live status, so a
+        // confirmed start is what gets recorded. (An unconfirmable one stays pending — see
+        // aStartWhoseCommandsFailedIsNotRecordedAsACompletedChange.)
+        when(miner.start()).thenReturn(status(true, true, 1200));
         liveFeed(2000, 0);
         var ap = autopilot(true);
         ap.tick();

@@ -60,6 +60,12 @@ public class MinerAutopilot {
     private volatile String lastDecision;
     /** Previous decision with numbers masked, so a repeated hold whose watt figures drift stays quiet. */
     private String lastDecisionKey;
+
+    /** A start command we issued but have not yet seen take effect. */
+    private record PendingStart(int targetW, String reason, int ticksWaited) {}
+    private volatile PendingStart pendingStart;
+    /** Ticks to keep waiting for a start to show up before giving up on confirming it. */
+    private static final int MAX_START_CONFIRM_TICKS = 10;
     // When the miner began continuously mining (null when not mining). Drives the governor's
     // "mined long enough for a valid up-average" guard; seeded from the miner's uptime on the FIRST
     // observation (so a long-running miner can ramp soon after a restart), but reset to
@@ -195,6 +201,15 @@ public class MinerAutopilot {
         } else {
             log.debug("{}", d.reason());
         }
+        // Resolve a start we couldn't confirm earlier, now that we know what this tick intends. Doing
+        // it AFTER the decision matters: if we are about to stop, that pending start is moot and
+        // confirming it would both record a pointless change and fire a target command at a miner we
+        // are switching off in the same tick.
+        if (d.action() == AutopilotDecision.Action.STOP) {
+            discardPendingStart("stopping");
+        } else {
+            confirmPendingStart(st);
+        }
         apply(d);
     }
 
@@ -258,20 +273,87 @@ public class MinerAutopilot {
 
     // ---- operations, each re-verifying live state immediately before acting ----
 
+    /**
+     * Start the miner and aim it at {@code target} (the ladder floor).
+     *
+     * <p><b>The change is recorded only once the miner is seen running.</b> A stopped Braiins miner
+     * reports itself unreachable, and its API is also unreachable while BOSMiner boots — so at command
+     * time "the start failed" and "the start worked, it is still coming up" look identical. Claiming
+     * success then is wrong in two ways, both observed in production: the dashboard showed
+     * "START off → 1200 W" for a start whose commands had actually failed with "No route to host", and
+     * the phantom change reset {@code lastChangeAt}, so the restart cooldown blocked retries for six
+     * minutes while the surplus climbed. Leaving it pending means an unlanded start is retried on the
+     * next tick, and history only ever shows changes that really happened.
+     */
     private void startAtMin(int target, String reason) {
         MinerStatus now = minerService.refresh();
         // Re-verify to avoid double-starting: skip only if it is genuinely up (reachable AND running).
         // We deliberately do NOT bail when unreachable — a stopped Braiins miner reports unreachable
-        // but the start command still brings it up. setPowerTarget/start each fail safely (logged, no
-        // throw) if the miner is truly gone; if the target couldn't be set while stopped, the miner
-        // comes up at its previous target and the next tick's fast down-check corrects it.
-        if (now != null && now.reachable() && now.running()) {
+        // but the start command still brings it up.
+        if (isUp(now)) {
             log.info("autopilot: miner already running — skipping start");
             return;
         }
         minerService.setPowerTarget(target, true); // aim for the floor power target
-        minerService.start();
+        MinerStatus after = minerService.start();
+        if (isUp(after)) {
+            enforceTargetAndRecord(after, target, reason);
+            return;
+        }
+        pendingStart = new PendingStart(target, reason, 0);
+        log.info("autopilot: start issued but the miner is not up yet — will confirm on a later tick");
+    }
+
+    /** True when the miner is genuinely up: reachable AND its service running. */
+    private static boolean isUp(MinerStatus st) {
+        return st != null && st.reachable() && st.running();
+    }
+
+    /**
+     * Once a pending start is seen running, enforce the target we asked for and record the change.
+     *
+     * <p>Enforcing matters because a miner that boots on its own comes up at <b>whatever target it had
+     * before it stopped</b>, not the floor. In production a miner restarted at 2000 W (left from an
+     * earlier step-down) while the autopilot believed it had started at 1200 W. With a healthy surplus
+     * that was harmless, but the same sequence at a marginal surplus imports: the over-draw sits under
+     * {@code emergencyGapW}, so the routine down-step is throttled and it persists for up to one
+     * {@code downInterval}. Re-applying the floor costs a slower climb back, which the ramp-up path
+     * exists to handle, and that is the right trade against silently drawing more than intended.
+     */
+    private void enforceTargetAndRecord(MinerStatus st, int target, String reason) {
+        Integer actual = st != null ? st.powerTargetW() : null;
+        if (actual != null && actual != target) {
+            log.info("autopilot: miner came up at {}W, not the requested {}W — re-applying", actual, target);
+            minerService.setPowerTarget(target, true);
+        }
         recordChange("START", null, target, reason);
+    }
+
+    /**
+     * Resolve a start we commanded but could not confirm at the time. Called once per tick with the
+     * live status. Abandoned after {@link #MAX_START_CONFIRM_TICKS} so a start that never lands cannot
+     * leave the autopilot waiting forever; the governor is free to decide START again in the meantime.
+     */
+    private void confirmPendingStart(MinerStatus st) {
+        PendingStart p = pendingStart;
+        if (p == null) return;
+        if (isUp(st)) {
+            pendingStart = null;
+            enforceTargetAndRecord(st, p.targetW(), p.reason());
+            return;
+        }
+        if (p.ticksWaited() + 1 >= MAX_START_CONFIRM_TICKS) {
+            discardPendingStart("never confirmed after " + MAX_START_CONFIRM_TICKS + " ticks");
+            return;
+        }
+        pendingStart = new PendingStart(p.targetW(), p.reason(), p.ticksWaited() + 1);
+    }
+
+    /** Forget a pending start we are no longer waiting on, saying why. */
+    private void discardPendingStart(String why) {
+        if (pendingStart == null) return;
+        pendingStart = null;
+        log.info("autopilot: dropping the unconfirmed start ({})", why);
     }
 
     private void setPowerIfMining(String action, int target, String reason) {
@@ -282,7 +364,19 @@ public class MinerAutopilot {
             return;
         }
         Integer from = now.powerTargetW();
-        minerService.setPowerTarget(target, true);
+        MinerStatus after = minerService.setPowerTarget(target, true);
+        // Record only if the miner didn't contradict us. It was reachable a moment ago, so the target
+        // is read back immediately: if it comes back reachable and still reporting a different target,
+        // the command did not apply and claiming otherwise would misreport history AND reset the
+        // interval that paces the next step — delaying the retry of a change that silently failed.
+        // An unreachable read-back is inconclusive rather than a failure (MinerService verifies on the
+        // next poll), so it still records.
+        if (after != null && after.reachable()
+                && after.powerTargetW() != null && after.powerTargetW() != target) {
+            log.warn("autopilot: {} to {}W did not apply (miner reports {}W) — not recording it",
+                    action, target, after.powerTargetW());
+            return;
+        }
         recordChange(action, from, target, reason);
     }
 
