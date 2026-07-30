@@ -136,6 +136,11 @@ public class MinerAutopilot {
         if (was != on) {
             log.info("autopilot {} via API", on ? "ENABLED" : "DISABLED");
             lastDecision = on ? "enabled — awaiting next evaluation" : "disabled";
+            // Turning off hands the miner back to the operator, so abandon anything still in flight.
+            // tick() returns early while disabled, so a pending start would otherwise sit untouched
+            // and be recorded — with its original reason — the next time the autopilot was switched on
+            // and the miner happened to be up: a fabricated change, which is what pending exists to avoid.
+            if (!on) discardPendingStart("autopilot disabled");
         }
         statusStream.publish(status());
     }

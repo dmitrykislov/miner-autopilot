@@ -352,6 +352,36 @@ class MinerAutopilotTest {
                 .isEqualTo(1200);
     }
 
+    @Test void disablingTheAutopilotDropsAnUnconfirmedStart() {
+        // tick() returns early while disabled, so a pending start would otherwise sit there
+        // indefinitely and be recorded — with its original reason — whenever the autopilot was next
+        // switched on and the miner happened to be up. That is a fabricated change, the exact thing
+        // the pending mechanism exists to prevent. Turning the autopilot off hands responsibility for
+        // the miner back to the operator, so anything still in flight is abandoned.
+        var live = new java.util.concurrent.atomic.AtomicReference<>(status(true, false, null));
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        stubFailingCommands("No route to host");
+        liveFeed(3458, 0);
+
+        var ap = autopilot(true);
+        ap.tick();                                  // start issued, unconfirmable → pending
+        assertThat(ap.status().lastChange()).isNull();
+
+        ap.setEnabled(false);                       // operator turns the autopilot off
+
+        // Later the miner is running (started by hand, say) and the autopilot is switched back on.
+        live.set(status(true, true, 2000));
+        reset(miner);
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        ap.setEnabled(true);
+        liveFeed(3458, 2000);
+        ap.tick();
+
+        assertThat(ap.status().lastChange())
+                .as("a start abandoned when the autopilot was disabled must not surface later")
+                .isNull();
+    }
+
     @Test void aPowerStepTheMinerDidNotApplyIsNotRecordedAsAChange() {
         // The miner is reachable and mining, so the target is read back straight away. If it still
         // reports the OLD target the command did not apply (MinerService logs "may not have applied").

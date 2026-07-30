@@ -86,7 +86,7 @@ You'll see three names in the code — three small, independent pieces:
 
 1. **The Averager** (`RollingWindow` + `EnergyAverages`) — smooths the noisy solar/house readings into a trustworthy short (3 min) and long (15 min) spare-solar figure, and flags when data is too old or too sparse to trust.
 2. **The Governor** (`AutopilotGovernor`) — the **pure decision-maker**. Given the smoothed surplus and the miner's current state, it returns a single decision: *start / step up / step down / stop / hold* — with a plain-English reason. It has no clock and touches no hardware, which is why it can be tested exhaustively.
-3. **The Autopilot** (`MinerAutopilot`) — the **loop**. Every 30 s it reads the *live* miner state, asks the Governor what to do, and carries it out safely (re-checking the miner right before every action). It also survives restarts: on boot it reloads recent history so it isn't "blind" for 15 minutes and remembers the last change it made.
+3. **The Autopilot** (`MinerAutopilot`) — the **loop**. Every 30 s it reads the *live* miner state, asks the Governor what to do, and carries it out safely (re-checking the miner right before every action, and only recording a change once the miner confirms it). It also survives restarts: on boot it reloads recent history so it isn't "blind" for 15 minutes and remembers the last change it made.
 
 ---
 
@@ -96,7 +96,7 @@ You'll see three names in the code — three small, independent pieces:
 - **Live Power Flow** — Solar → Home → Grid with animated flows, plus a **self-sufficiency ring** and the **surplus margin** (`solar − house`). The Solar node shows live kW and, beside it, **today's total generation** since local midnight. House usage comes from Solar Analytics and updates live; if that feed goes quiet, house and margin show as **unavailable**.
 - **History chart** — solar / house / miner over time. Pick **Today**, a **1h / 4h / 8h / 12h** span, or **type any number of hours**; step **back and forward** in time. Hover for exact values; hover a marker to see each autopilot change (what, from→to, why).
 - **Miner card** — state (**Mining / Suspended / Stopped / Off**) with the reason, live hashrate, power draw, **fan RPM**, uptime, pools, an editable **power target**, and **Start / Stop**. A cleanly-stopped miner reads **Off**, not an error. The status line also shows **≈ N.N kWh today** — the approximate energy the miner has drawn since local midnight (the area under its power curve, from the recorded history).
-- **Autopilot card** — an On/Off toggle, the last decision (including "holding"), and the last change it actually made.
+- **Autopilot card** — an On/Off toggle, the last decision (including "holding"), and the last change it actually made. "Actually" is literal: a command is only shown here once the miner confirms it, so this card never claims a change that didn't land (see [Only confirmed changes are recorded](#only-confirmed-changes-are-recorded)).
 - **Advanced tab** — lifetime yield, grid frequency and inverter temperature (reference readings rather than at-a-glance ones), then all the detailed inverter readings (energy, power, grid, DC/PV strings, device status), each with an explanation tooltip.
 - Light/dark theme, responsive, and a **Log out** button in the footer.
 
@@ -463,9 +463,25 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 - **Survives restarts** — on boot it **replays the last 15 min of stored telemetry** into the averaging windows (so it isn't blind for a whole window) and **restores its last change** from history (so cooldowns/dampening carry across a reboot).
 - **Leaves a `SUSPENDED` miner alone** (dead pools → ~0 W draw, nothing to protect against).
 - **Respects the hard [min, max]** on every change.
+- **Only confirmed changes count** — a command is recorded only once the miner reports it took effect, so the history and the UI never show a change that failed. See below.
 - **Safe-by-construction config** — the Governor validates its settings at boot and refuses to start on anything that would break an invariant (e.g. start-surplus must exceed the floor for hysteresis; up-interval ≥ long-window so a change can't contaminate the average driving the next one).
 
 **Runtime control:** `AUTOPILOT_ENABLED` sets the *boot* state; after that the UI's Autopilot card (or `POST /api/autopilot/enable|disable`) toggles it live.
+
+### Only confirmed changes are recorded
+
+A power change is written to history — and shown on the dashboard — **only once the miner reports that it took effect**. That sounds like a detail; it isn't, because commands do fail:
+
+- A stopped Braiins miner reports itself unreachable, and so does one that is still booting. At the moment a start command is issued, "the miner didn't get it" and "it got it and is coming up" look identical.
+- So a start that can't be confirmed is held as **pending**, not recorded. Each following tick checks whether the miner has appeared; when it has, the change is recorded then. If it never appears, the pending start is dropped after ten ticks (~5 minutes), and turning the autopilot off drops it immediately.
+- A power **step** is recorded only if the miner reads back the target it was given. If it still reports the old one, the command didn't apply, so nothing is recorded and a warning is logged.
+
+Two things follow, both of which used to be wrong:
+
+1. **The dashboard never claims a change that didn't happen.** Previously a start whose commands both failed with "No route to host" was still recorded as "START off → 1200 W", while the miner sat off — and later powered up on its own at a different target.
+2. **A failed command is retried promptly.** The dampening intervals are measured from the last change, so recording a phantom one used to consume the restart cooldown: one observed failure blocked retries for six minutes while the surplus climbed. Now an unlanded command leaves the cooldown untouched.
+
+A start also **re-applies the power target once the miner is up**. A miner that boots on its own comes back at whatever target it had before it stopped, which can be well above the floor the autopilot asked for. Forcing it back to the floor costs a slower climb (the ramp-up path handles that) and avoids silently drawing more than intended.
 
 ---
 
@@ -492,11 +508,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 402 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
-mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 166)
+mvn clean install               # everything: 403 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 167)
 ```
 
-Backend tests live **with their module** — `autopilot-core` 15 · `autopilot-engine` 166 · `autopilot-adapters` 178 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
+Backend tests live **with their module** — `autopilot-core` 15 · `autopilot-engine` 167 · `autopilot-adapters` 178 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
 
 What's covered:
 
