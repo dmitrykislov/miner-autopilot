@@ -181,10 +181,12 @@ public class MinerAutopilot {
         boolean interesting = d.action() != AutopilotDecision.Action.NONE
                 || !java.util.Objects.equals(d.reason(), lastDecision);
         lastDecision = d.reason();
+        // No "autopilot:" prefix here — the reason already carries one (see AutopilotGovernor.decision)
+        // and the logger prints the class name, so adding it produced "autopilot: autopilot: …".
         if (interesting) {
-            log.info("autopilot: {}", d.reason());
+            log.info("{}", d.reason());
         } else {
-            log.debug("autopilot: {}", d.reason());
+            log.debug("{}", d.reason());
         }
         apply(d);
     }
