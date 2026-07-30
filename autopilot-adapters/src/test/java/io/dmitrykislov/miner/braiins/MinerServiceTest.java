@@ -8,6 +8,9 @@ import ch.qos.logback.core.read.ListAppender;
 import io.dmitrykislov.miner.config.HouseProperties;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpServerErrorException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -210,6 +213,31 @@ class MinerServiceTest {
                     e.getLevel() == Level.WARN && e.getFormattedMessage().contains("may not have applied"));
             assertThat(appender.list).anyMatch(e ->
                     e.getLevel() == Level.INFO && e.getFormattedMessage().contains("not yet reachable to confirm"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void anHttp503IsAGenuineFaultNotACleanOff() throws Exception {
+        // An HTTP 503 says "Service Unavailable" too, but it means the miner/proxy is failing — a
+        // rebooting rig, an overloaded box — NOT a cleanly stopped BOSMiner. Classifying it as "off"
+        // hid a real outage: no error in the UI, no WARN in the log, and the autopilot would keep
+        // firing start commands into it. Distinguish by exception type, not by the word.
+        Logger logger = (Logger) LoggerFactory.getLogger(MinerService.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            var client = mock(BraiinsMinerClient.class);
+            when(client.status()).thenThrow(
+                    HttpServerErrorException.create(HttpStatus.SERVICE_UNAVAILABLE,
+                            "Service Unavailable", HttpHeaders.EMPTY, new byte[0], null));
+            MinerStatus s = svc(client, new MinerStreamService(), true, "192.168.4.28").refresh();
+
+            assertThat(s.reachable()).isFalse();
+            assertThat(s.error()).as("a transport 503 must surface as an error").isNotNull();
+            assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.WARN);
         } finally {
             logger.detachAppender(appender);
         }

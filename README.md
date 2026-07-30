@@ -20,7 +20,7 @@ From those it works out your **spare solar** ("surplus") and drives the miner to
 
 - **Live dashboard** — a clean web page showing solar in, house usage, grid import/export, and the miner's live state (hashrate, power draw, fan RPM, pools, uptime).
 - **Manual miner control** — start/stop the miner and set its power target by hand, from the browser.
-- **Autopilot (optional)** — the headline feature: automatically start / step / stop the miner to track your spare solar, without ever paying the grid to mine. Flip it on or off live from the UI.
+- **Autopilot (optional)** — automatically start / step / stop the miner to track your spare solar, so you're not buying grid power to mine. Flip it on or off live from the UI.
 - **History & trends** — a lightweight, file-based log of the last month, drawn as an interactive chart (solar vs house vs miner over time), with a marker at every automatic power change so you can see exactly what the autopilot did and why.
 - **Password-protected** — one password (stored only as a secure hash) locks the whole thing.
 - **One file to run** — the web UI and server build into a **single ~22 MB jar**, configured entirely through one `.env` file.
@@ -35,26 +35,24 @@ Measured **live on a Raspberry Pi Zero 2 W** (quad-core Cortex-A53 @ 1 GHz, **41
 
 | Metric | Measured |
 |---|---|
-| **Memory (RSS)** | **~143 MB** (about a third of the Pi's RAM) |
+| **Memory (RSS)** | **~148 MB** (about a third of the Pi's RAM) |
 | **CPU at idle** | **~0%** — it wakes up briefly every 10–30 s to poll and decide, then sleeps |
 | **CPU at startup** | a short spike for ~20 s while the app boots |
-| **Chip temperature** | ~53 °C, no thermal throttling |
+| **Chip temperature** | ~61 °C under load, no thermal throttling |
 | **Startup time** | ~1–2 s on a laptop; ~22 s on the little Pi |
-| **Disk** | the jar is ~22 MB; a month of history is only a few MB |
+| **Disk** | the jar is ~22 MB; history grows ~49 KB/day, so ~1.5 MB per month |
 
-So the whole "solar-aware miner autopilot" costs roughly **one third of a $15 computer's memory and almost no CPU**.
-
-**It can go leaner still.** The footprint is mostly the JVM itself — a **GraalVM native image** would cut it to tens of MB with near-instant startup, and trimming unused libraries or lowering the heap cap would help further. There's headroom to spare already; the option is there for even smaller hardware.
+Most of that is the JVM itself, so a **GraalVM native image** would shrink it further if you ever need to run on something smaller.
 
 ---
 
 ## How the autopilot works (in plain terms)
 
-**The goal:** keep the miner running on spare solar you'd otherwise export, and *never* pay the grid to mine — while being kind to the hardware.
+**The goal:** keep the miner running on spare solar you'd otherwise export, without buying grid power to mine — while being kind to the hardware.
 
 ### The dial and the notches
 
-Think of the miner's power as a **dial with fixed notches**: `1200, 1600, 2000, … 3600 W` (we call this the **ladder**). The autopilot's only job is to keep that dial at the **highest notch your spare solar can pay for**, minus a small safety buffer so you never dip into the grid.
+Think of the miner's power as a **dial with fixed notches**: `1200, 1600, 2000, … 3600 W` (we call this the **ladder**). The autopilot's only job is to keep that dial at the **highest notch your spare solar can pay for**, minus a small safety buffer to keep you off grid power.
 
 **"Spare solar"** = what the sun is making, minus what the *rest of the house* uses (fridge, aircon, etc.). The house meter includes the miner, so the app adds the miner's own draw back to figure out the house-*without*-the-miner number — and that's what's genuinely free for mining.
 
@@ -68,7 +66,9 @@ Clouds come and go, so it never reacts to a single reading. It smooths the numbe
 - **It won't flap on/off.** It only starts once the 15-minute spare is comfortably above the floor, and keeps running down to a lower level — so it can't rapidly toggle around one threshold.
 - **If it can't see, it stops.** At night, or if the meter stops reporting, spare solar is unknown — so it safely stops the miner rather than guess.
 
-**Net effect:** on a clear day it walks the miner up to full power and back down as the sun fades, ignores passing clouds, and the instant the maths says you'd import, it eases off — dropping to a safe notch (or off) in a single step.
+**Net effect:** on a clear day it walks the miner up to full power and back down as the sun fades, and it ignores passing clouds.
+
+**How strict is "no grid power"?** It's bounded rather than absolute, deliberately. Between decisions the sun can dip below what the miner is drawing, and chasing every wobble would mean constant re-tuning — hard on the hardware. So a *small* shortfall is allowed to ride for up to one down-step interval (5 minutes by default). A *big* one (≥ 800 W) skips the wait and steps down immediately. In short: never a large overshoot, and never a small one for long. Tighten `AUTOPILOT_EMERGENCY_GAP_W` and `AUTOPILOT_DOWN_INTERVAL_MS` if you want it stricter, at the cost of more power changes.
 
 ### Gentle on the miner (why this won't wear it out)
 
@@ -127,12 +127,12 @@ The app is built as a **hexagon** — the *ports & adapters* pattern. The idea i
 **Why build it this way?**
 
 - **Swap the hardware, keep the brain.** A different inverter, meter, or miner is just a new adapter — the autopilot logic is untouched (see [Pluggable sources & miner](#pluggable-sources--miner-ports--adapters)).
-- **The core is pure, so it's trustworthy.** With no frameworks or I/O in the middle, the decision logic is exhaustively unit-testable and a device outage can't leak in and corrupt it.
-- **The layering is enforced, not just documented** — see below.
+- **The core is pure.** With no frameworks or I/O in the middle, the decision logic is exhaustively unit-testable and a device outage can't leak in and corrupt it.
+- **Maven enforces the layering** — see below.
 
 ### Where it lives — four Maven modules
 
-Each ring of the hexagon is its own module, and dependencies point strictly **inward**. Maven turns that rule into a **compile error** if you break it: you can't accidentally drag the engine into an HTTP detail, and one adapter can't reach into another.
+Each ring of the hexagon is its own module, and dependencies point strictly **inward**. Maven turns that rule into a **compile error** if you break it: you can't accidentally drag the engine into an HTTP detail. (The adapters share a single module, so nothing stops one referencing another; the boundary Maven enforces is the one around the engine and the core.)
 
 ```
 miner-autopilot/                    # reactor root (io.dmitrykislov.miner.*) — 4 Maven modules,
@@ -223,14 +223,14 @@ curl -X POST "https://<host>/api/ingest/solar/clear"             -H "Authorizati
 
 ## Quick start
 
-You need **Java 21+, Maven, Node/npm**, and a `.env` (copy from `.env.example`).
+You need **Java 21+, Maven, Node/npm**, and a `.env` (copy from `.env.example`). You also need **`openssl`** on the first run: HTTPS is on by default and `./start.sh` uses it to generate a self-signed certificate (set `TLS_ENABLED=false` to skip that).
 
 ```bash
 cp .env.example .env      # edit: device IPs/credentials + set the UI password hash (see Access control)
 ./start.sh                # build the UI + backend into the jar, then run it
 ```
 
-Open **http://localhost:8899** (the `SERVER_PORT` shipped in `.env.example`; the app's built-in default is `8080`) and log in with your password.
+Open **https://localhost:8899** (the `SERVER_PORT` shipped in `.env.example`; the app's built-in default is `8080`) and log in with your password.
 
 | Command | What it does |
 |---|---|
@@ -315,6 +315,15 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 | `AUTH_TOKEN_TTL_DAYS` | `30` | how long a login stays valid |
 | `AUTH_LOGIN_MAX_PER_MINUTE` | `5` | max failed logins per client IP per minute → 429 (brute-force guard; `0` disables) |
 | `TLS_ENABLED` | `true` | serve HTTPS (on by default); `TLS_CERT` / `TLS_KEY` point at the PEM files |
+| `AUTH_TRUST_FORWARDED_FOR` | `false` | read the client IP from `X-Forwarded-For`. Turn on **only** behind a proxy that overwrites it — otherwise it can be forged to dodge the rate limit |
+| `INVERTER_ENABLED` | `true` | run the built-in Sungrow solar source (`false` to feed the `SolarSource` port yourself) |
+| `MINER_DRIVER` | `braiins` | which `MinerDriver` to use; anything else disables the built-in one so you can supply your own |
+| `INGEST_ENABLED` | `false` | expose `POST /api/ingest/**` so an external source can push readings |
+
+**Two settings will stop the app from booting if they contradict each other** (deliberately — both would otherwise cause silent misbehaviour):
+
+- `AUTOPILOT_ENABLED=true` requires a consumption source, so it needs either `SOLARANALYTICS_ENABLED=true` or your own `ConsumptionSource` feeding the port.
+- `SOLARANALYTICS_MIN_SOLAR_W` must be **below** both `AUTOPILOT_START_SURPLUS_W` and `AUTOPILOT_FLOOR_W + AUTOPILOT_HEADROOM_W`. Otherwise the app would stop asking for house data at exactly the light levels where the autopilot needs it. Worth knowing if you retune the ladder.
 
 ---
 
@@ -378,13 +387,17 @@ Out of the box:
 
 - the password is only ever stored as a **bcrypt hash**
 - the login token is **signed, expiring, checked in constant time, and never travels in a URL**
-- live charts use **short-lived, read-only tickets**, so no long-lived credential rides in a URL
-- **every `/api` route is gated** by a fail-closed filter that can't be tricked with encoded-slash (`%2f`) URLs — only the login and CORS pre-flight are open
-- **logins are rate-limited** per IP (`AUTH_LOGIN_MAX_PER_MINUTE`, default 5 → HTTP 429)
+- live charts use **short-lived, read-only tickets** (GET-only, stream endpoints only), so no long-lived credential rides in a URL
+- **every `/api` route is gated** by a fail-closed filter. It matches on the decoded path, so a URL-encoded spelling like `/%61pi/miner/stop` can't sneak past it while still reaching the controller. Only the login endpoint and CORS pre-flight are open
+- **logins are rate-limited** per IP (`AUTH_LOGIN_MAX_PER_MINUTE`, default 5 → HTTP 429), and the limiter ignores `X-Forwarded-For` unless you explicitly turn it on, so nobody can forge a fresh quota per request
+- **the slow password check runs off the network threads**, so repeated login attempts can't stall the dashboard or the stop button
+- **no CORS headers are sent**, so another website can't drive the API from your browser
 - **TLS is on by default**
 - no passwords, keys, or addresses are baked into the code — it all lives in `.env`
 
 **The one thing to change for public use:** the built-in HTTPS uses a *self-signed* certificate, which browsers don't trust and you'd have to renew by hand. Put a small reverse proxy like **[Caddy](https://caddyserver.com)** in front (a ~5-line config) for a real, auto-renewing Let's Encrypt certificate. Never expose it over plain HTTP — the password would cross in cleartext.
+
+If you do put a proxy in front, set `AUTH_TRUST_FORWARDED_FOR=true` so the rate limiter sees each visitor's real address instead of the proxy's. Only do this when the proxy overwrites the header; on a directly-reachable box it would hand attackers a way around the limit.
 
 **Two optional tweaks for a public box:** keep `AUTH_LOGIN_MAX_PER_MINUTE` small and use a long, random password; and shorten `AUTH_TOKEN_TTL_DAYS` (a token can't be cancelled before it expires, so 1–7 days is safer than 30). On your home LAN, the shipped defaults are fine as they are.
 
@@ -437,7 +450,7 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 
 **Safety & correctness properties:**
 
-- **Never draws more than the spare solar** — because `headroom > 0`, the target is always strictly below the surplus. On a sudden collapse it steps straight down to a safe notch in one move.
+- **Every command targets below the available spare solar** — `headroom > 0` guarantees the new target sits under the measured surplus, and a ramp-up must be affordable on both the 3-minute and the 15-minute average, so a surplus that has already faded can't fund a step up. On a sudden collapse it steps straight down to a safe notch in one move. (Between commands a small shortfall can ride briefly — see "How strict is no grid power?" above.)
 - **Stops when it can't see** — if solar, usage, or the readings themselves go stale, the surplus is untrusted, so it stops a running miner rather than guess. (A genuinely *stale* feed → stop; a merely *sparse* window right after boot → hold, so a healthy miner isn't disrupted.)
 - **Always uses live state** — each tick reads a fresh miner status; every start/step/stop re-checks the miner immediately before acting.
 - **Recovers a miner it stopped** — a stopped Braiins miner reports its API as unreachable; the autopilot treats that as *off and start-eligible*, so once a sustained surplus returns it restarts. Restart is gated by the short cooldown (not the 15-min up-interval), so a returning surplus is harvested promptly instead of being stranded off-grid.
@@ -455,7 +468,7 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 A lightweight, **file-based** log feeds the trend chart — no database.
 
 - **What's recorded:** once a minute, one sample (solar, house, miner target + live draw, miner state), read from the snapshots the app already has (no extra device calls). Every autopilot power change is also saved as an event (action, from→to, reason).
-- **Storage:** append-only text files, one per day, under `HISTORY_DIR`. A month at one sample/minute is ~5 MB on disk and a few MB in memory. Files older than `HISTORY_RETENTION_DAYS` (31) are discarded automatically; the log reloads on restart.
+- **Storage:** append-only text files, one per day, under `HISTORY_DIR`. A month at one sample/minute is ~1.5 MB on disk (measured) and a few MB in memory. Files older than `HISTORY_RETENTION_DAYS` (31) are discarded automatically; the log reloads on restart.
 - **The chart:** pick **Today**, a **1h / 4h / 8h / 12h** span, or **type a custom number of hours**; step back/forward with the arrows (**Now** jumps back to live). *Today* zooms to the sunlit part of the day. Three lines — Solar, Home, Miner — where the **miner line sits flat at zero while it's off** (a clear baseline, not a gap). The band between Solar and Home is shaded **green where solar covers the house** (exporting) and **red where it doesn't** (importing). Hover the plot for exact values; hover a marker to see the autopilot change and its reason. Big requests are downsampled to ~1500 points.
 - **Turn it off** with `HISTORY_ENABLED=false`.
 
@@ -473,17 +486,17 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 352 backend (JUnit) + 104 UI (Vitest), UI bundled into the jar
-mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 144)
+mvn clean install               # everything: 370 backend (JUnit) + 104 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 156)
 ```
 
-Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 167 · `autopilot-launcher` 38 (full-boot `@SpringBootTest`); the **104** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
+Backend tests live **with their module** — `autopilot-engine` 156 · `autopilot-adapters` 173 · `autopilot-launcher` 41 (full-boot `@SpringBootTest`); the **104** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
 
 What's covered:
 
 - **Adapters & plumbing** — config binding + guards, power-balance math, label mapping, Jackson 3 deserialization, the WebSocket frame correlation, and every poller/service (with mocked clients) and controller.
 - **Pluggable ports** — the source-agnostic `/api/power` feed (ports → snapshot, stream re-emit + dedup) and the HTTP `/api/ingest` path (push → port → feed), each proven both as a slice *and* in a full boot.
-- **Autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, never-import sweep, config guards).
+- **Autopilot engine** — `RollingWindow` (rolling mean, freshness, coverage, out-of-order samples), `EnergyAverages` (short/long surplus, stale-vs-sparse), and `AutopilotGovernor` (exhaustive start/step/stop, restart cooldown + short-window confirmation, minimum run-time, emergency bypass, import-bound sweeps across divergent short/long windows, clock-skew handling, config guards).
 - **Autopilot wiring** — live-state re-verification, restore-from-history, window warm-up.
 - **End-to-end** — a real-HTTP transport test (odd content types, error handling) and a full-boot test against simulated devices that asserts the exact commands sent + the power feed served.
 - **History & UI** — the history layer, plus the React chart/auth suites (including a dashboard integration test that renders the live flow from the feed with no inverter present).

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# start.sh — build & run the House Energy Monitor (Sungrow SG10RS + Solar Analytics
-#            + Braiins miner) as ONE self-contained Spring Boot jar with the
-#            React UI bundled inside, configured entirely from .env.
+# start.sh — build & run the Solar-Surplus Miner Autopilot (Sungrow SG10RS + Solar
+#            Analytics + Braiins miner) as ONE self-contained Spring Boot jar with
+#            the React UI bundled inside, configured entirely from .env.
 #
 # Usage:
 #   ./start.sh            Build UI + backend into the jar, then run it (default).
@@ -12,7 +12,8 @@
 #
 # Everything is env-driven: values come from .env (see .env.example) and are read
 # by application.yml ${PLACEHOLDER} bindings. The jar serves UI + REST + SSE from
-# one process at http://localhost:${SERVER_PORT}.
+# one process at https://localhost:${SERVER_PORT} (HTTPS is on by default; set
+# TLS_ENABLED=false for plain http). JAVA_OPTS from .env is passed to the JVM.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -36,7 +37,7 @@ build() {
   require node; require npm; require mvn; require java
   echo "▶ building React UI + packaging Spring Boot jar (UI bundled inside)"
   rm -rf autopilot-launcher/src/main/resources/static   # avoid stale bundles accumulating
-  # The Maven build already builds the UI (exec-maven-plugin: npm ci + vite build, bound
+  # The Maven build already builds the UI (exec-maven-plugin: npm install + vite build, bound
   # to generate-resources), so the UI is built exactly once here — no separate npm step.
   mvn -q -DskipTests clean package   # reactor root; clean drops stale bundled assets
   local jar; jar="$(find_jar)"
@@ -62,7 +63,10 @@ run() {
   [[ -n "$jar" ]] || { echo "✖ no jar found — run './start.sh --build' first"; exit 1; }
   ensure_tls_cert
   echo "▶ starting on $(scheme)://localhost:${PORT}  (inverter=${INVERTER_HOST:-?} miner=${MINER_HOST:-?})"
-  exec java -jar "$jar"
+  # JAVA_OPTS (from .env) is intentionally word-split so multiple flags work — this is what
+  # applies the small-device footprint caps locally, matching deploy.sh and the systemd unit.
+  # shellcheck disable=SC2086
+  exec java ${JAVA_OPTS:-} -jar "$jar"
 }
 
 run_dev() {

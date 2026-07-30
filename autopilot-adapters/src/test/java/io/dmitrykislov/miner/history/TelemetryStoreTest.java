@@ -34,6 +34,46 @@ class TelemetryStoreTest {
         return new TelemetrySample(at, solar, solar == null ? null : solar - 1500, power, power, state);
     }
 
+    // ---- disk failure must never break retention (the Pi's likeliest failure: a full SD card) ----
+
+    @Test void anUnwritableDirectoryDoesNotPropagateOutOfRecord() {
+        TelemetryStore s = store(31);
+        assertThat(tmp.toFile().setWritable(false)).isTrue();
+        try {
+            // A failing append must not escape: it would skip the caller's prune() (see
+            // TelemetryRecorder), so retention would stop running and the in-memory deque would grow
+            // without bound — on a 128 MB heap that ends in an OutOfMemoryError.
+            Instant now = Instant.now();
+            s.recordSample(sample(now, 3000.0, 2400, "MINING"));
+            s.recordEvent(new PowerChangeEvent(now, "STEP_UP", 2400, 2800, "surplus rose"));
+        } finally {
+            tmp.toFile().setWritable(true);
+        }
+    }
+
+    @Test void retentionStillPrunesWhenWritesAreFailing() throws IOException {
+        TelemetryStore s = store(31);
+        Instant now = Instant.now();
+        s.recordSample(sample(now.minus(Duration.ofDays(40)), 3000.0, 2400, "MINING")); // outside retention
+        s.recordSample(sample(now, 3200.0, 2800, "MINING"));
+
+        // Make today's day-file itself read-only — appending to an existing file ignores the
+        // directory's permissions, so the file is what has to be locked to simulate a failing write.
+        Path today = Files.list(tmp).filter(p -> p.getFileName().toString().startsWith("samples-"))
+                .findFirst().orElseThrow();
+        assertThat(today.toFile().setWritable(false)).isTrue();
+        try {
+            s.recordSample(sample(now.plusSeconds(1), 3300.0, 2800, "MINING")); // append fails
+            s.prune(now);
+            // The 40-day-old sample must still be gone: pruning cannot depend on the disk working.
+            assertThat(s.samplesSince(now.minus(Duration.ofDays(60))))
+                    .as("retention must keep working while the disk is failing")
+                    .allSatisfy(x -> assertThat(x.at()).isAfter(now.minus(Duration.ofDays(32))));
+        } finally {
+            today.toFile().setWritable(true);
+        }
+    }
+
     @Test void recordsAndQueriesSamplesAndEvents() {
         TelemetryStore s = store(31);
         Instant now = Instant.now();

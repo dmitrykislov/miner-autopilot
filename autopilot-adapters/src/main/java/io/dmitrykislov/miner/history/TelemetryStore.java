@@ -9,7 +9,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -55,6 +54,13 @@ public class TelemetryStore implements TelemetryHistory {
         this.dir = Path.of(cfg.dir());
     }
 
+    /** Set when the store could not be initialised: keep serving in memory, stop touching the disk. */
+    private volatile boolean persistenceDisabled;
+    /** Latches the "writes are failing" warning so a broken disk can't flood the log every minute. */
+    private boolean writeFailureLogged;
+    /** UTC date of the last day-file sweep, so retention scans the directory once a day, not per call. */
+    private LocalDate lastFilePruneDay;
+
     @PostConstruct
     void init() {
         if (!cfg.enabled()) return;
@@ -64,8 +70,12 @@ public class TelemetryStore implements TelemetryHistory {
             log.info("History: loaded {} samples, {} events from {} (retain {}d)",
                     samples.size(), events.size(), dir.toAbsolutePath(), cfg.retentionDays());
         } catch (Exception e) {
-            log.warn("History: could not initialise store at {} — history disabled this run: {}",
-                    dir.toAbsolutePath(), e.toString());
+            // Persistence only — the in-memory history (and so the chart) keeps working, and
+            // retention keeps pruning. Previously this said "history disabled" without disabling
+            // anything, so every later write threw and pruning silently stopped running.
+            persistenceDisabled = true;
+            log.warn("History: could not initialise store at {} — continuing in memory only, "
+                    + "nothing will be persisted this run: {}", dir.toAbsolutePath(), e.toString());
         }
     }
 
@@ -89,7 +99,15 @@ public class TelemetryStore implements TelemetryHistory {
         Instant cutoff = now.minus(cfg.retention());
         while (!samples.isEmpty() && samples.peekFirst().at().isBefore(cutoff)) samples.removeFirst();
         while (!events.isEmpty() && events.peekFirst().at().isBefore(cutoff)) events.removeFirst();
-        deleteFilesBefore(cutoff);
+        // A day-file can only fall out of retention when the UTC date changes, so scan the directory
+        // once a day instead of on every call. The recorder prunes every minute, and each scan listed
+        // ~60 files and parsed each name — about 89k pointless syscalls a day, inside the lock the
+        // history endpoints also need.
+        LocalDate today = LocalDate.ofInstant(now, ZoneOffset.UTC);
+        if (!today.equals(lastFilePruneDay)) {
+            lastFilePruneDay = today;
+            deleteFilesBefore(cutoff);
+        }
     }
 
     // ---- reads (web thread) -------------------------------------------------
@@ -128,13 +146,31 @@ public class TelemetryStore implements TelemetryHistory {
 
     // ---- persistence --------------------------------------------------------
 
+    /**
+     * Append one line to the day-file, <b>swallowing I/O errors</b>.
+     *
+     * <p>This must never throw. It is called from {@code recordSample}/{@code recordEvent}, and the
+     * recorder calls {@code prune()} immediately afterwards — so an escaping exception would skip
+     * retention entirely. Every minute the deque would gain a sample and never lose one, growing past
+     * the retention limit until the 128 MB heap ran out. The trigger for a failing write is usually a
+     * full SD card, which is exactly when pruning matters most.
+     *
+     * <p>The in-memory history stays authoritative for the running process, so the dashboard and the
+     * autopilot's warm-up are unaffected; only durability across a restart is lost.
+     */
     private void append(String prefix, Instant at, String line) {
+        if (persistenceDisabled) return;
         Path file = dir.resolve(prefix + DAY.format(at) + ".log");
         try {
             Files.writeString(file, line + "\n", StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            writeFailureLogged = false; // recovered — re-arm the warning
         } catch (IOException e) {
-            throw new UncheckedIOException("history: append to " + file + " failed", e);
+            if (!writeFailureLogged) {
+                writeFailureLogged = true;
+                log.warn("History: cannot write {} — keeping history in memory only until writes "
+                        + "recover (disk full or read-only?): {}", file, e.toString());
+            }
         }
     }
 

@@ -36,7 +36,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # Runs the backend (JUnit/Surefire, 315 tests) + UI (Vitest, 97 tests) and bundles
+      # Runs the whole backend suite (JUnit/Surefire) + the UI suite (Vitest) and bundles
       # the built UI into the jar. -B = batch/non-interactive.
       - name: Build & test
         run: mvn -B clean install

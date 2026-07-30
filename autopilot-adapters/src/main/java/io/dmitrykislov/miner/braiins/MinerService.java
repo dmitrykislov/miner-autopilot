@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
@@ -128,8 +129,14 @@ public class MinerService implements MinerDriver {
             // UI then just shows "Off"), and keep the log quiet. Genuine transport failures
             // (connection refused, timeout, unexpected GraphQL errors) keep their message and are
             // logged loudly once on the transition so a real new problem is still visible.
+            // Classify on the exception TYPE, not just the word "unavailable": an HTTP 503 response
+            // reads "Service Unavailable" as well, but that is a failing miner/proxy (rebooting rig,
+            // overloaded box), not a cleanly stopped BOSMiner. Treating it as "off" hid genuine
+            // outages — no error in the UI, nothing above DEBUG in the log — while the autopilot kept
+            // firing start commands at it. Only a GraphQL-level error means "cleanly off".
             String msg = e.getMessage();
-            if (msg != null && msg.toLowerCase().contains("unavailable")) {
+            boolean transportFailure = e instanceof RestClientResponseException;
+            if (!transportFailure && msg != null && msg.toLowerCase().contains("unavailable")) {
                 log.debug("Miner service unavailable (BOSMiner stopped → off)");
                 return publish(MinerStatus.offline(now, null));
             }
