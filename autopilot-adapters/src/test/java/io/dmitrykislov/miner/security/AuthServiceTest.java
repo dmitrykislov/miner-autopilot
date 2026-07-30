@@ -94,13 +94,17 @@ class AuthServiceTest {
 
     // ---- fail-closed --------------------------------------------------------
     @Test void failsClosedWhenNoHashConfigured() {
-        String realToken = auth.issueToken(); // valid under the configured service
+        String realToken = auth.issueToken();       // valid under the configured service
+        String realTicket = auth.issueSseTicket();   // ditto
         AuthService blank = new AuthService(new AuthProperties(true, "", 30, 5));
         assertThat(blank.verifyPassword("anything")).isFalse();
-        // A blank-hash service accepts NO token — not a bogus one, and not even a token that
+        // A blank-hash service accepts NO credential — not a bogus one, and not even one that
         // is genuinely valid under a configured service. Every request is rejected (fail-closed).
         assertThat(blank.isValidToken(realToken)).isFalse();
         assertThat(blank.isValidToken("9999999999.anything")).isFalse();
+        // The same fail-closed rule covers SSE tickets: a blank-hash service validates none.
+        assertThat(blank.isValidSseTicket(realTicket)).isFalse();
+        assertThat(blank.isValidSseTicket("sse.9999999999.anything")).isFalse();
     }
 
     @Test void reportsEnabledFlag() {

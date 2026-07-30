@@ -67,4 +67,12 @@ class AuthControllerTest {
         assertThat(status("nope", a)).isEqualTo(429);            // IP a blocked
         assertThat(status("nope", from("5.5.5.5"))).isEqualTo(401); // IP b unaffected
     }
+
+    @Test void sseTicketEndpointReturnsANamespacedTicket() {
+        // The auth filter (not this controller) guards the endpoint, so reaching it means the caller
+        // is already authenticated — it just hands back a short-lived, SSE-scoped ticket.
+        var resp = controller.sseTicket();
+        assertThat(resp.getStatusCode().value()).isEqualTo(200);
+        assertThat(resp.getBody().ticket()).startsWith("sse.");
+    }
 }

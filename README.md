@@ -364,23 +364,29 @@ AUTH_TOKEN_TTL_DAYS=30
 
 **3 — Restart and log in** with the plaintext password.
 
-**How the token works (in plain terms).** A correct login mints a small **signed token** — literally `<expiry>.<HMAC-SHA256(expiry, key)>`. The signing key is derived from your stored bcrypt hash, so it's secret and stays stable across restarts (a login survives a reboot) with **no server-side session to store or lose**. The browser keeps the token and sends it on every request; the server re-checks the signature (a constant-time compare) and the expiry, and rejects anything tampered with or expired. It lasts `AUTH_TOKEN_TTL_DAYS` (default 30). **Log out** just discards it in the browser. **Fail-closed:** if auth is on but no hash is set, *every* request is rejected — a misconfig can never accidentally leave it open. Use `AUTH_ENABLED=false` only for local dev.
+**How logging in works (in plain words).** You set one password. The app never keeps the password itself, only a **bcrypt hash** of it (a one-way scramble that can't be reversed). When you log in, the server checks your password against that hash and, if it matches, hands your browser a **signed token**. The token is just an expiry date plus a signature only the server can produce. The server can tell a real, unexpired token from a fake or expired one without storing anything, so a login survives a reboot and there's no session database that could leak or be lost. Your browser sends the token with every request; anything tampered with or past its expiry is refused. Logging out simply throws the token away. Token lifetime is `AUTH_TOKEN_TTL_DAYS` (default 30).
 
-**The long-lived token never travels in a URL.** It's sent only in the `Authorization` header, so it can't leak into proxy or access logs. The live SSE streams are the awkward case — `EventSource` can't set a header — so before opening a stream the browser swaps its token for a **short-lived SSE ticket** (`POST /api/auth/sse-ticket`): a separate signed value (namespaced `sse.…`) that lives ~60 seconds and is accepted *only* on the stream endpoints, never to change anything. It rides in the URL as `?token=…`, but if one leaks it's worthless within a minute and can't touch the rest of the API. The browser mints a fresh one on every (re)connect; like the main token it's stateless, so there's nothing to store and it survives restarts.
+If the password hash is ever missing, the app refuses *every* request instead of running wide open, so a misconfig can't accidentally unlock it. Use `AUTH_ENABLED=false` only for local dev.
 
-### Can I expose it to the internet?
+**Why the token never shows up in a URL.** It travels only in the `Authorization` header, so it can't land in server logs or browser history. Live charts are the one exception: they use the browser's `EventSource`, which can't send headers. For those, the browser first asks for a small **stream ticket** (`POST /api/auth/sse-ticket`) and puts that in the URL instead. The ticket lasts about a minute, works only on the streaming endpoints, and can't change anything — so even if one leaked it would be useless within 60 seconds. A fresh ticket is minted each time a chart connects.
 
-Short answer: **yes — but only behind real HTTPS and with a couple of hardening steps, not with the shipped LAN defaults.** Here's the honest picture.
+### Is it safe to put on the internet?
 
-**What's already solid:** the password is only ever stored as a **bcrypt hash**; the bearer token is **HMAC-signed and expiry-checked with a constant-time compare** and **only ever sent in the `Authorization` header** (never a URL); the SSE streams use a separate **short-lived, stream-only ticket** so no long-lived credential rides in a URL; the access filter is **fail-closed** and guards *every* `/api/**` route (it matches on the normalized path, so encoded-slash / `%2f` tricks don't slip past it — the login and CORS pre-flight are the only openings); **login is rate-limited** per IP; **TLS is on by default**; and no secrets live in the code.
+**Yes — with one setup step: put it behind a real HTTPS certificate.** Everything else it needs is already built in.
 
-**Do these before going public:**
+Out of the box:
 
-1. **Use a *real* TLS certificate.** TLS is on by default, but with a *self-signed* cert (not browser-trusted). For the public web, put **[Caddy](https://caddyserver.com)** (or nginx) in front for an auto-renewing Let's Encrypt cert. Never serve the public internet over plain HTTP (the password and token would cross in cleartext).
-2. **Login rate-limiting is built in** — `AUTH_LOGIN_MAX_PER_MINUTE` (default **5** failed logins/min per IP → 429; `0` disables). Keep it small and use a long, random password; a proxy-level limit (Caddy `rate_limit` / fail2ban) is a good extra layer for a public box.
-3. **Shorten the token lifetime** (`AUTH_TOKEN_TTL_DAYS`). The token is stateless, so it **can't be revoked before it expires** — 30 days is generous for a public box; 1–7 days is safer.
+- the password is only ever stored as a **bcrypt hash**
+- the login token is **signed, expiring, checked in constant time, and never travels in a URL**
+- live charts use **short-lived, read-only tickets**, so no long-lived credential rides in a URL
+- **every `/api` route is gated** by a fail-closed filter that can't be tricked with encoded-slash (`%2f`) URLs — only the login and CORS pre-flight are open
+- **logins are rate-limited** per IP (`AUTH_LOGIN_MAX_PER_MINUTE`, default 5 → HTTP 429)
+- **TLS is on by default**
+- no passwords, keys, or addresses are baked into the code — it all lives in `.env`
 
-For a personal tool on your home LAN, the shipped defaults are fine. For the public internet, do 1–3 first.
+**The one thing to change for public use:** the built-in HTTPS uses a *self-signed* certificate, which browsers don't trust and you'd have to renew by hand. Put a small reverse proxy like **[Caddy](https://caddyserver.com)** in front (a ~5-line config) for a real, auto-renewing Let's Encrypt certificate. Never expose it over plain HTTP — the password would cross in cleartext.
+
+**Two optional tweaks for a public box:** keep `AUTH_LOGIN_MAX_PER_MINUTE` small and use a long, random password; and shorten `AUTH_TOKEN_TTL_DAYS` (a token can't be cancelled before it expires, so 1–7 days is safer than 30). On your home LAN, the shipped defaults are fine as they are.
 
 ---
 
@@ -467,11 +473,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 351 backend (JUnit) + 103 UI (Vitest), UI bundled into the jar
+mvn clean install               # everything: 352 backend (JUnit) + 104 UI (Vitest), UI bundled into the jar
 mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 144)
 ```
 
-Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 166 · `autopilot-launcher` 38 (full-boot `@SpringBootTest`); the **103** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
+Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 167 · `autopilot-launcher` 38 (full-boot `@SpringBootTest`); the **104** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
 
 What's covered:
 

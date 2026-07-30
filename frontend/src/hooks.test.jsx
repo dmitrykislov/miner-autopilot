@@ -75,6 +75,39 @@ describe('useEventSource', () => {
     }
   })
 
+  it('backs off exponentially across repeated failures and resets once a connection opens', async () => {
+    vi.useFakeTimers()
+    try {
+      renderHook(() => useEventSource('/api/x', () => {}))
+      await flush()
+      expect(created).toHaveLength(1)
+
+      created[0].onerror()                       // 1st drop → retry after 1000ms
+      await vi.advanceTimersByTimeAsync(999)
+      await flush()
+      expect(created).toHaveLength(1)             // not yet
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(created).toHaveLength(2)             // reconnected at 1000ms
+
+      created[1].onerror()                        // 2nd drop → backoff doubled to 2000ms
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      expect(created).toHaveLength(2)             // still waiting (only 1000ms elapsed)
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      expect(created).toHaveLength(3)             // reconnected at 2000ms
+
+      created[2].onopen()                         // a healthy connection resets the backoff…
+      created[2].onerror()                        // …so the next drop retries after 1000ms again
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      expect(created).toHaveLength(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not reconnect after unmount', async () => {
     vi.useFakeTimers()
     try {
