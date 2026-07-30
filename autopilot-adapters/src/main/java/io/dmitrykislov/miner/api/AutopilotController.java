@@ -4,7 +4,6 @@ import io.dmitrykislov.miner.autopilot.AutopilotStatus;
 import io.dmitrykislov.miner.autopilot.AutopilotStreamService;
 import io.dmitrykislov.miner.autopilot.MinerAutopilot;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -22,7 +21,6 @@ import reactor.core.publisher.Flux;
  */
 @RestController
 @RequestMapping("/api/autopilot")
-@CrossOrigin
 public class AutopilotController {
 
     private final MinerAutopilot autopilot;

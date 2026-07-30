@@ -22,6 +22,11 @@ auth:
   # Brute-force guard: max FAILED logins per client IP per minute before /api/auth/login returns
   # 429. Small on purpose (a handful of users). 0 disables the limiter.
   login-max-per-minute: ${AUTH_LOGIN_MAX_PER_MINUTE:5}
+  # Read the client IP from X-Forwarded-For. Leave FALSE unless a reverse proxy you control sits in
+  # front and overwrites that header — anyone can send it, and trusting it on a directly-reachable
+  # box lets an attacker rotate the value to escape the rate limit above (or forge someone else's
+  # address to lock them out).
+  trust-forwarded-for: ${AUTH_TRUST_FORWARDED_FOR:false}
 
 spring:
   application:

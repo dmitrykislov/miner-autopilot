@@ -22,7 +22,6 @@ import reactor.core.scheduler.Schedulers;
  */
 @RestController
 @RequestMapping("/api/miner")
-@CrossOrigin
 public class MinerController {
 
     private final MinerDriver miner;

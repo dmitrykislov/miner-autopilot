@@ -4,7 +4,6 @@ import io.dmitrykislov.miner.solaranalytics.HouseConsumptionState;
 import io.dmitrykislov.miner.solaranalytics.HousePower;
 import io.dmitrykislov.miner.solaranalytics.HousePowerStreamService;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -20,7 +19,6 @@ import reactor.core.publisher.Flux;
  */
 @RestController
 @RequestMapping("/api/house")
-@CrossOrigin
 public class HousePowerController {
 
     private final HousePowerStreamService stream;

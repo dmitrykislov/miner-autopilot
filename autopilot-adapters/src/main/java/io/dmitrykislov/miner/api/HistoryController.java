@@ -7,11 +7,13 @@ import io.dmitrykislov.miner.history.MinerEnergy;
 import io.dmitrykislov.miner.port.PowerChangeEvent;
 import io.dmitrykislov.miner.port.TelemetrySample;
 import io.dmitrykislov.miner.port.TelemetryHistory;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -30,7 +32,6 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/api/history")
-@CrossOrigin
 public class HistoryController {
 
     /** Cap on samples returned per request — keeps even a full day a small, smooth chart. */
@@ -44,14 +45,22 @@ public class HistoryController {
         this.cfg = cfg;
     }
 
+    /**
+     * The chart window. Runs on {@link Schedulers#boundedElastic()}: it walks the whole in-memory
+     * series (up to ~45k samples at a month's retention) while holding the store's lock — the same
+     * lock the recorder takes to write to the SD card. On a Netty event loop, and there are only two
+     * on the Pi, a slow card would stall every other request and SSE write queued behind it.
+     */
     @GetMapping
-    public HistoryResponse history(@RequestParam(required = false) Long from,
-                                   @RequestParam(required = false) Long to,
-                                   @RequestParam(required = false) Integer hours) {
-        Window w = window(from, to, hours);
-        List<TelemetrySample> samples = Downsampling.reduce(store.samplesBetween(w.from(), w.to()), MAX_POINTS);
-        List<PowerChangeEvent> events = store.eventsBetween(w.from(), w.to());
-        return new HistoryResponse(w.from(), w.to(), cfg.retentionDays(), cfg.recordIntervalMs(), samples, events);
+    public Mono<HistoryResponse> history(@RequestParam(required = false) Long from,
+                                         @RequestParam(required = false) Long to,
+                                         @RequestParam(required = false) Integer hours) {
+        return Mono.fromCallable(() -> {
+            Window w = window(from, to, hours);
+            List<TelemetrySample> samples = Downsampling.reduce(store.samplesBetween(w.from(), w.to()), MAX_POINTS);
+            List<PowerChangeEvent> events = store.eventsBetween(w.from(), w.to());
+            return new HistoryResponse(w.from(), w.to(), cfg.retentionDays(), cfg.recordIntervalMs(), samples, events);
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
@@ -61,15 +70,17 @@ public class HistoryController {
      * local-midnight → now range for "today".
      */
     @GetMapping("/energy")
-    public EnergyResponse energy(@RequestParam(required = false) Long from,
-                                 @RequestParam(required = false) Long to,
-                                 @RequestParam(required = false) Integer hours) {
-        Window w = window(from, to, hours);
-        // Integrate the FULL (un-downsampled) samples for accuracy; don't integrate across a gap
-        // longer than a few missed records (the app was down) so downtime can't inflate the total.
-        double wh = MinerEnergy.approxConsumedWh(store.samplesBetween(w.from(), w.to()),
-                Duration.ofMillis(cfg.recordIntervalMs() * 4));
-        return new EnergyResponse(w.from(), w.to(), wh);
+    public Mono<EnergyResponse> energy(@RequestParam(required = false) Long from,
+                                       @RequestParam(required = false) Long to,
+                                       @RequestParam(required = false) Integer hours) {
+        return Mono.fromCallable(() -> {
+            Window w = window(from, to, hours);
+            // Integrate the FULL (un-downsampled) samples for accuracy; don't integrate across a gap
+            // longer than a few missed records (the app was down) so downtime can't inflate the total.
+            double wh = MinerEnergy.approxConsumedWh(store.samplesBetween(w.from(), w.to()),
+                    Duration.ofMillis(cfg.recordIntervalMs() * 4));
+            return new EnergyResponse(w.from(), w.to(), wh);
+        }).subscribeOn(Schedulers.boundedElastic()); // same reasoning as history() above
     }
 
     /** Resolve the [from, to] window, clamped to what we keep, guaranteeing {@code from < to}. */

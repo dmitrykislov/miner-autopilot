@@ -2,7 +2,6 @@ package io.dmitrykislov.miner.api;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationContext;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -21,7 +20,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/system")
-@CrossOrigin
 public class SystemController {
 
     private final String version;

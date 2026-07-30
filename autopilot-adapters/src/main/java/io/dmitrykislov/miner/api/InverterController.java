@@ -17,7 +17,6 @@ import reactor.core.publisher.Flux;
  */
 @RestController
 @RequestMapping("/api/inverter")
-@CrossOrigin // allow the Vite dev server (different origin) during development
 public class InverterController {
 
     private final InverterStreamService stream;

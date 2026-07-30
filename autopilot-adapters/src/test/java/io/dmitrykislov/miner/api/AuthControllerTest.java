@@ -18,13 +18,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** The login endpoint: correct/incorrect password, and the per-IP brute-force rate limit (429). */
 class AuthControllerTest {
 
+    private static final String HASH = new BCryptPasswordEncoder().encode("secret");
+
     private AuthController controller;
 
     @BeforeEach
     void setup() {
-        String hash = new BCryptPasswordEncoder().encode("secret");
-        var props = new AuthProperties(true, hash, 30, 2); // allow 2 failed logins/min, then 429
-        controller = new AuthController(new AuthService(props), new LoginRateLimiter(props));
+        controller = controllerWith(false); // allow 2 failed logins/min, then 429
+    }
+
+    /** A controller with the rate limit at 2/min and X-Forwarded-For trust set as given. */
+    private static AuthController controllerWith(boolean trustForwardedFor) {
+        var props = new AuthProperties(true, HASH, 30, 2, trustForwardedFor);
+        return new AuthController(new AuthService(props), new LoginRateLimiter(props), props);
     }
 
     private static ServerWebExchange from(String ip) {
@@ -32,12 +38,24 @@ class AuthControllerTest {
                 MockServerHttpRequest.post("/api/auth/login").remoteAddress(new InetSocketAddress(ip, 40000)));
     }
 
+    /** Same socket IP for every request, but a caller-supplied X-Forwarded-For header. */
+    private static ServerWebExchange spoofing(String forwardedFor) {
+        return MockServerWebExchange.from(MockServerHttpRequest.post("/api/auth/login")
+                .remoteAddress(new InetSocketAddress("9.9.9.9", 40000))
+                .header("X-Forwarded-For", forwardedFor));
+    }
+
     private int status(String password, ServerWebExchange ex) {
-        return controller.login(new AuthController.LoginRequest(password), ex).getStatusCode().value();
+        return status(controller, password, ex);
+    }
+
+    private static int status(AuthController c, String password, ServerWebExchange ex) {
+        // login() is reactive now (bcrypt is offloaded off the event loop), so block for the result.
+        return c.login(new AuthController.LoginRequest(password), ex).block().getStatusCode().value();
     }
 
     @Test void correctPasswordReturnsAToken() {
-        var resp = controller.login(new AuthController.LoginRequest("secret"), from("1.1.1.1"));
+        var resp = controller.login(new AuthController.LoginRequest("secret"), from("1.1.1.1")).block();
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody().token()).isNotBlank();
     }
@@ -66,6 +84,36 @@ class AuthControllerTest {
         assertThat(status("nope", a)).isEqualTo(401);
         assertThat(status("nope", a)).isEqualTo(429);            // IP a blocked
         assertThat(status("nope", from("5.5.5.5"))).isEqualTo(401); // IP b unaffected
+    }
+
+    @Test void aSpoofedForwardedForHeaderCannotEscapeTheRateLimit() {
+        // Default config does NOT trust X-Forwarded-For. An attacker rotating the header still shares
+        // one budget (their real socket address), so the limiter bites on the third attempt.
+        assertThat(status("nope", spoofing("1.2.3.1"))).isEqualTo(401);
+        assertThat(status("nope", spoofing("1.2.3.2"))).isEqualTo(401);
+        assertThat(status("nope", spoofing("1.2.3.3")))
+                .as("rotating X-Forwarded-For must not hand out a fresh bcrypt budget")
+                .isEqualTo(429);
+    }
+
+    @Test void aSpoofedForwardedForHeaderCannotLockOutAnotherUser() {
+        // Burn the budget while forging a victim's address, then check the victim (arriving on their
+        // own socket, no header) is unaffected.
+        assertThat(status("nope", spoofing("7.7.7.7"))).isEqualTo(401);
+        assertThat(status("nope", spoofing("7.7.7.7"))).isEqualTo(401);
+        assertThat(status("nope", spoofing("7.7.7.7"))).isEqualTo(429); // attacker now blocked
+        assertThat(status("secret", from("7.7.7.7")))
+                .as("a forged header must not lock out the real owner of that address")
+                .isEqualTo(200);
+    }
+
+    @Test void forwardedForIsHonouredWhenExplicitlyTrusted() {
+        // Behind a proxy that overwrites the header, per-IP limiting must work off the header again.
+        AuthController proxied = controllerWith(true);
+        assertThat(status(proxied, "nope", spoofing("5.5.5.1"))).isEqualTo(401);
+        assertThat(status(proxied, "nope", spoofing("5.5.5.1"))).isEqualTo(401);
+        assertThat(status(proxied, "nope", spoofing("5.5.5.1"))).isEqualTo(429); // that hop is blocked
+        assertThat(status(proxied, "nope", spoofing("5.5.5.2"))).isEqualTo(401); // a different hop is not
     }
 
     @Test void sseTicketEndpointReturnsANamespacedTicket() {

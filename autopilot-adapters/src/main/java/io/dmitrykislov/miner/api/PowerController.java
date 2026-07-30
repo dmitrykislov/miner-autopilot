@@ -4,7 +4,6 @@ import io.dmitrykislov.miner.port.ConsumptionSource;
 import io.dmitrykislov.miner.port.PowerSnapshot;
 import io.dmitrykislov.miner.port.SolarSource;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -33,7 +32,6 @@ import java.time.Duration;
  */
 @RestController
 @RequestMapping("/api/power")
-@CrossOrigin
 public class PowerController {
 
     /** How often each subscriber samples the ports; latency-bound only (distinctUntilChanged dedups). */

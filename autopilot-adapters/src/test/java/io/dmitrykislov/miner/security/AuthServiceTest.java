@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AuthServiceTest {
 
     private static final String HASH = new BCryptPasswordEncoder().encode("test-pw");
-    private final AuthService auth = new AuthService(new AuthProperties(true, HASH, 30, 5));
+    private final AuthService auth = new AuthService(new AuthProperties(true, HASH, 30, 5, false));
 
     // ---- password ----------------------------------------------------------
     @Test void verifiesCorrectPassword() {
@@ -61,8 +61,8 @@ class AuthServiceTest {
     @Test void tokenSurvivesAcrossServiceInstances() {
         // Same hash → same signing key → a token issued by one instance validates on another
         // (statelessness: a token survives a restart).
-        String token = new AuthService(new AuthProperties(true, HASH, 30, 5)).issueToken();
-        assertThat(new AuthService(new AuthProperties(true, HASH, 30, 5)).isValidToken(token)).isTrue();
+        String token = new AuthService(new AuthProperties(true, HASH, 30, 5, false)).issueToken();
+        assertThat(new AuthService(new AuthProperties(true, HASH, 30, 5, false)).isValidToken(token)).isTrue();
     }
 
     // ---- SSE tickets --------------------------------------------------------
@@ -96,7 +96,7 @@ class AuthServiceTest {
     @Test void failsClosedWhenNoHashConfigured() {
         String realToken = auth.issueToken();       // valid under the configured service
         String realTicket = auth.issueSseTicket();   // ditto
-        AuthService blank = new AuthService(new AuthProperties(true, "", 30, 5));
+        AuthService blank = new AuthService(new AuthProperties(true, "", 30, 5, false));
         assertThat(blank.verifyPassword("anything")).isFalse();
         // A blank-hash service accepts NO credential — not a bogus one, and not even one that
         // is genuinely valid under a configured service. Every request is rejected (fail-closed).
@@ -108,8 +108,8 @@ class AuthServiceTest {
     }
 
     @Test void reportsEnabledFlag() {
-        assertThat(new AuthService(new AuthProperties(true, HASH, 30, 5)).enabled()).isTrue();
-        assertThat(new AuthService(new AuthProperties(false, HASH, 30, 5)).enabled()).isFalse();
+        assertThat(new AuthService(new AuthProperties(true, HASH, 30, 5, false)).enabled()).isTrue();
+        assertThat(new AuthService(new AuthProperties(false, HASH, 30, 5, false)).enabled()).isFalse();
     }
 
     /** Independently sign a payload with the same scheme, to forge tokens for the tests. */

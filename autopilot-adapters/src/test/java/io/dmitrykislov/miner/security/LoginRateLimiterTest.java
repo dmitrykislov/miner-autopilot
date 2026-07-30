@@ -8,7 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LoginRateLimiterTest {
 
     private static LoginRateLimiter limiter(int maxPerMinute) {
-        return new LoginRateLimiter(new AuthProperties(true, "$2y$10$x", 30, maxPerMinute));
+        return new LoginRateLimiter(new AuthProperties(true, "$2y$10$x", 30, maxPerMinute, false));
     }
 
     private static final String IP = "1.2.3.4";

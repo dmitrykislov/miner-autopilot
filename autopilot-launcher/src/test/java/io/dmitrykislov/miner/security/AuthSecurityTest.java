@@ -92,6 +92,37 @@ class AuthSecurityTest {
                 .exchange().expectStatus().isUnauthorized();
     }
 
+    @Test void anSseTicketOnlyWorksForGet() {
+        String ticket = sseTicket(login("secret"));
+        // The ticket is a read-only credential. Even on a stream path, a non-GET method must not be
+        // accepted with it — "read-only" is enforced, not merely implied by which handlers exist.
+        web().post().uri("/api/power/stream?token=" + ticket).exchange().expectStatus().isUnauthorized();
+        web().delete().uri("/api/power/stream?token=" + ticket).exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test void unauthenticatedRequestsAreRejectedNotJustNon200() {
+        // Deliberately strict: assert 401 exactly. An earlier version of these checks asserted only
+        // "not 200"/"not 401", which would also pass if the filter were deleted or the app 500'd.
+        web().get().uri("/api/system").exchange().expectStatus().isUnauthorized();
+        web().post().uri("/api/miner/stop").exchange().expectStatus().isUnauthorized();
+        web().post().uri("/api/autopilot/enable").exchange().expectStatus().isUnauthorized();
+        web().post().uri("/api/miner/power?watts=3000").exchange().expectStatus().isUnauthorized();
+        web().get().uri("/api/history").exchange().expectStatus().isUnauthorized();
+        web().get().uri("/api/history/energy").exchange().expectStatus().isUnauthorized();
+        web().get().uri("/api/power/stream").exchange().expectStatus().isUnauthorized();
+        web().get().uri("/api/house/stream").exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test void corsDoesNotAdvertiseAWildcardOrigin() {
+        // A wildcard ACAO would let any website read API responses from a visitor's browser — and the
+        // login endpoint needs no token, so it could brute-force through the victim's address.
+        web().post().uri("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .header("Origin", "https://evil.example")
+                .bodyValue(new AuthController.LoginRequest("wrong"))
+                .exchange()
+                .expectHeader().doesNotExist("Access-Control-Allow-Origin");
+    }
+
     @Test void sseTicketEndpointItselfRequiresAFullToken() {
         web().post().uri("/api/auth/sse-ticket").exchange().expectStatus().isUnauthorized();
         web().post().uri("/api/auth/sse-ticket")

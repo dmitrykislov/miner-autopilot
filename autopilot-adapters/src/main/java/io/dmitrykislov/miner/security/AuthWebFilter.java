@@ -68,9 +68,12 @@ public class AuthWebFilter implements WebFilter, Ordered {
         if (open || auth.isValidToken(tokenOf(req))) {
             return chain.filter(exchange);
         }
-        // Lesser credential: a short-lived SSE ticket in the query string, accepted only on the
-        // streaming endpoints. It can open a stream but can't act as a full API token elsewhere.
-        if (STREAM_PATHS.matches(path) && auth.isValidSseTicket(req.getQueryParams().getFirst("token"))) {
+        // Lesser credential: a short-lived SSE ticket in the query string, accepted only for GET on
+        // the streaming endpoints. It can open a stream but can't act as a full API token elsewhere.
+        // The GET check makes "read-only" explicit rather than relying on no mutating handler ever
+        // being mapped under the /api/*/stream shape.
+        if (HttpMethod.GET.equals(req.getMethod()) && STREAM_PATHS.matches(path)
+                && auth.isValidSseTicket(req.getQueryParams().getFirst("token"))) {
             return chain.filter(exchange);
         }
         exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
