@@ -90,7 +90,7 @@ function Flow({ active, dir, tone, value }) {
   )
 }
 
-export function EnergyFlow({ solar, house, spark }) {
+export function EnergyFlow({ solar, house, spark, solarTodayKwh }) {
   const solarKw = solar ?? 0
   const metered = house.metered
   const houseKw = house.kw
@@ -120,9 +120,15 @@ export function EnergyFlow({ solar, house, spark }) {
       <div className="hero-grid">
         <div className="flowline">
         <FlowNode icon="sun" tone="solar" label="Solar"
-          info="Live AC power the SG10RS is generating right now — measured by the inverter.">
+          info="Live AC power the SG10RS is generating right now — measured by the inverter. The daily
+                total is energy generated since local midnight.">
           <span className="node-value">{fmt(solarKw)}<em>kW</em></span>
-          <span className="node-sub">generating</span>
+          {/* Today's total sits on the "generating" line rather than its own, so the daily figure
+              lives beside the live one without costing another row of height. */}
+          <span className="node-sub">
+            generating
+            {Number.isFinite(solarTodayKwh) && <>{' · '}{fmt(solarTodayKwh, 1)} kWh today</>}
+          </span>
         </FlowNode>
 
         <Flow active={known && solarKw > 0.01} dir="right" tone="solar" value={Math.min(solarKw, houseKw || solarKw)} />
@@ -533,20 +539,9 @@ function Dashboard({ onLogout }) {
 
       {power && tab === 'overview' && (
         <>
-          <EnergyFlow solar={solar} house={house} spark={spark} />
-
-          {hasInverter && (
-            <div className="kpis">
-              <Kpi icon="calendar" label="Today" value={fmt(hl.dailyYieldKwh, 1)} unit="kWh"
-                info="Energy generated since midnight." />
-              <Kpi icon="sigma" label="Lifetime" value={fmt(hl.totalYieldKwh, 0)} unit="kWh"
-                info="Total energy generated since installation." />
-              <Kpi icon="wave" label="Grid Frequency" value={fmt(hl.gridFrequencyHz, 2)} unit="Hz"
-                info="Measured grid frequency (0 while the inverter is in standby)." />
-              <Kpi icon="thermometer" label="Inverter Temp" value={fmt(hl.temperatureC, 1)} unit="℃"
-                info="Air temperature inside the inverter enclosure." />
-            </div>
-          )}
+          {/* Today's generation now lives in the Solar node of the flow, and the three
+              reference readings moved to Advanced — so the KPI row is gone from the overview. */}
+          <EnergyFlow solar={solar} house={house} spark={spark} solarTodayKwh={hl.dailyYieldKwh} />
 
           <HistoryChart authFetch={authFetch} />
 
@@ -572,7 +567,19 @@ function Dashboard({ onLogout }) {
       )}
 
       {hasInverter && tab === 'advanced' && (
-        <InverterDetails metrics={metrics} strings={strings} />
+        <>
+          {/* Reference readings rather than at-a-glance ones: worth having, but they don't need to
+              occupy a row on the landing page. */}
+          <div className="kpis">
+            <Kpi icon="sigma" label="Lifetime" value={fmt(hl.totalYieldKwh, 0)} unit="kWh"
+              info="Total energy generated since installation." />
+            <Kpi icon="wave" label="Grid Frequency" value={fmt(hl.gridFrequencyHz, 2)} unit="Hz"
+              info="Measured grid frequency (0 while the inverter is in standby)." />
+            <Kpi icon="thermometer" label="Inverter Temp" value={fmt(hl.temperatureC, 1)} unit="℃"
+              info="Air temperature inside the inverter enclosure." />
+          </div>
+          <InverterDetails metrics={metrics} strings={strings} />
+        </>
       )}
 
       <footer className="foot">

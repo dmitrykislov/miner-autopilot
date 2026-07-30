@@ -8,6 +8,7 @@ import io.dmitrykislov.miner.port.ConsumptionSource;
 import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.port.PowerReading;
 import io.dmitrykislov.miner.port.SolarSource;
+import io.dmitrykislov.miner.util.LogTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -113,7 +114,10 @@ public class MinerAutopilot {
             PowerChangeEvent e = history.latestEvent();
             if (e != null) {
                 lastChange.set(new AutopilotStatus.Change(e.at(), e.action(), e.fromW(), e.toW(), e.reason()));
-                log.info("autopilot: restored last change from history — {} at {}", e.action(), e.at());
+                // Local time with offset, matching the log's own prefix — an Instant would print UTC
+                // here and read as hours stale next to a local timestamp (see LogTime).
+                log.info("autopilot: restored last change from history — {} at {}",
+                        e.action(), LogTime.of(e.at()));
             }
         } catch (Exception ex) {
             log.debug("autopilot: could not restore last change from history: {}", ex.toString());

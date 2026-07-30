@@ -93,12 +93,11 @@ You'll see three names in the code — three small, independent pieces:
 ## The dashboard (UI)
 
 - **Header** with the device name and an **Overview / Advanced** tab switch.
-- **Live Power Flow** — Solar → Home → Grid with animated flows, plus a **self-sufficiency ring** and the **surplus margin** (`solar − house`). House usage comes from Solar Analytics and updates live; if that feed goes quiet, house and margin show as **unavailable**.
-- **KPIs** — today's and lifetime yield, grid frequency, inverter temperature.
+- **Live Power Flow** — Solar → Home → Grid with animated flows, plus a **self-sufficiency ring** and the **surplus margin** (`solar − house`). The Solar node shows live kW and, beside it, **today's total generation** since local midnight. House usage comes from Solar Analytics and updates live; if that feed goes quiet, house and margin show as **unavailable**.
 - **History chart** — solar / house / miner over time. Pick **Today**, a **1h / 4h / 8h / 12h** span, or **type any number of hours**; step **back and forward** in time. Hover for exact values; hover a marker to see each autopilot change (what, from→to, why).
 - **Miner card** — state (**Mining / Suspended / Stopped / Off**) with the reason, live hashrate, power draw, **fan RPM**, uptime, pools, an editable **power target**, and **Start / Stop**. A cleanly-stopped miner reads **Off**, not an error. The status line also shows **≈ N.N kWh today** — the approximate energy the miner has drawn since local midnight (the area under its power curve, from the recorded history).
 - **Autopilot card** — an On/Off toggle, the last decision (including "holding"), and the last change it actually made.
-- **Advanced tab** — all the detailed inverter readings (energy, power, grid, DC/PV strings, device status), each with an explanation tooltip.
+- **Advanced tab** — lifetime yield, grid frequency and inverter temperature (reference readings rather than at-a-glance ones), then all the detailed inverter readings (energy, power, grid, DC/PV strings, device status), each with an explanation tooltip.
 - Light/dark theme, responsive, and a **Log out** button in the footer.
 
 ---
@@ -260,7 +259,7 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 |---|---|---|
 | `SERVER_PORT` | `8080` | Backend + bundled UI (`.env.example` ships `8899`) |
 | `FRONTEND_PORT` | `5173` | Vite dev-server port — used by `./start.sh --dev` only (a shell var, not an app setting) |
-| `LOG_LEVEL` | `INFO` | App log level |
+| `LOG_LEVEL` | `INFO` | App log level. Timestamps in log messages use the machine's local time with an explicit offset, matching each line's own prefix — the JSON API and the history files stay on UTC, which the browser localises |
 | `SCHEDULING_POOL_SIZE` | `6` | One thread per scheduled job so none blocks the others |
 | `JAVA_OPTS` | _(blank)_ | Extra JVM flags. On a small Pi use the footprint caps in `.env.example` (`-Xmx128m` + SerialGC + …) → ~140 MB RSS |
 | **Inverter** (Sungrow SG10RS / WiNet-S) | | |
@@ -493,11 +492,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 397 backend (JUnit) + 104 UI (Vitest), UI bundled into the jar
+mvn clean install               # everything: 402 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
 mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 166)
 ```
 
-Backend tests live **with their module** — `autopilot-core` 10 · `autopilot-engine` 166 · `autopilot-adapters` 178 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **104** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster`, the SSE fan-out every stream sits on.)
+Backend tests live **with their module** — `autopilot-core` 15 · `autopilot-engine` 166 · `autopilot-adapters` 178 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
 
 What's covered:
 

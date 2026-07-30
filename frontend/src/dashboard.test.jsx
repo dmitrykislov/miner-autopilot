@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, waitFor } from '@testing-library/react'
+import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
 import App from './App.jsx'
 import { setToken } from './auth.js'
 
@@ -61,7 +61,7 @@ describe('source-agnostic dashboard', () => {
     expect(screen.queryByText(/^SN /)).toBeNull()                 // serial line
   })
 
-  it('layers the Sungrow detail (Advanced tab + KPIs + model) in when an inverter snapshot arrives', async () => {
+  it('layers the Sungrow detail (Advanced tab + model) in when an inverter snapshot arrives', async () => {
     render(<App />)
     await screen.findByText('Log out')
     await push('/api/power/stream', powerSnapshot)
@@ -69,12 +69,56 @@ describe('source-agnostic dashboard', () => {
 
     await push('/api/inverter/stream', {
       online: true, deviceModel: 'SG10RS', serialNumber: 'SN-123',
-      highlights: { totalYieldKwh: 1234 }, metrics: [], strings: [],
+      highlights: { totalYieldKwh: 1234, dailyYieldKwh: 18.4 }, metrics: [], strings: [],
     })
 
     expect(await screen.findByRole('tab', { name: 'Advanced' })).toBeInTheDocument()
-    expect(screen.getByText('Lifetime')).toBeInTheDocument()   // Sungrow yield KPI
     expect(screen.getByText('SG10RS')).toBeInTheDocument()     // header model (own text node)
     expect(screen.getByText('SN SN-123')).toBeInTheDocument()  // serial line
+  })
+
+  it("shows today's solar total inside the Solar node, not as a separate KPI row", async () => {
+    render(<App />)
+    await screen.findByText('Log out')
+    await push('/api/power/stream', powerSnapshot)
+    await push('/api/inverter/stream', {
+      online: true, deviceModel: 'SG10RS', serialNumber: 'SN-123',
+      highlights: { totalYieldKwh: 1234, dailyYieldKwh: 18.4 }, metrics: [], strings: [],
+    })
+
+    // The daily figure sits in the Solar node of the flow, on the "generating" line. Scope by the
+    // node's own class — "Solar" also appears in the history chart legend.
+    await screen.findByText('Live Power Flow')
+    const solarNode = await waitFor(() => {
+      const n = document.querySelector('.node.solar')
+      if (!n || !n.textContent.includes('kWh today')) throw new Error('daily total not rendered yet')
+      return n
+    })
+    expect(solarNode).toHaveTextContent('18.4 kWh today')
+    expect(solarNode).toHaveTextContent('3.00')          // …alongside the live kW
+    expect(solarNode).toHaveTextContent('generating')
+  })
+
+  it('keeps the reference readings off the overview and on the Advanced tab', async () => {
+    render(<App />)
+    await screen.findByText('Log out')
+    await push('/api/power/stream', powerSnapshot)
+    await push('/api/inverter/stream', {
+      online: true, deviceModel: 'SG10RS', serialNumber: 'SN-123',
+      highlights: { totalYieldKwh: 1234, dailyYieldKwh: 18.4, gridFrequencyHz: 50.01, temperatureC: 41.2 },
+      metrics: [], strings: [],
+    })
+    await screen.findByRole('tab', { name: 'Advanced' })
+
+    // Overview stays clean — none of the three appear there.
+    expect(screen.queryByText('Lifetime')).toBeNull()
+    expect(screen.queryByText('Grid Frequency')).toBeNull()
+    expect(screen.queryByText('Inverter Temp')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }))
+
+    expect(await screen.findByText('Lifetime')).toBeInTheDocument()
+    expect(screen.getByText('Grid Frequency')).toBeInTheDocument()
+    expect(screen.getByText('Inverter Temp')).toBeInTheDocument()
   })
 })
