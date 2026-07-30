@@ -83,10 +83,14 @@ public class MinerAutopilot {
                 Duration.ofMillis(cfg.upIntervalMs()), Duration.ofMillis(cfg.downIntervalMs()),
                 Duration.ofMillis(cfg.longWindowMs()), cfg.upMaxRungsPerCycle(), cfg.emergencyGapW(),
                 Duration.ofMillis(cfg.minRunMs())));
-        // Tolerate a few missed/slow inverter polls, but treat a longer gap as "no longer known":
-        // a stalled poller keeps handing back its last snapshot, so without this the surplus could
-        // be piloted on stale data. 4× the poll interval rides out transient GC/scheduling jitter.
-        this.maxSnapshotAge = Duration.ofMillis(Math.max(1L, props.inverter().pollIntervalMs()) * 4);
+        // Tolerate a few missed/slow polls, but treat a longer gap as "no longer known": a stalled
+        // poller keeps handing back its last reading, so without this the surplus could be piloted on
+        // stale data. Judge against the SLOWER of the two feeds' cadences (×4 to ride out transient
+        // GC/scheduling jitter): the consumption reading arrives from Solar Analytics on its own
+        // interval, so tying this solely to the inverter poll would wrongly starve consumption if the
+        // inverter happens to poll faster than Solar Analytics.
+        long slowestPollMs = Math.max(props.inverter().pollIntervalMs(), props.solarAnalytics().pollIntervalMs());
+        this.maxSnapshotAge = Duration.ofMillis(Math.max(1L, slowestPollMs) * 4);
         this.enabled.set(cfg.enabled());
         // Restore the last power change from persisted history so a restart doesn't forget
         // what it just did: the governor's restart cooldown / up-dampening are measured from

@@ -33,6 +33,21 @@ class WiNetWebSocketClientTest {
     }
 
     @Test
+    void shutdownReleasesPendingRequestsAndReportsDisconnected() {
+        // @PreDestroy: on context close / redeploy, in-flight requests must be released (not left
+        // hanging until their timeout) and the client must report itself disconnected.
+        var client = newClient();
+        CompletableFuture<JsonNode> real = client.awaitService("real");
+
+        client.shutdown();
+
+        assertThat(real.isCompletedExceptionally()).isTrue();
+        assertThat(client.isConnected()).isFalse();
+        // idempotent: a second shutdown is a harmless no-op.
+        client.shutdown();
+    }
+
+    @Test
     void handleMessageRoutesByServiceToTheRightFuture() throws Exception {
         var client = newClient();
         CompletableFuture<JsonNode> real = client.awaitService("real");

@@ -451,11 +451,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 321 backend (JUnit) + 97 UI (Vitest), UI bundled into the jar
+mvn clean install               # everything: 323 backend (JUnit) + 97 UI (Vitest), UI bundled into the jar
 mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 144)
 ```
 
-Backend tests live **with their module** — `autopilot-engine` 146 · `autopilot-adapters` 139 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **97** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
+Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 140 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **97** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
 
 What's covered:
 

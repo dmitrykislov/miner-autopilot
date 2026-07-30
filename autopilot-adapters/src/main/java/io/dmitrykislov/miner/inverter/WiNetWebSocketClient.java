@@ -6,6 +6,7 @@ import io.dmitrykislov.miner.inverter.dto.DirectResponse;
 import io.dmitrykislov.miner.inverter.dto.RealResponse;
 import io.dmitrykislov.miner.inverter.dto.WiNetEnvelope;
 import io.dmitrykislov.miner.inverter.model.DeviceInfo;
+import jakarta.annotation.PreDestroy;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -83,6 +84,17 @@ public class WiNetWebSocketClient {
 
     public synchronized boolean isConnected() {
         return webSocket != null && !webSocket.isInputClosed() && !webSocket.isOutputClosed();
+    }
+
+    /**
+     * Close the socket and release any in-flight requests on shutdown, so a redeploy/restart (Spring
+     * context close → SIGTERM) doesn't leave a half-open WebSocket to the dongle or callers blocked
+     * on a pending future. Synchronized against {@link #connectAndLogin()} so it can't race a
+     * concurrent reconnect on the poller thread.
+     */
+    @PreDestroy
+    public synchronized void shutdown() {
+        closeQuietly();
     }
 
     /** Opens the socket and completes the connect→login handshake. */

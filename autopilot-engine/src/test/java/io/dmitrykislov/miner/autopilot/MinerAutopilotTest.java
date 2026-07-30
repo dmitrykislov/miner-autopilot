@@ -74,6 +74,18 @@ class MinerAutopilotTest {
         return new MinerAutopilot(energy, solarSource, consumptionSource, miner, props(enabled), stream, history);
     }
 
+    /** Autopilot with explicit inverter + Solar-Analytics poll cadences (for the freshness-bound test). */
+    private MinerAutopilot autopilotWithPolls(long inverterPollMs, long saPollMs) {
+        stream = new AutopilotStreamService();
+        var house = new HouseProperties(
+                new HouseProperties.Inverter("h", 443, "/ws", "u", "p", inverterPollMs, 8000),
+                new HouseProperties.SolarAnalytics(true, "http://x", "u", "p", "12345", saPollMs, 60, 8000, 800),
+                new HouseProperties.Miner(true, "h", 0, 0, "", 0, 0),
+                new HouseProperties.Autopilot(true, 30_000, 1200, 400, 200, 1600, 2, 800,
+                        180_000, 180_000, 180_000, 180_000, 90_000, 1, 1, -1));
+        return new MinerAutopilot(energy, solarSource, consumptionSource, miner, house, stream, history);
+    }
+
     private MinerStatus status(boolean reachable, boolean running, Integer powerTargetW) {
         return status(reachable, running, powerTargetW, running ? 600L : null);
     }
@@ -199,13 +211,29 @@ class MinerAutopilotTest {
     }
 
     @Test void staleSnapshotStopsRunningMiner() {
-        // Windows are fresh, but the live snapshot is older than 4× the inverter poll interval
-        // (40 s) → the poller stalled → surplus unknown → stop.
+        // Windows are fresh, but the live snapshot is older than the freshness bound (4× the slower
+        // feed's poll interval) → the poller stalled → surplus unknown → stop.
         when(miner.refresh()).thenReturn(status(true, true, 2800));
         publishSnapshot(true, true, Instant.now().minusSeconds(120));
         feedEnergy(3000, 2800);
         autopilot(true).tick();
         verify(miner).stop();
+    }
+
+    @Test void consumptionFreshnessIsNotStarvedByAFasterInverterPoll() {
+        // Footgun: the staleness bound must accommodate the SLOWER feed (Solar Analytics, 15s),
+        // not just the inverter poll. With a fast inverter poll (3s) the old bound was 4×3s = 12s,
+        // so a consumption reading only 14s old — perfectly fresh for its own source — was wrongly
+        // judged stale and a healthy, holding miner was STOPPED. It must not be.
+        var ap = autopilotWithPolls(3000, 15000);
+        when(miner.refresh()).thenReturn(status(true, true, 2000));
+        Instant recent = Instant.now().minusSeconds(14); // < SA cadence, > the old inverter-only 12s bound
+        solarSource.publish(new PowerReading(recent, 2000));
+        consumptionSource.publish(new PowerReading(recent, 1000));
+        feedEnergy(2300, 2000); // surplus 2300, cur 2000 → holds at the current rung (no stop, no step)
+        ap.tick();
+        verify(miner, never()).stop();
+        verify(miner, never()).setPowerTarget(anyInt(), anyBoolean());
     }
 
     @Test void unmeteredSnapshotStopsRunningMiner() {
