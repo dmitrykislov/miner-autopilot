@@ -58,18 +58,19 @@ public class EnergySampler {
     @Scheduled(fixedDelayString = "${house.inverter.poll-interval-ms:10000}",
                initialDelayString = "${house.inverter.poll-interval-ms:10000}")
     public void sample() {
+        Instant now = Instant.now(); // passed through so a future-dated reading is ignored, not trusted
         PowerReading solar = solarSource.latest().orElse(null);
         if (solar != null && isNew(solar.at(), lastSolarTs)) {
-            energy.recordSolar(solar.at(), solar.watts());
+            energy.recordSolar(solar.at(), solar.watts(), now);
             lastSolarTs = solar.at();
         }
         PowerReading cons = consumptionSource.latest().orElse(null);
         if (cons != null && isNew(cons.at(), lastConsumptionTs)) {
-            energy.recordConsumption(cons.at(), cons.watts());
+            energy.recordConsumption(cons.at(), cons.watts(), now);
             // Co-sample the miner's draw so surplus = avg(solar) − avg(consumption) + avg(draw)
             // stays exact across a power change. 0 unless it is actually mining (a suspended/off
             // miner draws ~0 and its target is not "consumed").
-            energy.recordMinerDraw(cons.at(), currentMinerDrawW());
+            energy.recordMinerDraw(cons.at(), currentMinerDrawW(), now);
             lastConsumptionTs = cons.at();
         }
     }

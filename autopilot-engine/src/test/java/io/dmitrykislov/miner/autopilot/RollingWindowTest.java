@@ -150,6 +150,47 @@ class RollingWindowTest {
         assertThat(w.average(at(1), Duration.ofMinutes(3))).isEmpty();
     }
 
+    // ---- clock skew: a sample dated in the future is a clock artifact, never a fresh feed -------
+    // A Raspberry Pi has no RTC: it boots on the saved (stale) time and NTP may step the clock
+    // BACKWARDS, so samples written moments earlier can end up timestamped in the future.
+
+    @Test void aFutureDatedSampleDoesNotReportTheFeedAsFresh() {
+        RollingWindow w = window();
+        w.add(at(4000), 1000);          // 1h ahead of the "now" below
+        // Age is negative here. Treating that as fresh is the dangerous reading: the governor would
+        // see dataFresh=true with an empty average and hold a running miner instead of stopping it.
+        assertThat(w.isFresh(at(400))).isFalse();
+        assertThat(w.average(at(400), Duration.ofMinutes(3))).isEmpty();
+    }
+
+    @Test void addIgnoresASampleDatedAfterNow() {
+        RollingWindow w = window();
+        w.add(at(4000), 1000, at(400));  // bogus: 1h ahead of now → never recorded
+        assertThat(w.size()).isZero();
+        assertThat(w.isFresh(at(400))).isFalse();
+
+        w.add(at(395), 500, at(400));    // a genuine reading is recorded as normal
+        w.add(at(400), 700, at(400));    // at == now is valid, not "future"
+        assertThat(w.size()).isEqualTo(2);
+        assertThat(w.average(at(400), Duration.ofMinutes(3)).getAsDouble()).isCloseTo(600, within(1e-6));
+    }
+
+    @Test void aFutureDatedSampleNeverReportsTheFeedAsFresh() {
+        // Defence in depth: even if a future sample gets in via the timestamp-trusting 2-arg add,
+        // querying must not read it as fresh. A negative age comparing as "fresh" is the dangerous
+        // case — the governor would see a live feed with empty averages and hold a running miner
+        // instead of stopping it, importing all night.
+        RollingWindow w = window();
+        w.add(at(4000), 1000);
+        assertThat(w.isFresh(at(400))).isFalse();
+        assertThat(w.average(at(400), Duration.ofMinutes(3))).isEmpty();
+        // …and the bogus sample is dropped, so the feed recovers with the next real reading.
+        w.add(at(400), 500);
+        w.add(at(410), 700);
+        assertThat(w.isFresh(at(410))).isTrue();
+        assertThat(w.average(at(410), Duration.ofMinutes(3)).getAsDouble()).isCloseTo(600, within(1e-6));
+    }
+
     @Test void rejectsInvalidConstruction() {
         assertThatThrownBy(() -> new RollingWindow(Duration.ZERO, fresh)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new RollingWindow(retain, Duration.ofSeconds(-1))).isInstanceOf(IllegalArgumentException.class);

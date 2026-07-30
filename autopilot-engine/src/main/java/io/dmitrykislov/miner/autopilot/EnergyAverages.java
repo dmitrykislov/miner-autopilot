@@ -84,6 +84,22 @@ public class EnergyAverages {
         minerDraw.add(at, watts);
     }
 
+    // Clock-aware variants: a sample dated after `now` is a clock artifact and is ignored (a Pi has
+    // no RTC, so NTP can step the clock backwards past already-recorded timestamps). Production
+    // callers use these; the 2-arg forms above trust their timestamp and serve tests/backfill.
+
+    public void recordSolar(Instant at, double watts, Instant now) {
+        solar.add(at, watts, now);
+    }
+
+    public void recordConsumption(Instant at, double watts, Instant now) {
+        consumption.add(at, watts, now);
+    }
+
+    public void recordMinerDraw(Instant at, double watts, Instant now) {
+        minerDraw.add(at, watts, now);
+    }
+
     /** Drop all recorded samples. Used by tests to isolate the shared instance. */
     public void clear() {
         solar.clear();

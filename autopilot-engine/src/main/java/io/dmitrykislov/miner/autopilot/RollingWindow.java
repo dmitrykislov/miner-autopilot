@@ -57,6 +57,22 @@ public class RollingWindow {
      * look stale or shift the retention cutoff backwards.
      */
     public synchronized void add(Instant at, double value) {
+        add(at, value, at); // timestamp trusted as current — see the 3-arg overload
+    }
+
+    /**
+     * Record a sample, <b>ignoring one dated after {@code now}</b>.
+     *
+     * <p>A future-dated sample is a clock artifact, not a reading, and admitting one is doubly
+     * harmful: it makes {@code Duration.between(newest, now)} negative, which compares as "fresh"
+     * and would let the governor believe the feed is live while every average is empty — holding a
+     * running miner instead of stopping it. It also pushes the retention cutoff ahead of real
+     * samples, pruning each genuine reading as it arrives. Production callers must use this
+     * overload; {@link #add(Instant, double)} trusts its timestamp and exists for tests and
+     * history backfill.
+     */
+    public synchronized void add(Instant at, double value, Instant now) {
+        if (at.isAfter(now)) return;
         samples.addLast(new Sample(at, value));
         if (newest == null || at.isAfter(newest)) newest = at;
         Instant cutoff = newest.minus(retain);
@@ -77,6 +93,7 @@ public class RollingWindow {
      * returns empty rather than an average of only the most-recent sliver.
      */
     public synchronized OptionalDouble average(Instant now, Duration window, Duration minCoverage) {
+        dropFutureSamples(now);
         if (samples.isEmpty()) return OptionalDouble.empty();
         if (Duration.between(newest, now).compareTo(freshWithin) > 0) {
             return OptionalDouble.empty(); // feed stale → unknown
@@ -99,8 +116,33 @@ public class RollingWindow {
 
     /** True if the feed is fresh (newest sample within {@code freshWithin} of {@code now}). */
     public synchronized boolean isFresh(Instant now) {
+        dropFutureSamples(now);
         if (samples.isEmpty()) return false;
         return Duration.between(newest, now).compareTo(freshWithin) <= 0;
+    }
+
+    /**
+     * Discard samples timestamped after {@code now} and recompute {@link #newest}.
+     *
+     * <p>A sample dated in the future is a clock artifact, not a reading: a Raspberry Pi has no RTC,
+     * so it boots on the last saved time and NTP may step the clock <b>backwards</b> — samples written
+     * moments earlier then sit in the future. Left in place such a sample is doubly harmful. It makes
+     * {@code Duration.between(newest, now)} <b>negative</b>, which compares as "fresh" and would let
+     * the governor believe the feed is live while every average is empty (it would hold a running
+     * miner instead of stopping it — importing all night). It also pushes the retention cutoff ahead
+     * of real samples, so each genuine reading is pruned the moment it arrives.
+     *
+     * <p>Dropping them here — under the same lock, at every query, where {@code now} is known — makes
+     * the window self-healing without giving {@link #add} a clock. Ingestion also filters future
+     * samples ({@code EnergySampler}, {@code EnergyWarmup}); this is the primitive's own guarantee.
+     */
+    private void dropFutureSamples(Instant now) {
+        if (newest == null || !newest.isAfter(now)) return; // fast path: nothing in the future
+        samples.removeIf(s -> s.at().isAfter(now));
+        newest = null;
+        for (Sample s : samples) {
+            if (newest == null || s.at().isAfter(newest)) newest = s.at();
+        }
     }
 
     public synchronized int size() {

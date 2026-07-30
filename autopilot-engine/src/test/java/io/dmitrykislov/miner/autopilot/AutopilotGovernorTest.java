@@ -286,6 +286,46 @@ class AutopilotGovernorTest {
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
     }
 
+    // ---------------------------------------------- clock skew on lastChangeAt
+    // A Pi has no RTC: it boots on the saved time, so a change persisted moments earlier can end up
+    // stamped in the FUTURE once NTP steps the clock backwards. A negative elapsed time must not be
+    // read as "interval not yet elapsed", which would freeze the autopilot: no down-step, no up-step
+    // and no restart-from-off, leaving the miner stuck wherever it happened to be.
+    private static final Instant FUTURE = NOW.plus(Duration.ofHours(2));
+
+    @Test void aFutureLastChangeStillAllowsSteppingDown() {
+        // Over-draw of 500 W (cur 2000, surplus 1500) is below emergencyGapW 800, so the emergency
+        // bypass does NOT apply and the routine down-step is genuinely gated on downInterval.
+        var d = gov.decide(running(2000, 1500, FUTURE, MINED_LONG));
+        assertThat(d.action())
+                .as("a future lastChangeAt must not block the routine down-step")
+                .isEqualTo(Action.STEP_DOWN);
+    }
+
+    @Test void aFutureMiningSinceDoesNotBlockASafetyStop() {
+        // Surplus can no longer hold the floor → must stop. The min-run-time hold is the only thing
+        // that could suppress it, so this needs govMin (the default gov has minRunTime = 0, which
+        // would make the assertion vacuous). A future miningSince must not read as "just started".
+        var d = govMin.decide(running(1600, 1300, LONG_AGO, FUTURE));
+        assertThat(d.action())
+                .as("a future miningSince must not suppress the safety stop")
+                .isEqualTo(Action.STOP);
+    }
+
+    @Test void aFutureLastChangeStillAllowsSteppingUp() {
+        var d = gov.decide(running(1200, 3800, FUTURE, MINED_LONG));
+        assertThat(d.action())
+                .as("a future lastChangeAt must not block ramp-up")
+                .isEqualTo(Action.STEP_UP);
+    }
+
+    @Test void aFutureLastChangeStillAllowsRestartingFromOff() {
+        var d = gov.decide(off(2000, FUTURE)); // ≥ start-surplus 1600
+        assertThat(d.action())
+                .as("a future lastChangeAt must not strand a stopped miner off forever")
+                .isEqualTo(Action.START);
+    }
+
     // ---------------------------------------------- import invariants (property)
     // Fully settled (down-interval elapsed): the resulting draw never exceeds the surplus at all.
     @Test void aSettledRunningMinerIsNeverTargetedAboveTheSurplus() {
@@ -302,6 +342,50 @@ class AutopilotGovernorTest {
                     assertThat((double) runPower)
                             .as("cur=%d S=%d action=%s target=%d", cur, S, d.action(), d.targetPowerW())
                             .isLessThanOrEqualTo(S); // never draws more than the available surplus
+                }
+            }
+        }
+    }
+
+    // The two sweeps above vary a single S (short == long), so they cannot see a divergent pair.
+    // These two cover that case: ramping up must be paid for by BOTH windows, because the long
+    // window is a lagging indicator — "sunny 15 minutes ago" does not fund a step-up now.
+    @Test void doesNotStepUpAboveWhatTheShortWindowCanPay() {
+        // Long window still remembers strong sun (3000) but the last 3 minutes are only 2000.
+        // min(2000,3000) − headroom 200 = 1800 → highest rung ≤ 1800 is 1600 = cur → hold.
+        var d = gov.decide(runningSL(1600, 2000, 3000, LONG_AGO, MINED_LONG));
+        assertThat(d.action())
+                .as("stepping to 2400 on a 2000 W short-window surplus would import ~400 W")
+                .isEqualTo(Action.NONE);
+    }
+
+    @Test void aSettledMinerIsNeverTargetedAboveTheLiveSurplusWhenWindowsDiverge() {
+        // The live (short-window) surplus bounds the draw. The long window only *dampens* upward
+        // moves, so a long window that is LOWER than the live one must never force a stop or block
+        // a legitimate hold — but it must also never let a step-up exceed it (see below).
+        int[] surpluses = {1000, 1300, 1500, 1800, 2200, 2600, 3000, 3400, 3800, 5000};
+        for (int cur : gov.ladder()) {
+            for (int sShort : surpluses) {
+                for (int sLong : surpluses) {          // cross-product: divergent windows included
+                    var d = gov.decide(runningSL(cur, sShort, sLong, LONG_AGO, MINED_LONG));
+                    Integer runPower = switch (d.action()) {
+                        case START, STEP_UP, STEP_DOWN -> d.targetPowerW();
+                        case NONE -> cur;
+                        case STOP -> null;
+                    };
+                    if (runPower != null) {
+                        assertThat((double) runPower)
+                                .as("cur=%d short=%d long=%d action=%s target=%s",
+                                        cur, sShort, sLong, d.action(), d.targetPowerW())
+                                .isLessThanOrEqualTo(sShort);
+                    }
+                    // A step UP must be affordable on BOTH windows — this is the regression guard.
+                    if (d.action() == Action.STEP_UP) {
+                        assertThat((double) d.targetPowerW())
+                                .as("STEP_UP cur=%d short=%d long=%d target=%d",
+                                        cur, sShort, sLong, d.targetPowerW())
+                                .isLessThanOrEqualTo(Math.min(sShort, sLong));
+                    }
                 }
             }
         }
@@ -340,12 +424,12 @@ class AutopilotGovernorTest {
         assertThat(d.action()).isEqualTo(Action.NONE);
     }
 
-    @Test void upRampFollowsLongWindowWhenShortIsLower() {
-        // Short (2000) below long (3000): down-check off short holds (2000−200→rung 1600 < cur? no,
-        // cur is 1600)… actually cur 1600, short surplus 2000 supports staying; long 3000 drives up.
-        var d = gov.decide(runningSL(1600, 2000, 3000, LONG_AGO, MINED_LONG));
+    @Test void upRampIsSizedByWhicheverWindowIsLower() {
+        // Short (2400) below long (3000): the step is sized by the short window, not the long one.
+        // min(2400,3000)−200 = 2200 → highest rung ≤ 2200 is 2000, which is +1 rung from cur 1600.
+        var d = gov.decide(runningSL(1600, 2400, 3000, LONG_AGO, MINED_LONG));
         assertThat(d.action()).isEqualTo(Action.STEP_UP);
-        assertThat(d.targetPowerW()).isEqualTo(2400); // long 3000−200→2800 rung, capped to +2 rungs = 2400
+        assertThat(d.targetPowerW()).isEqualTo(2000);
     }
 
     // ------------------------------------------- emergency-gap boundary (>= gap)

@@ -59,12 +59,17 @@ public class EnergyWarmup {
             int replayed = 0;
             for (TelemetrySample s : recent) {
                 if (s.at() == null) continue;
-                if (s.solarW() != null) energy.recordSolar(s.at(), s.solarW());
+                // samplesSince has no upper bound, and a Pi with no RTC can persist samples stamped
+                // ahead of the current clock (boot on stale time, then NTP steps backwards). Replaying
+                // one would poison the windows for the whole retention period, so skip it. `now` is
+                // also passed through as a second line of defence.
+                if (s.at().isAfter(now)) continue;
+                if (s.solarW() != null) energy.recordSolar(s.at(), s.solarW(), now);
                 if (s.consumptionW() != null) {
-                    energy.recordConsumption(s.at(), s.consumptionW());
+                    energy.recordConsumption(s.at(), s.consumptionW(), now);
                     // Co-sample the miner draw exactly as the live sampler does (0 when not mining),
                     // so the miner-independent surplus average is consistent.
-                    energy.recordMinerDraw(s.at(), s.minerDrawW() != null ? s.minerDrawW() : 0.0);
+                    energy.recordMinerDraw(s.at(), s.minerDrawW() != null ? s.minerDrawW() : 0.0, now);
                     replayed++;
                 }
             }

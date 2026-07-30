@@ -22,7 +22,9 @@ import java.util.OptionalDouble;
  * (= solar − base-house load; the miner's own draw is already added back by {@link EnergyAverages}),
  * so it must never have the current power added again. Every command sets the target to the highest
  * ladder rung ≤ {@code S − headroom}; because {@code headroom > 0} a command never targets at or
- * above the surplus.
+ * above the surplus. When the two windows disagree, {@code S} for a ramp-<b>up</b> is the
+ * <b>lower</b> of them: the long window is intentionally slow, which also makes it lagging, so a
+ * surplus that has since disappeared must not fund a step up.
  *
  * <p><b>Import bound (not "never" — bounded).</b> Between commands the surplus can drift below the
  * miner's draw. A routine down-step is throttled by {@code downInterval} to avoid chasing noise, so a
@@ -249,7 +251,15 @@ public final class AutopilotGovernor {
         if (!minedLongEnough(in)) {
             return none("mining not long enough for a valid up-average → holding");
         }
-        int upTarget = rungAtOrBelow(sLong - cfg.headroomW());
+        // Size the step by the MORE CONSERVATIVE of the two windows. The long window is deliberately
+        // slow, which also makes it a lagging indicator: "sunny 15 minutes ago" must not fund a step
+        // up that the last 3 minutes cannot pay for. Using the long window alone let a cloud-shaded
+        // miner be commanded above the live surplus, and the resulting over-draw sat just under
+        // emergencyGapW (so the fast path never fired) until the next downInterval — minutes of import.
+        // The short window still cannot *raise* the target beyond the long one, so a brief spike is
+        // ignored exactly as before.
+        double sRamp = Math.min(sShort, sLong);
+        int upTarget = rungAtOrBelow(sRamp - cfg.headroomW());
         if (upTarget > cur) {
             int capped = rungAtOrBelow(Math.min(upTarget, cur + cfg.upMaxRungsPerCycle() * cfg.stepW()));
             // capped can be the sub-floor sentinel (rungAtOrBelow returns floorW−1 when the long
@@ -257,10 +267,10 @@ public final class AutopilotGovernor {
             // never command an off-ladder, sub-floor target; hold instead.
             if (capped > cur && capped >= cfg.floorW()) {
                 return decision(Action.STEP_UP, capped, String.format(
-                        "surplus %dW → up to %dW", Math.round(sLong), capped));
+                        "surplus %dW → up to %dW", Math.round(sRamp), capped));
             }
         }
-        return none(String.format("surplus %dW, holding at %dW", Math.round(sLong), cur));
+        return none(String.format("surplus %dW, holding at %dW", Math.round(sRamp), cur));
     }
 
     // ---- helpers ------------------------------------------------------------
@@ -272,13 +282,33 @@ public final class AutopilotGovernor {
 
     /** True while the miner has been mining for less than {@code minRunTime} — the window in which a
      *  mild dip is ridden out rather than stopped. Always false when the guard is disabled (ZERO). */
+    /**
+     * Is the miner inside its minimum run-time (so a mild dip should not stop it yet)?
+     *
+     * <p>A {@code miningSince} in the future is a clock artifact (see {@link #elapsed}). It must not
+     * count as "only just started", because this guard <b>suppresses a safety stop</b> — an untrusted
+     * stamp would keep a miner running that the surplus can no longer sustain.
+     */
     private boolean withinMinRunTime(Input in) {
-        return !cfg.minRunTime().isZero() && in.miningSince() != null
-                && Duration.between(in.miningSince(), in.now()).compareTo(cfg.minRunTime()) < 0;
+        if (cfg.minRunTime().isZero() || in.miningSince() == null) return false;
+        Duration mining = Duration.between(in.miningSince(), in.now());
+        return !mining.isNegative() && mining.compareTo(cfg.minRunTime()) < 0;
     }
 
+    /**
+     * Has {@code interval} passed since {@code last}? Unknown ({@code null}) counts as elapsed.
+     *
+     * <p>A {@code last} in the <b>future</b> also counts as elapsed. That happens after a clock
+     * correction (a Pi has no RTC, so it boots on the saved time and NTP may step it backwards past
+     * timestamps already written). Reading the resulting negative duration as "not yet elapsed" would
+     * freeze every dampened action at once — no routine down-step, no ramp-up, and no restart from
+     * off — stranding the miner wherever it happened to be until the clock caught up. Acting on an
+     * untrusted stamp is the lesser evil; the surplus checks still gate what the action can be.
+     */
     private static boolean elapsed(Instant last, Instant now, Duration interval) {
-        return last == null || Duration.between(last, now).compareTo(interval) >= 0;
+        if (last == null) return true;
+        Duration since = Duration.between(last, now);
+        return since.isNegative() || since.compareTo(interval) >= 0;
     }
 
     /** Highest ladder rung ≤ {@code watts}; if below the floor, returns {@code floorW − 1} (a stop signal). */

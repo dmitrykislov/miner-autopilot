@@ -175,8 +175,17 @@ public class MinerAutopilot {
                 sig.shortSurplusW(), sig.longSurplusW());
 
         AutopilotDecision d = governor.decide(input);
+        // Log an action, or a changed explanation, at INFO; a repeated "still holding" goes to DEBUG.
+        // At one tick every 30 s an unconditional INFO wrote ~2,880 lines/day — a couple of MB of
+        // needless SD-card writes on the Pi, and enough noise to bury the lines that matter.
+        boolean interesting = d.action() != AutopilotDecision.Action.NONE
+                || !java.util.Objects.equals(d.reason(), lastDecision);
         lastDecision = d.reason();
-        log.info("autopilot: {}", d.reason());
+        if (interesting) {
+            log.info("autopilot: {}", d.reason());
+        } else {
+            log.debug("autopilot: {}", d.reason());
+        }
         apply(d);
     }
 
@@ -186,8 +195,15 @@ public class MinerAutopilot {
                 && isFresh(consumptionSource.latest().orElse(null), now);
     }
 
+    /**
+     * Is this reading recent enough to act on? A reading stamped in the <b>future</b> is not: the
+     * negative age would otherwise compare as fresh (see {@link RollingWindow}), letting the autopilot
+     * act on a clock artifact. Treating it as stale routes to the safe path — stop a running miner.
+     */
     private boolean isFresh(PowerReading r, Instant now) {
-        return r != null && Duration.between(r.at(), now).compareTo(maxSnapshotAge) <= 0;
+        if (r == null) return false;
+        Duration age = Duration.between(r.at(), now);
+        return !age.isNegative() && age.compareTo(maxSnapshotAge) <= 0;
     }
 
     private void trackMiningSince(MinerStatus st, Instant now) {
