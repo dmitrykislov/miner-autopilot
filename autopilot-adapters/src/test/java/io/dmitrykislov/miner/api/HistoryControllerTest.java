@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -32,6 +33,18 @@ class HistoryControllerTest {
 
     private long windowHours(HistoryResponse r) {
         return Duration.between(r.from(), r.to()).toHours();
+    }
+
+    @Test void energyEndpointReturnsApproxMinerWattHoursOverTheWindow() {
+        Instant t = Instant.parse("2026-07-28T02:00:00Z");
+        // 2000 W draw held across two 60 s steps → 2000 × 120/3600 = 66.67 Wh (well within the
+        // 4× record-interval gap cap, so both steps integrate).
+        when(store.samplesBetween(any(), any())).thenReturn(List.of(
+                new TelemetrySample(t,                 null, null, 2000, 2000, "MINING"),
+                new TelemetrySample(t.plusSeconds(60),  null, null, 2000, 2000, "MINING"),
+                new TelemetrySample(t.plusSeconds(120), null, null, 2000, 2000, "MINING")));
+        var r = controller.energy(null, null, 24);
+        assertThat(r.minerEnergyWh()).isCloseTo(66.667, within(0.01));
     }
 
     @Test void hoursGivesTheLastNHoursEndingNow() {

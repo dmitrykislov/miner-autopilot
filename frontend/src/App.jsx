@@ -226,7 +226,7 @@ function MpptCard({ s }) {
   )
 }
 
-export function MinerCard({ miner, pending, onStart, onStop, onSetPower }) {
+export function MinerCard({ miner, pending, onStart, onStop, onSetPower, energyTodayKwh }) {
   const [target, setTarget] = useState('')
   useEffect(() => {
     if (miner?.powerTargetW != null) setTarget(String(miner.powerTargetW))
@@ -247,6 +247,11 @@ export function MinerCard({ miner, pending, onStart, onStop, onSetPower }) {
           {statusText}
           {running && upStr && <> · up {upStr}</>}
           {reachable && miner?.totalPools > 0 && <> · {miner.activePools}/{miner.totalPools} pools</>}
+          {energyTodayKwh != null && (
+            <span className="plug-energy" title="Approximate energy the miner has drawn since midnight (area under its power curve today)">
+              {' · ≈ '}{fmt(energyTodayKwh, 1)} kWh today
+            </span>
+          )}
         </div>
         {miner?.statusReason && !mining && reachable && (
           <div className="plug-substatus">{miner.statusReason}</div>
@@ -421,6 +426,7 @@ function Dashboard({ onLogout }) {
   const [system, setSystem] = useState(null)
   const [autopilot, setAutopilot] = useState(null)
   const [apPending, setApPending] = useState(false)
+  const [minerEnergyTodayKwh, setMinerEnergyTodayKwh] = useState(null)
   const [tab, setTab] = useState('overview')
 
   // fetch with the bearer token; a 401 means the token is gone/expired → log out.
@@ -433,6 +439,21 @@ function Dashboard({ onLogout }) {
       .then((d) => { if (d) { setPower(d); setPowerRecvMs(Date.now()) } }).catch(() => {})
     authFetch('/api/system').then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d) setSystem({ version: d.version, startedMs: Date.parse(d.startedAt) }) }).catch(() => {})
+  }, [])
+
+  // Approximate energy the miner has consumed *today* (area under its power curve, kWh), from the
+  // history layer. Local midnight → now; refreshed each minute to keep the running total live.
+  useEffect(() => {
+    const loadEnergy = () => {
+      const midnight = new Date(); midnight.setHours(0, 0, 0, 0)
+      authFetch(`/api/history/energy?from=${midnight.getTime()}&to=${Date.now()}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d && typeof d.minerEnergyWh === 'number') setMinerEnergyTodayKwh(d.minerEnergyWh / 1000) })
+        .catch(() => {})
+    }
+    loadEnergy()
+    const t = setInterval(loadEnergy, 60000)
+    return () => clearInterval(t)
   }, [])
 
   // Source-agnostic power feed (reads the solar/consumption ports) — drives the live flow, so the
@@ -534,7 +555,7 @@ function Dashboard({ onLogout }) {
               <h2>Miner</h2>
               <InfoDot text="Braiins OS+ miner — start/stop and set the autotuning power target over the local GraphQL API." />
             </div>
-            <MinerCard miner={miner} pending={minerPending}
+            <MinerCard miner={miner} pending={minerPending} energyTodayKwh={minerEnergyTodayKwh}
               onStart={minerStart} onStop={minerStop} onSetPower={minerSetPower} />
           </section>
 

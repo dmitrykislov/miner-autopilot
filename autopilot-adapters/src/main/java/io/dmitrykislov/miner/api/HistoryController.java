@@ -3,6 +3,7 @@ package io.dmitrykislov.miner.api;
 import io.dmitrykislov.miner.history.Downsampling;
 import io.dmitrykislov.miner.history.HistoryProperties;
 import io.dmitrykislov.miner.history.HistoryResponse;
+import io.dmitrykislov.miner.history.MinerEnergy;
 import io.dmitrykislov.miner.port.PowerChangeEvent;
 import io.dmitrykislov.miner.port.TelemetrySample;
 import io.dmitrykislov.miner.port.TelemetryHistory;
@@ -47,25 +48,53 @@ public class HistoryController {
     public HistoryResponse history(@RequestParam(required = false) Long from,
                                    @RequestParam(required = false) Long to,
                                    @RequestParam(required = false) Integer hours) {
+        Window w = window(from, to, hours);
+        List<TelemetrySample> samples = Downsampling.reduce(store.samplesBetween(w.from(), w.to()), MAX_POINTS);
+        List<PowerChangeEvent> events = store.eventsBetween(w.from(), w.to());
+        return new HistoryResponse(w.from(), w.to(), cfg.retentionDays(), cfg.recordIntervalMs(), samples, events);
+    }
+
+    /**
+     * Approximate miner energy (watt-hours) consumed over a window — the area under the miner's
+     * power curve. Lightweight: returns only the number (no samples), so the UI can poll it cheaply
+     * (e.g. "≈ kWh today" in the miner card). Same windowing as {@link #history}; the UI passes the
+     * local-midnight → now range for "today".
+     */
+    @GetMapping("/energy")
+    public EnergyResponse energy(@RequestParam(required = false) Long from,
+                                 @RequestParam(required = false) Long to,
+                                 @RequestParam(required = false) Integer hours) {
+        Window w = window(from, to, hours);
+        // Integrate the FULL (un-downsampled) samples for accuracy; don't integrate across a gap
+        // longer than a few missed records (the app was down) so downtime can't inflate the total.
+        double wh = MinerEnergy.approxConsumedWh(store.samplesBetween(w.from(), w.to()),
+                Duration.ofMillis(cfg.recordIntervalMs() * 4));
+        return new EnergyResponse(w.from(), w.to(), wh);
+    }
+
+    /** Resolve the [from, to] window, clamped to what we keep, guaranteeing {@code from < to}. */
+    private Window window(Long from, Long to, Integer hours) {
         Instant now = Instant.now();
         Instant retentionStart = now.minus(cfg.retention());
 
         Instant toI = to != null ? Instant.ofEpochMilli(to) : now;
-        if (toI.isAfter(now)) toI = now;                       // never beyond now
-        if (toI.isBefore(retentionStart)) toI = retentionStart; // whole window is off the end → empty-ish
+        if (toI.isAfter(now)) toI = now;                        // never beyond now
+        if (toI.isBefore(retentionStart)) toI = retentionStart; // whole window off the end → empty-ish
 
         Instant fromI;
         if (from != null) {
             fromI = Instant.ofEpochMilli(from);
         } else {
-            long h = hours != null ? Math.max(1, hours) : 12; // default: last 12h
+            long h = hours != null ? Math.max(1, hours) : 12;   // default: last 12h
             fromI = toI.minus(Duration.ofHours(h));
         }
         if (fromI.isBefore(retentionStart)) fromI = retentionStart; // clamp to what we keep
         if (!fromI.isBefore(toI)) fromI = toI.minus(Duration.ofMinutes(1)); // guarantee from < to
-
-        List<TelemetrySample> samples = Downsampling.reduce(store.samplesBetween(fromI, toI), MAX_POINTS);
-        List<PowerChangeEvent> events = store.eventsBetween(fromI, toI);
-        return new HistoryResponse(fromI, toI, cfg.retentionDays(), cfg.recordIntervalMs(), samples, events);
+        return new Window(fromI, toI);
     }
+
+    private record Window(Instant from, Instant to) {}
+
+    /** Just the miner energy for a window (watt-hours) — no samples, for cheap polling. */
+    public record EnergyResponse(Instant from, Instant to, double minerEnergyWh) {}
 }

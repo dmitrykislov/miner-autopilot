@@ -23,6 +23,19 @@ describe('MinerCard', () => {
     expect(t).toContain('3000')     // fan rpm
   })
 
+  it('shows approximate energy consumed today when provided, inline', () => {
+    const { container } = render(
+      <MinerCard miner={miner()} pending={false} onStart={noop} onStop={noop} onSetPower={noop}
+        energyTodayKwh={12.34} />)
+    expect(container.textContent).toContain('≈ 12.3 kWh today')  // fmt(12.34, 1)
+  })
+
+  it('omits the energy figure when it is not available', () => {
+    const { container } = render(
+      <MinerCard miner={miner()} pending={false} onStart={noop} onStop={noop} onSetPower={noop} />)
+    expect(container.textContent).not.toMatch(/kWh today/)
+  })
+
   it('Start disabled while running, Stop enabled', () => {
     render(<MinerCard miner={miner({ running: true })} pending={false} onStart={noop} onStop={noop} onSetPower={noop} />)
     expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()

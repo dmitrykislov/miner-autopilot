@@ -96,7 +96,7 @@ You'll see three names in the code — three small, independent pieces:
 - **Live Power Flow** — Solar → Home → Grid with animated flows, plus a **self-sufficiency ring** and the **surplus margin** (`solar − house`). House usage comes from Solar Analytics and updates live; if that feed goes quiet, house and margin show as **unavailable**.
 - **KPIs** — today's and lifetime yield, grid frequency, inverter temperature.
 - **History chart** — solar / house / miner over time. Pick **Today**, a **1h / 4h / 8h / 12h** span, or **type any number of hours**; step **back and forward** in time. Hover for exact values; hover a marker to see each autopilot change (what, from→to, why).
-- **Miner card** — state (**Mining / Suspended / Stopped / Off**) with the reason, live hashrate, power draw, **fan RPM**, uptime, pools, an editable **power target**, and **Start / Stop**. A cleanly-stopped miner reads **Off**, not an error.
+- **Miner card** — state (**Mining / Suspended / Stopped / Off**) with the reason, live hashrate, power draw, **fan RPM**, uptime, pools, an editable **power target**, and **Start / Stop**. A cleanly-stopped miner reads **Off**, not an error. The status line also shows **≈ N.N kWh today** — the approximate energy the miner has drawn since local midnight (the area under its power curve, from the recorded history).
 - **Autopilot card** — an On/Off toggle, the last decision (including "holding"), and the last change it actually made.
 - **Advanced tab** — all the detailed inverter readings (energy, power, grid, DC/PV strings, device status), each with an explanation tooltip.
 - Light/dark theme, responsive, and a **Log out** button in the footer.
@@ -331,6 +331,7 @@ All live streams are **Server-Sent Events** (`text/event-stream`).
 | `GET /api/autopilot` · `/stream` | Autopilot status: enabled, last decision, last change |
 | `POST /api/autopilot/enable` · `/disable` | Turn the autopilot on/off at runtime |
 | `GET /api/history?from=&to=` | Recorded samples + change events for a window (or `?hours=n`) |
+| `GET /api/history/energy?from=&to=` | Approximate miner energy (Wh) over the window — the area under the miner's power curve (no samples; cheap to poll) |
 | `POST /api/ingest/solar` · `/consumption` `?watts=` (+ `/clear`) | Push readings into the source ports (opt-in: `INGEST_ENABLED=true`) — see below |
 | `GET /api/system` | App version, start time, uptime |
 | `POST /api/auth/login` | Exchange `{password}` for a bearer token (the one open endpoint) |
@@ -451,11 +452,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 323 backend (JUnit) + 97 UI (Vitest), UI bundled into the jar
+mvn clean install               # everything: 336 backend (JUnit) + 99 UI (Vitest), UI bundled into the jar
 mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 144)
 ```
 
-Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 140 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **97** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
+Backend tests live **with their module** — `autopilot-engine` 147 · `autopilot-adapters` 153 · `autopilot-launcher` 36 (full-boot `@SpringBootTest`); the **99** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
 
 What's covered:
 
