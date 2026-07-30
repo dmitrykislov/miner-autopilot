@@ -23,6 +23,30 @@ import static org.mockito.Mockito.*;
 
 class SolarAnalyticsClientTest {
 
+    @Test
+    void theCloudClientVerifiesTheServerHostname() {
+        // The app disables hostname verification JVM-wide for the WiNet dongle's SAN-less self-signed
+        // cert. This client carries the account email + password to a PUBLIC endpoint, so it must opt
+        // back in explicitly, or any CA-issued cert for any name would be accepted by a MITM.
+        assertThat(SolarAnalyticsClient.newVerifyingHttpClient().sslParameters()
+                .getEndpointIdentificationAlgorithm())
+                .as("the credential-bearing cloud client must check the hostname regardless of the global flag")
+                .isEqualTo("HTTPS");
+    }
+
+    @Test
+    void theGlobalKillSwitchWouldOtherwiseDisableThatCheck() {
+        // Pins WHY the explicit setting is needed: a default-built client inherits the global flag, so
+        // it ends up with no endpoint identification at all. If this ever stops being true, the
+        // override above is redundant rather than load-bearing — worth knowing either way.
+        System.setProperty("jdk.internal.httpclient.disableHostnameVerification", "true");
+        assertThat(java.net.http.HttpClient.newHttpClient().sslParameters()
+                .getEndpointIdentificationAlgorithm())
+                .as("a default client inherits the global disable — hence the explicit override")
+                .isNotEqualTo("HTTPS");
+    }
+
+
     private final JsonMapper mapper = JsonMapper.builder().build();
 
     // ---- response parsing (pure) -------------------------------------------

@@ -286,6 +286,32 @@ class AutopilotGovernorTest {
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
     }
 
+    // ---------------------------------------------- non-finite surplus (NaN / Infinity)
+    // Every IEEE-754 comparison against NaN is false, so a single poisoned reading silently inverts
+    // EVERY guard below: the "can't hold the floor → stop" check, the emergency-gap bypass, and the
+    // start threshold. A non-finite surplus must be treated as "unknown", never as a number.
+
+    @Test void aNaNSurplusNeverStartsAStoppedMiner() {
+        var d = gov.decide(off(Double.NaN, LONG_AGO));
+        assertThat(d.action())
+                .as("NaN must not read as 'enough surplus to start' — that starts the miner on nothing")
+                .isEqualTo(Action.NONE);
+    }
+
+    @Test void aNaNSurplusStopsARunningMiner() {
+        var d = gov.decide(running(2800, Double.NaN, LONG_AGO, MINED_LONG));
+        assertThat(d.action())
+                .as("an unknown surplus must stop a running miner, not hold it at its current draw")
+                .isEqualTo(Action.STOP);
+    }
+
+    @Test void anInfiniteSurplusNeverRampsTheMiner() {
+        var d = gov.decide(running(1200, Double.POSITIVE_INFINITY, LONG_AGO, MINED_LONG));
+        assertThat(d.action())
+                .as("+Infinity must not read as unlimited headroom and ramp to the ceiling")
+                .isNotEqualTo(Action.STEP_UP);
+    }
+
     // ---------------------------------------------- clock skew on lastChangeAt
     // A Pi has no RTC: it boots on the saved time, so a change persisted moments earlier can end up
     // stamped in the FUTURE once NTP steps the clock backwards. A negative elapsed time must not be

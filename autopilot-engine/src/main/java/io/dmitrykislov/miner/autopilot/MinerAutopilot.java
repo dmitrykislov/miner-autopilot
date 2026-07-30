@@ -58,6 +58,8 @@ public class MinerAutopilot {
     private final AtomicReference<AutopilotStatus.Change> lastChange = new AtomicReference<>();
     private volatile Instant evaluatedAt;
     private volatile String lastDecision;
+    /** Previous decision with numbers masked, so a repeated hold whose watt figures drift stays quiet. */
+    private String lastDecisionKey;
     // When the miner began continuously mining (null when not mining). Drives the governor's
     // "mined long enough for a valid up-average" guard; seeded from the miner's uptime on the FIRST
     // observation (so a long-running miner can ramp soon after a restart), but reset to
@@ -175,11 +177,16 @@ public class MinerAutopilot {
                 sig.shortSurplusW(), sig.longSurplusW());
 
         AutopilotDecision d = governor.decide(input);
-        // Log an action, or a changed explanation, at INFO; a repeated "still holding" goes to DEBUG.
-        // At one tick every 30 s an unconditional INFO wrote ~2,880 lines/day — a couple of MB of
-        // needless SD-card writes on the Pi, and enough noise to bury the lines that matter.
-        boolean interesting = d.action() != AutopilotDecision.Action.NONE
-                || !java.util.Objects.equals(d.reason(), lastDecision);
+        // Log an action, or a genuinely new explanation, at INFO; a repeated "still holding" goes to
+        // DEBUG. At one tick every 30 s an unconditional INFO wrote ~2,880 lines/day — a couple of MB
+        // of needless SD-card writes on the Pi, and enough noise to bury the lines that matter.
+        //
+        // Compare on the reason with its NUMBERS MASKED. The steady-state hold reason is
+        // "surplus %dW, holding at %dW", whose watt figures move every tick, so comparing the
+        // formatted strings marked almost every hold as new and suppressed nothing.
+        String key = d.action() + "|" + d.reason().replaceAll("-?\\d+", "#");
+        boolean interesting = d.action() != AutopilotDecision.Action.NONE || !key.equals(lastDecisionKey);
+        lastDecisionKey = key;
         lastDecision = d.reason();
         // No "autopilot:" prefix here — the reason already carries one (see AutopilotGovernor.decision)
         // and the logger prints the class name, so adding it produced "autopilot: autopilot: …".
@@ -205,7 +212,12 @@ public class MinerAutopilot {
     private boolean isFresh(PowerReading r, Instant now) {
         if (r == null) return false;
         Duration age = Duration.between(r.at(), now);
-        return !age.isNegative() && age.compareTo(maxSnapshotAge) <= 0;
+        // |age| — a reading slightly AHEAD of `now` is the common case, not an error: `now` is captured
+        // once at the top of the tick and we then spend blocking miner I/O before getting here, while
+        // the pollers keep stamping readings on their own threads. Rejecting those outright made the
+        // feed look dead and stopped a healthy miner every time the race was lost. Only an excursion
+        // bigger than the staleness window itself (a real clock step) counts as untrustworthy.
+        return age.abs().compareTo(maxSnapshotAge) <= 0;
     }
 
     private void trackMiningSince(MinerStatus st, Instant now) {

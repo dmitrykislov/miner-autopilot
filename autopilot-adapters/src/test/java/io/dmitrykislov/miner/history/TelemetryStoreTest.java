@@ -1,5 +1,10 @@
 package io.dmitrykislov.miner.history;
 
+import io.dmitrykislov.miner.autopilot.AutopilotStreamService;
+import io.dmitrykislov.miner.autopilot.ConsumptionSourceHub;
+import io.dmitrykislov.miner.autopilot.SolarSourceHub;
+import io.dmitrykislov.miner.port.MinerStatusSource;
+import io.dmitrykislov.miner.port.PowerReading;
 import io.dmitrykislov.miner.port.PowerChangeEvent;
 import io.dmitrykislov.miner.port.TelemetrySample;
 
@@ -9,16 +14,24 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.mockito.Mockito.mock;
 
 class TelemetryStoreTest {
 
     @TempDir
     Path tmp;
+
+    /** Same day-file naming the store uses, so tests can address a specific file. */
+    private static final java.time.format.DateTimeFormatter DAY =
+            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(java.time.ZoneOffset.UTC);
 
     private HistoryProperties cfg(int retentionDays) {
         return new HistoryProperties(true, tmp.toString(), 60_000, retentionDays);
@@ -36,39 +49,72 @@ class TelemetryStoreTest {
 
     // ---- disk failure must never break retention (the Pi's likeliest failure: a full SD card) ----
 
-    @Test void anUnwritableDirectoryDoesNotPropagateOutOfRecord() {
+    /**
+     * Make appends to {@code prefix}'s day-file fail, by replacing that file with a read-only one.
+     * Locking the *directory* is not enough — appending to an existing file ignores directory
+     * permissions — and this must not depend on the test running as an unprivileged user, since a
+     * root container can write to a read-only file anyway. So assert the write really fails first.
+     */
+    private void makeDayFileUnwritable(Path file) throws IOException {
+        assertThat(file).exists();
+        assertThat(file.toFile().setWritable(false)).isTrue();
+        boolean actuallyReadOnly;
+        try {
+            Files.writeString(file, "probe\n", StandardOpenOption.APPEND);
+            actuallyReadOnly = false;   // running privileged (root): the permission bit is advisory
+        } catch (IOException expected) {
+            actuallyReadOnly = true;
+        }
+        assumeTrue(actuallyReadOnly, "needs an unprivileged user for file permissions to bite");
+    }
+
+    @Test void aFailingAppendDoesNotPropagateOutOfRecord() throws IOException {
         TelemetryStore s = store(31);
-        assertThat(tmp.toFile().setWritable(false)).isTrue();
+        Instant now = Instant.now();
+        s.recordSample(sample(now, 3000.0, 2400, "MINING"));          // creates today's file
+        Path today = tmp.resolve("samples-" + DAY.format(now) + ".log");
+        makeDayFileUnwritable(today);
         try {
             // A failing append must not escape: it would skip the caller's prune() (see
             // TelemetryRecorder), so retention would stop running and the in-memory deque would grow
             // without bound — on a 128 MB heap that ends in an OutOfMemoryError.
-            Instant now = Instant.now();
-            s.recordSample(sample(now, 3000.0, 2400, "MINING"));
-            s.recordEvent(new PowerChangeEvent(now, "STEP_UP", 2400, 2800, "surplus rose"));
+            assertThatNoException().isThrownBy(() ->
+                    s.recordSample(sample(now.plusSeconds(1), 3100.0, 2400, "MINING")));
+            // …and the sample is still served from memory, so the chart and warm-up keep working.
+            assertThat(s.samplesSince(now.minusSeconds(10)))
+                    .as("a disk failure must cost durability, not the in-memory series")
+                    .hasSize(2);
         } finally {
-            tmp.toFile().setWritable(true);
+            today.toFile().setWritable(true);
         }
     }
 
-    @Test void retentionStillPrunesWhenWritesAreFailing() throws IOException {
+    @Test void retentionStillPrunesThroughTheRecorderWhenWritesAreFailing() throws IOException {
+        // Drive this through TelemetryRecorder, not by calling prune() directly: the bug was that a
+        // thrown append skipped the recorder's own prune() call, so testing prune() in isolation
+        // cannot see it. Recording via the recorder is what reproduces the real sequence.
         TelemetryStore s = store(31);
         Instant now = Instant.now();
-        s.recordSample(sample(now.minus(Duration.ofDays(40)), 3000.0, 2400, "MINING")); // outside retention
-        s.recordSample(sample(now, 3200.0, 2800, "MINING"));
+        Instant old = now.minus(Duration.ofDays(40));                  // outside retention
+        s.recordSample(sample(old, 3000.0, 2400, "MINING"));
+        s.recordSample(sample(now, 3200.0, 2800, "MINING"));           // creates today's file
+        assertThat(s.samplesSince(old.minus(Duration.ofDays(1)))).hasSize(2);
 
-        // Make today's day-file itself read-only — appending to an existing file ignores the
-        // directory's permissions, so the file is what has to be locked to simulate a failing write.
-        Path today = Files.list(tmp).filter(p -> p.getFileName().toString().startsWith("samples-"))
-                .findFirst().orElseThrow();
-        assertThat(today.toFile().setWritable(false)).isTrue();
+        Path today = tmp.resolve("samples-" + DAY.format(now) + ".log");
+        makeDayFileUnwritable(today);
         try {
-            s.recordSample(sample(now.plusSeconds(1), 3300.0, 2800, "MINING")); // append fails
-            s.prune(now);
-            // The 40-day-old sample must still be gone: pruning cannot depend on the disk working.
-            assertThat(s.samplesSince(now.minus(Duration.ofDays(60))))
-                    .as("retention must keep working while the disk is failing")
-                    .allSatisfy(x -> assertThat(x.at()).isAfter(now.minus(Duration.ofDays(32))));
+            var solar = new SolarSourceHub();
+            solar.publish(new PowerReading(now, 3300.0));
+            var recorder = new TelemetryRecorder(cfg(31), s, solar, new ConsumptionSourceHub(),
+                    mock(MinerStatusSource.class), mock(AutopilotStreamService.class));
+            assertThatNoException().isThrownBy(recorder::record);       // the append inside will fail
+
+            // The 40-day-old sample must be gone: retention cannot depend on the disk working.
+            var remaining = s.samplesSince(old.minus(Duration.ofDays(1)));
+            assertThat(remaining)
+                    .as("retention must keep pruning while writes are failing")
+                    .isNotEmpty()
+                    .noneSatisfy(x -> assertThat(x.at()).isEqualTo(old));
         } finally {
             today.toFile().setWritable(true);
         }

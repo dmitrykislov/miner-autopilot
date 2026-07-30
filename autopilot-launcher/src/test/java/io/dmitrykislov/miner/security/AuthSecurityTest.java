@@ -113,6 +113,30 @@ class AuthSecurityTest {
         web().get().uri("/api/house/stream").exchange().expectStatus().isUnauthorized();
     }
 
+    @Test void browserHardeningHeadersArePresentEvenOnA401() {
+        // The UI holds a long-lived bearer token in localStorage, so a script injection would be able
+        // to exfiltrate it. CSP is the header that prevents that, and it must be on every response —
+        // including rejections, which is why the filter runs ahead of the auth filter.
+        web().get().uri("/api/system").exchange()
+                .expectStatus().isUnauthorized()
+                .expectHeader().valueEquals("X-Content-Type-Options", "nosniff")
+                .expectHeader().valueEquals("X-Frame-Options", "DENY")
+                .expectHeader().valueEquals("Referrer-Policy", "no-referrer")
+                .expectHeader().value("Content-Security-Policy", csp -> {
+                    assertThat(csp).contains("default-src 'self'");
+                    assertThat(csp).contains("frame-ancestors 'none'");
+                    assertThat(csp).as("scripts must not be loadable from anywhere else")
+                            .contains("script-src 'self'");
+                });
+    }
+
+    @Test void hstsIsNotAdvertisedOverPlainHttp() {
+        // These tests run without TLS. Announcing HSTS then would be meaningless, and would also be
+        // wrong for someone deliberately running TLS_ENABLED=false on a LAN.
+        web().get().uri("/api/system").exchange()
+                .expectHeader().doesNotExist("Strict-Transport-Security");
+    }
+
     @Test void corsDoesNotAdvertiseAWildcardOrigin() {
         // A wildcard ACAO would let any website read API responses from a visitor's browser — and the
         // login endpoint needs no token, so it could brute-force through the victim's address.

@@ -11,9 +11,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Login endpoint (the one {@code /api/**} path left open by {@link io.dmitrykislov.miner.security.AuthWebFilter}).
@@ -23,6 +25,19 @@ import java.net.InetSocketAddress;
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
+
+    /**
+     * Dedicated, deliberately tiny scheduler for password hashing.
+     *
+     * <p>bcrypt must not run on a Netty event loop (there are only two on the Pi), but it must not run
+     * on the shared {@code boundedElastic} either: that is the global scheduler, capped at 10× cores
+     * with a ~100k task queue, and it is also where {@code /api/miner/stop} and the history endpoints
+     * execute. An unauthenticated login flood would fill it and push the manual stop button minutes
+     * deep behind attacker-supplied hashing. Two threads bound the CPU cost, and a short queue means
+     * excess load is refused straight away instead of being absorbed.
+     */
+    private static final Scheduler LOGIN =
+            Schedulers.newBoundedElastic(2, 16, "login-bcrypt", 60, true);
 
     private final AuthService auth;
     private final LoginRateLimiter rateLimiter;
@@ -41,31 +56,39 @@ public class AuthController {
     /**
      * Exchange a password for a bearer token.
      *
-     * <p>The bcrypt comparison runs on {@link Schedulers#boundedElastic()} because it is deliberately
-     * slow — roughly 0.3-0.8 s per attempt on a Raspberry Pi. WebFlux would otherwise run it on a
-     * Netty event loop, and the Pi is configured with just <b>two</b> of them, so a couple of
-     * concurrent attempts would freeze all HTTP and SSE traffic for everyone: dashboard, live charts
-     * and the manual stop button included.
+     * <p>bcrypt is deliberately slow — roughly 0.3-0.8 s per attempt on a Raspberry Pi — so an
+     * unauthenticated caller repeatedly hitting this endpoint is a load problem, not just a guessing
+     * problem. Three things bound it, and all three are needed:
+     * <ol>
+     *   <li>the attempt is reserved <b>atomically before hashing</b>, so concurrent requests cannot
+     *       pipeline past a stale counter;</li>
+     *   <li>hashing runs on {@link #LOGIN}, a two-thread scheduler of its own, so it can neither block
+     *       a Netty event loop nor queue behind (or ahead of) the miner controls;</li>
+     *   <li>when that small queue fills the request is refused with 503 rather than absorbed.</li>
+     * </ol>
      */
     @PostMapping("/login")
     public Mono<ResponseEntity<LoginResponse>> login(@RequestBody(required = false) LoginRequest req,
                                                     ServerWebExchange exchange) {
         String ip = clientIp(exchange);
-        long now = System.currentTimeMillis();
-        // Brute-force guard: refuse (429) once this IP has failed too many times this minute, before
-        // spending bcrypt on another guess — so a blocked caller costs almost nothing to turn away.
-        if (!rateLimiter.allowed(ip, now)) {
+        // Reserve the attempt atomically BEFORE hashing, so concurrent requests can't all slip past a
+        // stale counter and queue unbounded bcrypt work (see LoginRateLimiter.tryAcquire).
+        if (!rateLimiter.tryAcquire(ip, System.currentTimeMillis())) {
             return Mono.just(ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build());
         }
         String password = req != null ? req.password() : null;
         return Mono.fromCallable(() -> {
             if (auth.verifyPassword(password)) {
-                rateLimiter.recordSuccess(ip);
+                rateLimiter.recordSuccess(ip);   // give the budget back to a legitimate user
                 return ResponseEntity.ok(new LoginResponse(auth.issueToken()));
             }
-            rateLimiter.recordFailure(ip, now);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).<LoginResponse>build();
-        }).subscribeOn(Schedulers.boundedElastic());
+        })
+        .subscribeOn(LOGIN)
+        // The queue above is deliberately small. If it fills, shed load immediately rather than
+        // letting pre-auth work pile up — the alternative is a backlog that delays real requests.
+        .onErrorResume(RejectedExecutionException.class,
+                e -> Mono.just(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build()));
     }
 
     /**

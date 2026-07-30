@@ -162,7 +162,15 @@ public final class AutopilotGovernor {
 
         // Blind: a feed has gone stale/dead → we can't know the surplus. Stop a running miner for
         // safety; leave a not-running one alone.
-        if (!in.dataFresh()) {
+        //
+        // A NON-FINITE surplus counts as blind too. NaN or Infinity can reach us from a malformed
+        // device/cloud reading, and because every IEEE-754 comparison against NaN is false it would
+        // otherwise invert every guard below at once: the "can't hold the floor → stop" test, the
+        // emergency-gap bypass and the start threshold all silently fail open. Measured effect before
+        // this check: NaN started a stopped miner and pinned it at the floor with zero surplus, and
+        // +Infinity ramped it to the ceiling. Both import from the grid indefinitely.
+        boolean surplusUsable = isFinite(in.shortSurplusW()) && isFinite(in.longSurplusW());
+        if (!in.dataFresh() || !surplusUsable) {
             return running
                     ? decision(Action.STOP, 0, "no fresh solar/consumption data — stopping for safety")
                     : none("no fresh data and miner not running — nothing to do");
@@ -275,9 +283,24 @@ public final class AutopilotGovernor {
 
     // ---- helpers ------------------------------------------------------------
 
+    /**
+     * Has the miner been mining long enough for the long-window average to describe it?
+     *
+     * <p>A {@code miningSince} in the future is a clock artifact (see {@link #elapsed}). Treat it as
+     * long enough: {@code trackMiningSince} only re-stamps when the miner stops mining, so a
+     * continuously-running rig would otherwise be barred from ramping up for the entire duration of the
+     * clock step. That is the same stranding {@code elapsed} exists to avoid, and the surplus checks
+     * still decide what the step may be.
+     */
+    /** True unless the value is present and non-finite (NaN/±Infinity). Absent is fine — that's "sparse". */
+    private static boolean isFinite(java.util.OptionalDouble v) {
+        return v.isEmpty() || Double.isFinite(v.getAsDouble());
+    }
+
     private boolean minedLongEnough(Input in) {
-        return in.running() && in.miningSince() != null
-                && Duration.between(in.miningSince(), in.now()).compareTo(cfg.longWindow()) >= 0;
+        if (!in.running() || in.miningSince() == null) return false;
+        Duration mining = Duration.between(in.miningSince(), in.now());
+        return mining.isNegative() || mining.compareTo(cfg.longWindow()) >= 0;
     }
 
     /** True while the miner has been mining for less than {@code minRunTime} — the window in which a

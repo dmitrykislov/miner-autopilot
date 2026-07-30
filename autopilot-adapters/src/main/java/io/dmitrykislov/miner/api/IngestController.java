@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 
@@ -49,7 +50,7 @@ public class IngestController {
     @PostMapping("/solar")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public void solar(@RequestParam double watts) {
-        solar.publish(new PowerReading(Instant.now(), watts));
+        solar.publish(new PowerReading(Instant.now(), finite(watts)));
     }
 
     @PostMapping("/solar/clear")
@@ -61,12 +62,27 @@ public class IngestController {
     @PostMapping("/consumption")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public void consumption(@RequestParam double watts) {
-        consumption.publish(new PowerReading(Instant.now(), watts));
+        consumption.publish(new PowerReading(Instant.now(), finite(watts)));
     }
 
     @PostMapping("/consumption/clear")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public void clearConsumption() {
         consumption.clear();
+    }
+
+    /**
+     * Reject a non-finite reading with 400 rather than letting it into the ports.
+     *
+     * <p>{@code Double.valueOf} happily parses "NaN" and "Infinity", and NaN compares false against
+     * everything — so one such value would silently disable the autopilot's safety checks downstream
+     * (it could start a stopped miner, or ramp it to the ceiling, on no real surplus). The engine
+     * drops non-finite samples too; this just fails loudly at the edge instead of quietly inside.
+     */
+    private static double finite(double watts) {
+        if (!Double.isFinite(watts)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "watts must be a finite number");
+        }
+        return watts;
     }
 }

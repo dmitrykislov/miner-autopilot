@@ -31,7 +31,7 @@ From those it works out your **spare solar** ("surplus") and drives the miner to
 
 It's a normal Java app, so it runs on any laptop, server, or mini-PC — and it's lean enough to run comfortably on a **tiny, cheap board**.
 
-Measured **live on a Raspberry Pi Zero 2 W** (quad-core Cortex-A53 @ 1 GHz, **417 MB RAM**, Debian 12) with the small-device settings from `.env.example`:
+Measured **live on a Raspberry Pi Zero 2 W** (quad-core Cortex-A53 @ 1 GHz, **416 MB RAM**, Debian 12) with the small-device settings from `.env.example`:
 
 | Metric | Measured |
 |---|---|
@@ -60,7 +60,7 @@ Think of the miner's power as a **dial with fixed notches**: `1200, 1600, 2000, 
 
 Clouds come and go, so it never reacts to a single reading. It smooths the numbers over time:
 
-- **Turning up (or on) is slow and careful.** It uses a **15-minute average** and only nudges up when spare solar has clearly been high for a while — **at most 2 notches at a time, about once every 15 minutes**. Gentle ramping avoids thermal shock and stops it chasing a sunny patch that won't last.
+- **Turning up (or on) is slow and careful.** It needs a **15-minute average** to justify the move *and* checks the last 3 minutes can still pay for it, so it only nudges up when spare solar has clearly been high for a while and has not just faded — **at most 2 notches at a time, about once every 15 minutes**. Gentle ramping avoids thermal shock and stops it chasing a sunny patch that won't last.
 - **Turning down (or off) is fast.** It watches a **3-minute average**; if a real drop means the miner is now drawing more than the spare solar, it drops as many notches as needed in one move. If it's over by *a lot* (≥ 800 W), it reacts immediately.
 - **In between, it just holds.** A little 50–100 W wobble never moves the dial — the notches are 400 W apart, and that gap *is* the deadband.
 - **It won't flap on/off.** It only starts once the 15-minute spare is comfortably above the floor, and keeps running down to a lower level — so it can't rapidly toggle around one threshold.
@@ -280,7 +280,7 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 | `SOLARANALYTICS_REQUEST_TIMEOUT_MS` | `8000` | |
 | `SOLARANALYTICS_MIN_SOLAR_W` | `800` | only call the cloud API when solar exceeds this (no surplus below it) |
 | **Miner** (Braiins OS+) | | |
-| `MINER_ENABLED` | `true` | |
+| `MINER_ENABLED` | `true` | stops the status **poller** only — manual start/stop/power still reach the miner |
 | `MINER_HOST` | — | miner LAN IP |
 | `MINER_POLL_INTERVAL_MS` | `10000` | |
 | `MINER_REQUEST_TIMEOUT_MS` | `8000` | |
@@ -313,7 +313,7 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 | `AUTH_ENABLED` | `true` | when off, everything is open (dev only) |
 | `AUTH_PASSWORD_HASH` | — | bcrypt hash of the UI password; blank while enabled ⇒ everything rejected |
 | `AUTH_TOKEN_TTL_DAYS` | `30` | how long a login stays valid |
-| `AUTH_LOGIN_MAX_PER_MINUTE` | `5` | max failed logins per client IP per minute → 429 (brute-force guard; `0` disables) |
+| `AUTH_LOGIN_MAX_PER_MINUTE` | `5` | max login attempts per client IP per minute → 429 (counted before the password check; a success refunds the budget; `0` disables) |
 | `TLS_ENABLED` | `true` | serve HTTPS (on by default); `TLS_CERT` / `TLS_KEY` point at the PEM files |
 | `AUTH_TRUST_FORWARDED_FOR` | `false` | read the client IP from `X-Forwarded-For`. Turn on **only** behind a proxy that overwrites it — otherwise it can be forged to dodge the rate limit |
 | `INVERTER_ENABLED` | `true` | run the built-in Sungrow solar source (`false` to feed the `SolarSource` port yourself) |
@@ -322,7 +322,7 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 
 **Two settings will stop the app from booting if they contradict each other** (deliberately — both would otherwise cause silent misbehaviour):
 
-- `AUTOPILOT_ENABLED=true` requires a consumption source, so it needs either `SOLARANALYTICS_ENABLED=true` or your own `ConsumptionSource` feeding the port.
+- `AUTOPILOT_ENABLED=true` currently requires `SOLARANALYTICS_ENABLED=true`. The check is on that flag, not on whether *some* consumption source exists, so a custom `ConsumptionSource` does **not** satisfy it — the app refuses to boot. If you feed consumption yourself, leave Solar Analytics enabled without credentials, or drive the miner manually.
 - `SOLARANALYTICS_MIN_SOLAR_W` must be **below** both `AUTOPILOT_START_SURPLUS_W` and `AUTOPILOT_FLOOR_W + AUTOPILOT_HEADROOM_W`. Otherwise the app would stop asking for house data at exactly the light levels where the autopilot needs it. Worth knowing if you retune the ladder.
 
 ---
@@ -389,9 +389,12 @@ Out of the box:
 - the login token is **signed, expiring, checked in constant time, and never travels in a URL**
 - live charts use **short-lived, read-only tickets** (GET-only, stream endpoints only), so no long-lived credential rides in a URL
 - **every `/api` route is gated** by a fail-closed filter. It matches on the decoded path, so a URL-encoded spelling like `/%61pi/miner/stop` can't sneak past it while still reaching the controller. Only the login endpoint and CORS pre-flight are open
-- **logins are rate-limited** per IP (`AUTH_LOGIN_MAX_PER_MINUTE`, default 5 → HTTP 429), and the limiter ignores `X-Forwarded-For` unless you explicitly turn it on, so nobody can forge a fresh quota per request
-- **the slow password check runs off the network threads**, so repeated login attempts can't stall the dashboard or the stop button
+- **logins are rate-limited** per IP (`AUTH_LOGIN_MAX_PER_MINUTE`, default 5 → HTTP 429). Attempts are counted **before** the password is checked, so parallel requests can't pipeline past the limit, and the limiter ignores `X-Forwarded-For` unless you explicitly turn it on, so nobody can forge a fresh quota per request
+- **the slow password check is isolated**: it runs on its own two-thread pool, attempts are counted before hashing starts (so requests can't pipeline past the limit), and the queue is short enough to shed load rather than build a backlog. It shares nothing with the miner controls, so a login flood can't delay the stop button
 - **no CORS headers are sent**, so another website can't drive the API from your browser
+- **browser hardening headers** on every response (CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and HSTS when served over TLS) — the CSP is what stops injected script from stealing your stored token
+- **connection and idle timeouts** are set, so half-open sockets can't tie up the Pi
+- **non-finite readings are refused**: a `NaN` or `Infinity` watt value would otherwise make every safety comparison silently false, and could start the miner on no surplus
 - **TLS is on by default**
 - no passwords, keys, or addresses are baked into the code — it all lives in `.env`
 
@@ -399,7 +402,11 @@ Out of the box:
 
 If you do put a proxy in front, set `AUTH_TRUST_FORWARDED_FOR=true` so the rate limiter sees each visitor's real address instead of the proxy's. Only do this when the proxy overwrites the header; on a directly-reachable box it would hand attackers a way around the limit.
 
-**Two optional tweaks for a public box:** keep `AUTH_LOGIN_MAX_PER_MINUTE` small and use a long, random password; and shorten `AUTH_TOKEN_TTL_DAYS` (a token can't be cancelled before it expires, so 1–7 days is safer than 30). On your home LAN, the shipped defaults are fine as they are.
+**Two things to know before exposing it, both about the token.** It is signed with a key derived from your password hash, so anyone who can read `AUTH_PASSWORD_HASH` (the `.env` file, `/proc/<pid>/environ`) can mint tokens — keep `.env` readable only by the account that runs the app. And a token **cannot be revoked before it expires**; logging out only discards the browser's copy. On a public box shorten `AUTH_TOKEN_TTL_DAYS` to 1-7, keep `AUTH_LOGIN_MAX_PER_MINUTE` small, and use a long random password. Changing the password invalidates every existing token, which is the recovery path if one leaks.
+
+**If you put a proxy in front, also bind the app to localhost** (or firewall `SERVER_PORT`). Otherwise the origin stays directly reachable and anything the proxy enforces — its own rate limiting, for instance — can be bypassed by going straight to the app.
+
+On your home LAN the shipped defaults are fine as they are.
 
 ---
 
@@ -476,7 +483,7 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 
 ## Device notes
 
-- **Sungrow SG10RS / WiNet-S** — real-time data via the dongle's local WebSocket (`connect` → `login` → `devicelist` → `real`/`direct`). Its self-signed cert has no hostname, so hostname verification is disabled for these LAN clients only.
+- **Sungrow SG10RS / WiNet-S** — real-time data via the dongle's local WebSocket (`connect` → `login` → `devicelist` → `real`/`direct`). Its self-signed cert has no hostname (no SAN), so hostname verification has to be turned off to reach it. The only switch the JDK offers is **process-wide**, not per-client, so it affects every outbound HTTPS call. The Solar Analytics client therefore turns the check back on **for itself**, explicitly — it carries your account password, and an overriding per-client setting beats the global flag (`SolarAnalyticsClient.newVerifyingHttpClient`).
 - **Solar Analytics** — polls `live_site_data` (~15 s) and reads `consumed` (watts) as true whole-home usage — their clip-on CT measures the load directly (the SG10RS has no such meter). The call is **skipped below `SOLARANALYTICS_MIN_SOLAR_W`** (no surplus possible), and usage is then marked *unavailable* so the autopilot safely stops rather than run on a stale reading.
 - **Braiins OS+ miner** — GraphQL over HTTP. `start`/`stop` control the BOSMiner **service**; it only **hashes** ("Mining") when a live pool is connected — otherwise it self-pauses ("dead pools") and shows **Suspended**. Some responses arrive with an odd content type; the client reads the raw bytes and parses them itself, so a successful command is never mistaken for a failure.
 - **Fans ramp with power** because Braiins runs them in automatic (target-temperature) mode — more power ⇒ more heat ⇒ higher RPM. The best way to reduce fan transients is to change power *less often*, which the autopilot's averaging and step limits already do.
@@ -486,11 +493,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 370 backend (JUnit) + 104 UI (Vitest), UI bundled into the jar
-mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 156)
+mvn clean install               # everything: 392 backend (JUnit) + 104 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 161)
 ```
 
-Backend tests live **with their module** — `autopilot-engine` 156 · `autopilot-adapters` 173 · `autopilot-launcher` 41 (full-boot `@SpringBootTest`); the **104** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is ports + value objects, exercised through the modules that use them.)
+Backend tests live **with their module** — `autopilot-core` 10 · `autopilot-engine` 161 · `autopilot-adapters` 178 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **104** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster`, the SSE fan-out every stream sits on.)
 
 What's covered:
 

@@ -163,6 +163,34 @@ class RollingWindowTest {
         assertThat(w.average(at(400), Duration.ofMinutes(3))).isEmpty();
     }
 
+    // A sample a few ms "ahead" of the caller's `now` is a normal thread race, not a clock artifact:
+    // the pollers stamp readings with Instant.now() on their own threads, while the autopilot captures
+    // `now` once and then spends a few hundred ms on blocking miner I/O before querying. Only a
+    // GROSS excursion (a real clock step, minutes or hours) may be treated as bogus — rejecting the
+    // small case discards good readings and, via dataFresh, stops a healthy miner.
+
+    @Test void aSampleSlightlyAheadOfNowIsKeptAndCountsOnceTheClockCatchesUp() {
+        RollingWindow w = window();
+        w.add(at(405), 500, at(400));   // 5s ahead, well inside freshWithin (60s)
+        assertThat(w.size()).as("a small forward skew is a thread race, not a clock artifact").isEqualTo(1);
+        // The feed reads as fresh straight away, so a healthy miner is not stopped for "no data"…
+        assertThat(w.isFresh(at(400))).isTrue();
+        // …and the value is averaged in as soon as `now` reaches it. (It is legitimately outside the
+        // [now−window, now] range at 400, so being excluded for that one query is correct.)
+        assertThat(w.average(at(410), Duration.ofMinutes(3)).getAsDouble()).isCloseTo(500, within(1e-6));
+    }
+
+    @Test void aSampleSlightlyAheadIsNotDiscardedByAQuery() {
+        RollingWindow w = window();
+        w.add(at(400), 500, at(400));
+        w.add(at(405), 700, at(400));   // arrives during the caller's slow I/O
+        // Querying with the slightly-stale `now` must not delete it — that would destroy a good
+        // reading for every later reader, not just skip it for this one.
+        w.isFresh(at(400));
+        assertThat(w.size()).isEqualTo(2);
+        assertThat(w.average(at(410), Duration.ofMinutes(3)).getAsDouble()).isCloseTo(600, within(1e-6));
+    }
+
     @Test void addIgnoresASampleDatedAfterNow() {
         RollingWindow w = window();
         w.add(at(4000), 1000, at(400));  // bogus: 1h ahead of now → never recorded

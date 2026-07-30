@@ -14,11 +14,15 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -55,10 +59,40 @@ public class SolarAnalyticsClient {
     private final HousePowerStreamService stream;
     private final InverterStreamService inverter;
     private final ConsumptionSource consumptionSource;
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+    private final HttpClient http = newVerifyingHttpClient();
     private final ObjectMapper mapper = JsonMapper.builder().build();
     private final String authHeader;
     private volatile String siteId;
+
+    /**
+     * An {@link HttpClient} that verifies the server's hostname, <b>explicitly</b>.
+     *
+     * <p>This matters because the app disables hostname verification process-wide: the WiNet-S dongle
+     * presents a self-signed certificate with no SAN, and the only lever
+     * ({@code jdk.internal.httpclient.disableHostnameVerification}) is a JVM system property, not a
+     * per-client setting. Left at the default, this client would inherit that — and it sends the
+     * account email and password as HTTP Basic to a public cloud endpoint. The certificate chain would
+     * still be checked, but any CA-issued certificate for <i>any</i> name would be accepted, so an
+     * attacker with network position could impersonate the API and harvest the credentials.
+     *
+     * <p>Setting {@code endpointIdentificationAlgorithm} on the client's own {@link SSLParameters}
+     * overrides the global flag: the property only stops the JDK from <i>adding</i> the algorithm, it
+     * never clears one the caller supplied. The defaults are used as the base so the protocol and
+     * cipher lists are left untouched.
+     */
+    static HttpClient newVerifyingHttpClient() {
+        SSLParameters params;
+        try {
+            params = SSLContext.getDefault().getDefaultSSLParameters();
+        } catch (NoSuchAlgorithmException e) {
+            params = new SSLParameters(); // no platform default available — still set the algorithm below
+        }
+        params.setEndpointIdentificationAlgorithm("HTTPS");
+        return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .sslParameters(params)
+                .build();
+    }
 
     // Outage handling: warn about a persistent failure loudly once (then quietly), and after this
     // many consecutive failures mark consumption UNAVAILABLE so the surplus goes unknown → the

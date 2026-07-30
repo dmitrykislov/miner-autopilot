@@ -72,7 +72,10 @@ public class RollingWindow {
      * history backfill.
      */
     public synchronized void add(Instant at, double value, Instant now) {
-        if (at.isAfter(now)) return;
+        // A non-finite reading would make the whole average non-finite, and every later comparison
+        // against it false — silently disabling the governor's safety checks. Drop it at the door.
+        if (!Double.isFinite(value)) return;
+        if (isImplausiblyFuture(at, now)) return;
         samples.addLast(new Sample(at, value));
         if (newest == null || at.isAfter(newest)) newest = at;
         Instant cutoff = newest.minus(retain);
@@ -137,12 +140,30 @@ public class RollingWindow {
      * samples ({@code EnergySampler}, {@code EnergyWarmup}); this is the primitive's own guarantee.
      */
     private void dropFutureSamples(Instant now) {
-        if (newest == null || !newest.isAfter(now)) return; // fast path: nothing in the future
-        samples.removeIf(s -> s.at().isAfter(now));
+        if (newest == null || !isImplausiblyFuture(newest, now)) return; // fast path, the normal case
+        samples.removeIf(s -> isImplausiblyFuture(s.at(), now));
         newest = null;
         for (Sample s : samples) {
             if (newest == null || s.at().isAfter(newest)) newest = s.at();
         }
+    }
+
+    /**
+     * Is {@code at} so far ahead of {@code now} that it can only be a clock artifact?
+     *
+     * <p>A reading a moment ahead is normal and must be kept: the pollers stamp their own
+     * {@code Instant.now()} on separate threads, while a caller typically captures {@code now} once and
+     * then spends time on blocking device I/O before querying — so a sample can legitimately be
+     * milliseconds to seconds "in the future" relative to that caller. Discarding those would throw
+     * away good readings and, worse, make the feed look dead and stop a healthy miner.
+     *
+     * <p>A clock step is a different magnitude entirely: a Pi with no RTC boots on the saved time and
+     * NTP corrects it by minutes or hours. {@code freshWithin} is the natural dividing line — it is
+     * already the age at which a feed counts as stale, so anything further ahead than that cannot be
+     * a plausible reading either.
+     */
+    private boolean isImplausiblyFuture(Instant at, Instant now) {
+        return at.isAfter(now.plus(freshWithin));
     }
 
     public synchronized int size() {

@@ -7,6 +7,13 @@ server:
     enabled: ${TLS_ENABLED:true}
     certificate: ${TLS_CERT:file:certs/cert.pem}
     certificate-private-key: ${TLS_KEY:file:certs/key.pem}
+  netty:
+    # Bound half-open and idle connections. Without these, Netty holds a connection forever, so an
+    # unauthenticated caller can tie up file descriptors on a 416 MB Pi just by opening sockets and
+    # sending a partial request (slowloris). These limits are generous for real clients — note SSE
+    # streams send a heartbeat every 20 s, comfortably inside the idle timeout.
+    connection-timeout: ${NETTY_CONNECTION_TIMEOUT:20s}
+    idle-timeout: ${NETTY_IDLE_TIMEOUT:75s}
 
 # Application version shown in the UI footer. Sourced from the Maven project version
 # (pom.xml, the single source of truth) via @...@ resource filtering; override with APP_VERSION.
@@ -19,8 +26,9 @@ auth:
   enabled: ${AUTH_ENABLED:true}
   password-hash: ${AUTH_PASSWORD_HASH:}     # blank ⇒ fail-closed (all requests rejected)
   token-ttl-days: ${AUTH_TOKEN_TTL_DAYS:30}
-  # Brute-force guard: max FAILED logins per client IP per minute before /api/auth/login returns
-  # 429. Small on purpose (a handful of users). 0 disables the limiter.
+  # Brute-force guard: max login ATTEMPTS per client IP per minute before /api/auth/login returns
+  # 429. Counted before the password check so concurrent requests can't pipeline past it; a
+  # successful login returns the budget. Small on purpose (a handful of users). 0 disables it.
   login-max-per-minute: ${AUTH_LOGIN_MAX_PER_MINUTE:5}
   # Read the client IP from X-Forwarded-For. Leave FALSE unless a reverse proxy you control sits in
   # front and overwrites that header — anyone can send it, and trusting it on a directly-reachable

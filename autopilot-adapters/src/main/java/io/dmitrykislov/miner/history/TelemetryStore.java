@@ -105,8 +105,10 @@ public class TelemetryStore implements TelemetryHistory {
         // history endpoints also need.
         LocalDate today = LocalDate.ofInstant(now, ZoneOffset.UTC);
         if (!today.equals(lastFilePruneDay)) {
-            lastFilePruneDay = today;
-            deleteFilesBefore(cutoff);
+            // Record the day only when the directory was actually listed. Marking it up front would
+            // burn the day's single attempt on a transient failure (a read-only remount, a listing
+            // error) and leave day-files accumulating for 24 h with nothing above DEBUG to show why.
+            if (deleteFilesBefore(cutoff)) lastFilePruneDay = today;
         }
     }
 
@@ -197,8 +199,9 @@ public class TelemetryStore implements TelemetryHistory {
         deleteFilesBefore(cutoff);
     }
 
-    private void deleteFilesBefore(Instant cutoff) {
-        if (!Files.isDirectory(dir)) return;
+    /** @return true if the directory was listed, so the caller can tell a real sweep from a no-op. */
+    private boolean deleteFilesBefore(Instant cutoff) {
+        if (!Files.isDirectory(dir)) return false;
         try (Stream<Path> files = Files.list(dir)) {
             files.forEach(f -> {
                 if (fileDateBefore(f.getFileName().toString(), cutoff)) {
@@ -209,8 +212,10 @@ public class TelemetryStore implements TelemetryHistory {
                     }
                 }
             });
+            return true;
         } catch (IOException e) {
             log.debug("history: prune listing failed: {}", e.toString());
+            return false;
         }
     }
 
