@@ -8,10 +8,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import io.dmitrykislov.miner.config.AuthProperties;
 import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.history.HistoryProperties;
+import io.dmitrykislov.miner.powerswitch.PowerSwitchProperties;
 
 @SpringBootApplication
 @EnableScheduling
-@EnableConfigurationProperties({HouseProperties.class, AuthProperties.class, HistoryProperties.class})
+@EnableConfigurationProperties({HouseProperties.class, AuthProperties.class, HistoryProperties.class,
+        PowerSwitchProperties.class})
 public class MinerAutopilotApplication {
     static {
         // Must be set before ANY java.net.http.HttpClient initialises its TLS layer.

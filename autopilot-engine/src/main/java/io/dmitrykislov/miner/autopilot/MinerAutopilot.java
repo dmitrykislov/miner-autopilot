@@ -7,6 +7,7 @@ import io.dmitrykislov.miner.port.TelemetryHistory;
 import io.dmitrykislov.miner.port.ConsumptionSource;
 import io.dmitrykislov.miner.port.MinerDriver;
 import io.dmitrykislov.miner.port.PowerReading;
+import io.dmitrykislov.miner.port.PowerSwitch;
 import io.dmitrykislov.miner.port.SolarSource;
 import io.dmitrykislov.miner.util.LogTime;
 import org.slf4j.Logger;
@@ -88,9 +89,20 @@ public class MinerAutopilot {
     /** Latched so a persistent mismatch is said once, not every 30 s. */
     private boolean warnedFloorIsFiction;
 
+    // ---- mains outlet ------------------------------------------------------------------------
+    // Setting the power target to zero leaves the fans at 100% indefinitely (a Braiins firmware
+    // quirk), so an off miner only truly stops drawing once its socket is cut.
+    private final PowerSwitch powerSwitch;
+    /** When the miner was first seen not-mining. Null while it is mining, or once power is cut. */
+    private volatile Instant notMiningSince;
+    /** True once we have cut the socket, so we know to energise it before the next start. */
+    private volatile boolean powerCut;
+
     public MinerAutopilot(EnergyAverages energy, SolarSource solarSource, ConsumptionSource consumptionSource,
                           MinerDriver minerService, HouseProperties props,
-                          AutopilotStreamService statusStream, TelemetryHistory history) {
+                          AutopilotStreamService statusStream, TelemetryHistory history,
+                          PowerSwitch powerSwitch) {
+        this.powerSwitch = powerSwitch;
         this.energy = energy;
         this.solarSource = solarSource;
         this.consumptionSource = consumptionSource;
@@ -192,6 +204,7 @@ public class MinerAutopilot {
 
         trackMiningSince(st, now);
         warnIfFloorIsFiction(st);
+        managePowerSwitch(st, now);
 
         // The surplus is trustworthy only if the live feed is valid right now AND the rolling
         // windows are fresh. feedValid catches a stale solar/consumption source immediately (a
@@ -284,6 +297,63 @@ public class MinerAutopilot {
                 st.powerDrawW(), floorW, excess, st.powerDrawW(), st.powerDrawW() + headroomW);
     }
 
+    /**
+     * Cut the miner's mains outlet once it has been off long enough, and remember that we did.
+     *
+     * <p>Why this exists: setting a Braiins miner's power target to zero does not idle it — the fans
+     * run at 100% indefinitely. Cutting the socket is currently the only way an "off" miner actually
+     * stops drawing.
+     *
+     * <p>The delay matters in both directions. Too short and we cut power mid-shutdown, or flap the
+     * socket while the surplus hovers at the start threshold; too long and the fans run on. It is
+     * measured from the first tick that saw the miner not mining, so a brief status blip does not
+     * restart the clock.
+     */
+    private void managePowerSwitch(MinerStatus st, Instant now) {
+        if (!powerSwitch.isEnabled()) return;
+        boolean mining = st != null && MinerStatus.MINING.equals(st.state());
+        if (mining) {
+            // Running: the socket is necessarily live, so forget any pending cut.
+            notMiningSince = null;
+            powerCut = false;
+            return;
+        }
+        if (powerCut) return;                       // already cut; nothing to do until we start again
+        if (notMiningSince == null) {
+            notMiningSince = now;
+            return;
+        }
+        Duration off = Duration.between(notMiningSince, now);
+        // A negative duration means the clock stepped backwards (the Pi has no RTC) — restart the
+        // measurement rather than cutting power on an artifact, or waiting out the whole skew.
+        if (off.isNegative()) {
+            notMiningSince = now;
+            return;
+        }
+        if (off.compareTo(powerSwitch.offDelay()) >= 0) {
+            log.info("autopilot: miner has been off for {} — cutting mains power at the socket "
+                    + "(a zero power target leaves the fans running)", off.withNanos(0));
+            powerSwitch.off();
+            powerCut = true;
+            notMiningSince = null;
+        }
+    }
+
+    /**
+     * Energise the outlet if we previously cut it, so the miner's API has something to boot into.
+     *
+     * <p>Returns true when power was just restored, so the caller can skip issuing commands this tick:
+     * the miner needs time to boot, and the pending-start machinery already retries on a later tick.
+     */
+    private boolean restorePowerIfCut() {
+        if (!powerSwitch.isEnabled() || !powerCut) return false;
+        log.info("autopilot: restoring mains power before starting the miner");
+        powerSwitch.on();
+        powerCut = false;
+        notMiningSince = null;
+        return true;
+    }
+
     private void trackMiningSince(MinerStatus st, Instant now) {
         if (MinerStatus.MINING.equals(st.state())) {
             if (miningSince == null) {
@@ -341,6 +411,12 @@ public class MinerAutopilot {
         // but the start command still brings it up.
         if (isUp(now)) {
             log.info("autopilot: miner already running — skipping start");
+            return;
+        }
+        // If we cut the socket, the API is unreachable because there is no power behind it. Energise
+        // first and come back next tick: commands sent now would just fail against a dead outlet.
+        if (restorePowerIfCut()) {
+            pendingStart = new PendingStart(target, reason, 0, 1);
             return;
         }
         // A pending start leaves lastChangeAt alone, so the governor keeps deciding START every tick.

@@ -6,6 +6,7 @@ import io.dmitrykislov.miner.config.HouseProperties;
 import io.dmitrykislov.miner.port.PowerChangeEvent;
 import io.dmitrykislov.miner.port.TelemetryHistory;
 import io.dmitrykislov.miner.port.PowerReading;
+import io.dmitrykislov.miner.port.PowerSwitch;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -39,11 +40,14 @@ class MinerAutopilotTest {
     private EnergyAverages energy;
     private AutopilotStreamService stream;
     private TelemetryHistory history;
+    private RecordingSwitch powerSwitch;
 
     @BeforeEach
     void setup() {
         miner = mock(MinerDriver.class);
-        history = mock(TelemetryHistory.class); // no persisted history by default → latestEvent() == null
+        history = mock(TelemetryHistory.class);
+        // no persisted history by default → latestEvent() == null
+        powerSwitch = new RecordingSwitch();
         solarSource = new SolarSourceHub();
         consumptionSource = new ConsumptionSourceHub();
         energy = new EnergyAverages(
@@ -74,7 +78,7 @@ class MinerAutopilotTest {
 
     private MinerAutopilot autopilot(boolean enabled) {
         stream = new AutopilotStreamService();
-        return new MinerAutopilot(energy, solarSource, consumptionSource, miner, props(enabled), stream, history);
+        return new MinerAutopilot(energy, solarSource, consumptionSource, miner, props(enabled), stream, history, powerSwitch);
     }
 
     /** Autopilot with explicit inverter + Solar-Analytics poll cadences (for the freshness-bound test). */
@@ -86,7 +90,7 @@ class MinerAutopilotTest {
                 new HouseProperties.Miner(true, "h", 0, 0, "", 0, 0),
                 new HouseProperties.Autopilot(true, 30_000, 1200, 400, 200, 1600, 2, 800,
                         180_000, 180_000, 180_000, 180_000, 90_000, 1, 1, -1));
-        return new MinerAutopilot(energy, solarSource, consumptionSource, miner, house, stream, history);
+        return new MinerAutopilot(energy, solarSource, consumptionSource, miner, house, stream, history, powerSwitch);
     }
 
     private MinerStatus status(boolean reachable, boolean running, Integer powerTargetW) {
@@ -544,6 +548,127 @@ class MinerAutopilotTest {
                 .as("an hour-ahead reading is a clock artifact — the surplus is unknown")
                 .contains("no fresh solar/consumption data");
         verify(miner).stop();
+    }
+
+
+    // ---------------------------------------------- mains outlet
+    // A zero power target leaves the Braiins fans at 100% indefinitely, so an off miner only really
+    // stops drawing once its socket is cut. The socket must then be energised again BEFORE a start,
+    // because an unpowered miner's API is unreachable and every command would fail against it.
+
+    /** Records on/off calls, with a short delay so the tests don't have to wait a real minute. */
+    private static final class RecordingSwitch implements PowerSwitch {
+        final List<String> calls = new java.util.ArrayList<>();
+        boolean enabled = true;
+        Duration delay = Duration.ofMinutes(1);
+        @Override public void on() { calls.add("on"); }
+        @Override public void off() { calls.add("off"); }
+        @Override public boolean isEnabled() { return enabled; }
+        @Override public Duration offDelay() { return delay; }
+    }
+
+    @Test void powerIsNotCutTheMomentTheMinerGoesOff() {
+        // Cutting immediately would race the miner's own shutdown and flap the socket whenever the
+        // surplus hovers around the start threshold.
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        liveFeed(500, 0);                       // below start → stays off
+        var ap = autopilot(true);
+
+        ap.tick();
+        ap.tick();
+
+        assertThat(powerSwitch.calls).as("still inside the off-delay").isEmpty();
+    }
+
+    @Test void powerIsCutOnceTheMinerHasBeenOffForTheConfiguredDelay() {
+        powerSwitch.delay = Duration.ZERO;      // the delay itself is covered above
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        liveFeed(500, 0);
+        var ap = autopilot(true);
+
+        ap.tick();                              // first tick observes "not mining"
+        ap.tick();                              // delay elapsed → cut
+
+        assertThat(powerSwitch.calls).containsExactly("off");
+    }
+
+    @Test void powerIsCutOnlyOnceWhileTheMinerStaysOff() {
+        powerSwitch.delay = Duration.ZERO;
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        liveFeed(500, 0);
+        var ap = autopilot(true);
+
+        for (int i = 0; i < 5; i++) ap.tick();
+
+        assertThat(powerSwitch.calls)
+                .as("re-running the off script every 30s would hammer the plug's cloud API")
+                .containsExactly("off");
+    }
+
+    @Test void aMiningMinerNeverHasItsPowerCut() {
+        powerSwitch.delay = Duration.ZERO;
+        when(miner.refresh()).thenReturn(status(true, true, 2000));
+        liveFeed(3000, 2000);
+        var ap = autopilot(true);
+
+        for (int i = 0; i < 5; i++) ap.tick();
+
+        assertThat(powerSwitch.calls).isEmpty();
+    }
+
+    @Test void powerIsRestoredBeforeStartingAndTheStartWaitsForTheBoot() {
+        powerSwitch.delay = Duration.ZERO;
+        var live = new java.util.concurrent.atomic.AtomicReference<>(status(true, false, null));
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        liveFeed(500, 0);
+        var ap = autopilot(true);
+        ap.tick();
+        ap.tick();
+        assertThat(powerSwitch.calls).containsExactly("off");
+
+        // Surplus returns. The socket is dead, so the miner is unreachable.
+        live.set(status(false, false, null));
+        liveFeed(3458, 0);
+        ap.tick();
+
+        assertThat(powerSwitch.calls)
+                .as("energise the outlet before trying to talk to the miner")
+                .containsExactly("off", "on");
+        verify(miner, never()).start();     // pointless this tick — it is still booting
+        assertThat(ap.status().lastChange()).as("nothing happened yet, so nothing is recorded").isNull();
+    }
+
+    @Test void afterPowerIsRestoredTheStartIsIssuedAndConfirmedOnALaterTick() {
+        powerSwitch.delay = Duration.ZERO;
+        var live = new java.util.concurrent.atomic.AtomicReference<>(status(true, false, null));
+        when(miner.refresh()).thenAnswer(inv -> live.get());
+        when(miner.start()).thenAnswer(inv -> live.get());
+        liveFeed(500, 0);
+        var ap = autopilot(true);
+        ap.tick(); ap.tick();                                   // off
+        live.set(status(false, false, null));
+        liveFeed(3458, 0);
+        ap.tick();                                              // on, wait for boot
+
+        // The miner finishes booting and starts mining.
+        live.set(status(true, true, 1200));
+        for (int i = 0; i < START_RETRY_TICKS + 1; i++) { liveFeed(3458, 1200); ap.tick(); }
+
+        assertThat(powerSwitch.calls).containsExactly("off", "on");
+        assertThat(ap.status().lastChange()).isNotNull();
+        assertThat(ap.status().lastChange().action()).isEqualTo("START");
+    }
+
+    @Test void aDisabledSwitchLeavesTheOldBehaviourExactlyAsItWas() {
+        powerSwitch.enabled = false;
+        powerSwitch.delay = Duration.ZERO;
+        when(miner.refresh()).thenReturn(status(true, false, null));
+        liveFeed(500, 0);
+        var ap = autopilot(true);
+
+        for (int i = 0; i < 5; i++) ap.tick();
+
+        assertThat(powerSwitch.calls).isEmpty();
     }
 
     @Test void doesNotStartBelowStartSurplus() {

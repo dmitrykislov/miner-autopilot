@@ -96,6 +96,22 @@ house:
     # Hard power-target limits (W) — the miner can't run below min; never exceed max.
     min-power-w: ${MINER_MIN_POWER_W:800}
     max-power-w: ${MINER_MAX_POWER_W:3600}
+  # --- Mains outlet the miner is plugged into (optional) ---
+  # Setting a Braiins power target to zero does NOT idle the miner: the fans run at 100% indefinitely.
+  # Until that firmware behaviour is understood, cutting the socket is the dependable way to make an
+  # "off" miner actually stop drawing. The commands run directly (no shell), so any executable works.
+  # OFF by default — it controls mains power.
+  power-switch:
+    enabled: ${POWER_SWITCH_ENABLED:false}
+    on-command: ${POWER_SWITCH_ON_COMMAND:}
+    off-command: ${POWER_SWITCH_OFF_COMMAND:}
+    # How long the miner must have been off before power is cut. Long enough that a shutdown finishes
+    # and a surplus hovering at the start threshold can't flap the socket.
+    off-delay-ms: ${POWER_SWITCH_OFF_DELAY_MS:60000}
+    # Grace after energising before the miner's API is expected to answer (it is booting).
+    boot-delay-ms: ${POWER_SWITCH_BOOT_DELAY_MS:30000}
+    command-timeout-ms: ${POWER_SWITCH_COMMAND_TIMEOUT_MS:20000}
+
   # --- Optional HTTP ingest: push solar/consumption readings from an external (any-language)
   # source into the engine's ports. Off by default; still behind the auth token. See README. ---
   ingest:

@@ -22,6 +22,7 @@ From those it works out your **spare solar** ("surplus") and drives the miner to
 - **Manual miner control** — start/stop the miner and set its power target by hand, from the browser.
 - **Autopilot (optional)** — automatically start / step / stop the miner to track your spare solar, so you're not buying grid power to mine. Flip it on or off live from the UI.
 - **History & trends** — a lightweight, file-based log of the last month, drawn as an interactive chart (solar vs house vs miner over time), with a marker at every automatic power change so you can see exactly what the autopilot did and why.
+- **Cuts mains power when idle (optional)** — a zero power target doesn't idle a Braiins miner (the fans stay at 100%), so once it has been off for a minute the app can switch off the socket it's plugged into, and switch it back on before starting.
 - **Password-protected** — one password (stored only as a secure hash) locks the whole thing.
 - **One file to run** — the web UI and server build into a **single ~22 MB jar**, configured entirely through one `.env` file.
 
@@ -287,6 +288,13 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 | `MINER_POLL_INTERVAL_MS` | `10000` | |
 | `MINER_REQUEST_TIMEOUT_MS` | `8000` | |
 | `MINER_AUTH_TOKEN` | _(blank)_ | only if the miner API needs a token |
+| **Mains outlet** | | |
+| `POWER_SWITCH_ENABLED` | `false` | cut the miner's socket when it's idle. Off by default — it controls mains power |
+| `POWER_SWITCH_ON_COMMAND` | — | command that energises the outlet, run directly (no shell) |
+| `POWER_SWITCH_OFF_COMMAND` | — | command that de-energises it. Both must be set or the feature stays off |
+| `POWER_SWITCH_OFF_DELAY_MS` | `60000` | how long the miner must be off before power is cut |
+| `POWER_SWITCH_BOOT_DELAY_MS` | `30000` | grace after switching on before the miner's API should answer |
+| `POWER_SWITCH_COMMAND_TIMEOUT_MS` | `20000` | hard cap on a switch command, so a hung CLI can't stall the loop |
 | `MINER_MIN_POWER_W` | `800` | hard floor — miner can't run below this |
 | `MINER_MAX_POWER_W` | `3600` | hard ceiling — never exceed |
 | **Autopilot** (the surplus control loop) | | |
@@ -472,6 +480,29 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 
 **Runtime control:** `AUTOPILOT_ENABLED` sets the *boot* state; after that the UI's Autopilot card (or `POST /api/autopilot/enable|disable`) toggles it live.
 
+### Cutting mains power when the miner is idle
+
+Setting a Braiins miner's power target to zero does **not** idle it: on the rig here the fans spin up to 100% and stay there. Until that firmware behaviour is understood, the dependable way to make an off miner actually stop drawing is to cut power at the socket.
+
+Give the app two commands and it will do that for you:
+
+```bash
+POWER_SWITCH_ENABLED=true
+POWER_SWITCH_ON_COMMAND=/home/pi/tapo/venv/bin/python /home/pi/tapo/tapo-on
+POWER_SWITCH_OFF_COMMAND=/home/pi/tapo/venv/bin/python /home/pi/tapo/tapo-off
+```
+
+They run directly rather than through a shell, so anything executable works — a Tapo or Kasa CLI, a curl to a local hub, a GPIO relay script. Both must be set; a half-configured switch is treated as disabled, because being able to cut power without being able to restore it is worse than not having the feature.
+
+**What happens, and when:**
+
+- **Off → power cut.** Once the miner has been continuously not-mining for `POWER_SWITCH_OFF_DELAY_MS` (default 60 s), the off command runs, once. The delay matters in both directions: cutting immediately would race the miner's own shutdown and would flap the socket whenever the surplus sits near the start threshold, while waiting too long leaves the fans running.
+- **Start → power restored first.** An unpowered miner's API is unreachable, so there is nothing to send a start command to. When the autopilot wants to start and it knows it cut the socket, it energises the outlet and does nothing else that tick. The miner then boots and the existing start machinery picks it up on a later tick and confirms it in the usual way — the same path that already handles "BOSMiner is still booting".
+- **Never while mining.** A miner that reports MINING is drawing power by definition, so its socket is left alone and any pending cut is forgotten.
+- **Failures are absorbed.** A smart plug is the least reliable thing in this system: Wi-Fi, sometimes a vendor cloud, a CLI that can hang. Neither command can throw into the control loop, and both are time-capped. If a switch silently fails, the miner's own API is still the source of truth — it simply doesn't come up, and the normal retry path handles it.
+
+Leave `POWER_SWITCH_ENABLED=false` (the default) and none of this runs; the autopilot behaves exactly as it did before.
+
 ### When the miner won't honour its target
 
 A power target is a **request to the miner's own autotuner**, not a setting it is guaranteed to meet. Measured here over two full days of one-minute samples:
@@ -530,11 +561,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 437 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
-mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 177)
+mvn clean install               # everything: 452 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 184)
 ```
 
-Backend tests live **with their module** — `autopilot-core` 21 · `autopilot-engine` 177 · `autopilot-adapters` 193 · `autopilot-launcher` 46 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
+Backend tests live **with their module** — `autopilot-core` 21 · `autopilot-engine` 184 · `autopilot-adapters` 201 · `autopilot-launcher` 46 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
 
 What's covered:
 
