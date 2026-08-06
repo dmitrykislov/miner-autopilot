@@ -510,11 +510,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 410 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
-mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 171)
+mvn clean install               # everything: 418 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 173)
 ```
 
-Backend tests live **with their module** — `autopilot-core` 16 · `autopilot-engine` 171 · `autopilot-adapters` 180 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
+Backend tests live **with their module** — `autopilot-core` 16 · `autopilot-engine` 173 · `autopilot-adapters` 186 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
 
 What's covered:
 

@@ -17,6 +17,8 @@ import static org.assertj.core.api.Assertions.within;
 class EnergySamplerTest {
 
     private static final Instant T0 = Instant.parse("2026-07-27T12:00:00Z");
+    /** The sampler's "now". Fixed relative to T0 so these tests do not depend on the real date. */
+    private static final Instant NOW = T0.plusSeconds(300);
 
     // Core-only MinerStatusSource double (identical shape to the braiins MinerStreamService, but
     // without depending on the adapter module — the engine test must stay inside the engine layer).
@@ -42,10 +44,10 @@ class EnergySamplerTest {
 
     @Test void dedupesByTimestampSoAHeldReadingIsNotDoubleCounted() {
         emitSolar(T0, 2000);
-        sampler.sample();
-        sampler.sample(); // same timestamp → must NOT re-record (would bias the mean)
+        sampler.sample(NOW);
+        sampler.sample(NOW); // same timestamp → must NOT re-record (would bias the mean)
         emitSolar(T0.plusSeconds(30), 4000);
-        sampler.sample();
+        sampler.sample(NOW);
 
         // Two solar samples (2000, 4000) → mean 3000. If the held one were double-counted it'd be
         // (2000+2000+4000)/3 = 2666.7.
@@ -54,7 +56,7 @@ class EnergySamplerTest {
 
     @Test void recordsSolarButNotConsumptionWhenTheMeterIsSilent() {
         emitSolar(T0, 2000); // no consumption reading published
-        sampler.sample();
+        sampler.sample(NOW);
         var sig = energy.signals(T0.plusSeconds(1));
         assertThat(sig.solarShortW().getAsDouble()).isCloseTo(2000, within(1e-6));
         assertThat(sig.consumptionShortW()).isEmpty();
@@ -62,7 +64,7 @@ class EnergySamplerTest {
     }
 
     @Test void recordsNothingWhenNoSourceHasPublished() {
-        sampler.sample(); // neither source has emitted a reading (e.g. inverter offline / meter down)
+        sampler.sample(NOW); // neither source has emitted a reading (e.g. inverter offline / meter down)
         var sig = energy.signals(T0.plusSeconds(1));
         assertThat(sig.solarShortW()).isEmpty();
         assertThat(sig.consumptionShortW()).isEmpty();
@@ -73,7 +75,7 @@ class EnergySamplerTest {
         minerStream.publish(miner(MinerStatus.MINING, 2000));
         emitSolar(T0, 4000);
         emitConsumption(T0, 3000);
-        sampler.sample();
+        sampler.sample(NOW);
         assertThat(energy.signals(T0.plusSeconds(1)).shortSurplusW().getAsDouble())
                 .isCloseTo(3000, within(1e-6)); // 4000−3000+2000
     }
@@ -83,7 +85,7 @@ class EnergySamplerTest {
         minerStream.publish(miner(MinerStatus.SUSPENDED, null));
         emitSolar(T0, 4000);
         emitConsumption(T0, 1000);
-        sampler.sample();
+        sampler.sample(NOW);
         assertThat(energy.signals(T0.plusSeconds(1)).shortSurplusW().getAsDouble())
                 .isCloseTo(3000, within(1e-6)); // 4000−1000+0
     }
@@ -93,13 +95,13 @@ class EnergySamplerTest {
         minerStream.publish(miner(MinerStatus.MINING, 2000));
         emitSolar(T0, 4000);
         emitConsumption(T0, 3000);
-        sampler.sample();
+        sampler.sample(NOW);
         // Miner status feed blips to OFFLINE, but the rig keeps drawing — consumption (independent
         // feed) still shows 3.0 kW. The draw must be CARRIED (2000), not zeroed.
         minerStream.publish(MinerStatus.offline(T0.plusSeconds(10), "blip"));
         emitSolar(T0.plusSeconds(10), 4000);
         emitConsumption(T0.plusSeconds(10), 3000);
-        sampler.sample();
+        sampler.sample(NOW);
 
         // With draw carried, both samples → surplus 3000. If the blip sample recorded 0 W (the old
         // behaviour), avg(draw) would be 1000 → surplus 2000 (understated → could spuriously stop).
@@ -112,13 +114,13 @@ class EnergySamplerTest {
         minerStream.publish(miner(MinerStatus.MINING, 2000));
         emitSolar(T0, 4000);
         emitConsumption(T0, 3000);
-        sampler.sample();
+        sampler.sample(NOW);
         // Still MINING, but the realtime stats momentarily omit the draw (powerDrawW == null). The
         // rig is still drawing ~2000, so the draw must be CARRIED, not zeroed.
         minerStream.publish(miner(MinerStatus.MINING, null));
         emitSolar(T0.plusSeconds(10), 4000);
         emitConsumption(T0.plusSeconds(10), 3000);
-        sampler.sample();
+        sampler.sample(NOW);
 
         // Carried → both samples surplus 3000. If the null-draw sample recorded 0 W (the bug),
         // avg(draw) would be 1000 → surplus 2000 (understated → could spuriously stop the miner).
@@ -133,12 +135,12 @@ class EnergySamplerTest {
         minerStream.publish(miner(MinerStatus.MINING, 2000));
         emitSolar(T0, 4000);
         emitConsumption(T0, 3000); // house = base 1000 + draw 2000
-        sampler.sample();
+        sampler.sample(NOW);
         minerStream.publish(MinerStatus.offline(T0, "down"));
         for (int i = 1; i <= 8; i++) { // sustained outage; house drops to base only
             emitSolar(T0.plusSeconds(10L * i), 4000);
             emitConsumption(T0.plusSeconds(10L * i), 1000);
-            sampler.sample();
+            sampler.sample(NOW);
         }
         // A recent 40s window holds only decayed (draw=0) samples → surplus 3000, NOT 5000
         // (which an unbounded carry of the old 2000 W draw would have produced).
@@ -151,18 +153,18 @@ class EnergySamplerTest {
         minerStream.publish(miner(MinerStatus.MINING, 2000));
         emitSolar(T0, 4000);
         emitConsumption(T0, 3000);
-        sampler.sample();
+        sampler.sample(NOW);
         minerStream.publish(miner(MinerStatus.STOPPED, null));       // reachable, not mining
         emitSolar(T0.plusSeconds(10), 4000);
         emitConsumption(T0.plusSeconds(10), 1000);                   // house back to base 1000
-        sampler.sample();
+        sampler.sample(NOW);
         // sample1 surplus 3000, sample2 surplus 3000 (4000−1000+0) → mean 3000; draw NOT carried.
         assertThat(energy.signals(T0.plusSeconds(11)).shortSurplusW().getAsDouble())
                 .isCloseTo(3000, within(1e-6));
     }
 
     @Test void toleratesNoReadingsYet() {
-        sampler.sample(); // nothing published
+        sampler.sample(NOW); // nothing published
         assertThat(energy.signals(T0).dataFresh()).isFalse();
     }
 }

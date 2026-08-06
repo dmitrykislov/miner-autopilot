@@ -1,5 +1,9 @@
 package io.dmitrykislov.miner.solaranalytics;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import io.dmitrykislov.miner.config.HouseProperties;
@@ -10,6 +14,7 @@ import io.dmitrykislov.miner.port.ConsumptionSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
@@ -125,6 +130,134 @@ class SolarAnalyticsClientTest {
         client.poll();                                        // third consecutive failure
         verify(consumptionSource, times(1)).clear();          // now marked unavailable → surplus unknown
         verify(consumptionSource, never()).publish(any());    // never fed a bogus reading to the engine
+    }
+
+    // ---- the request timeout actually fires -------------------------------------------------
+    // Nothing in the suite asserted this before. A configured timeout that is never exercised is a
+    // guess: without it a hung cloud endpoint blocks the poller thread indefinitely, and the
+    // consumption feed silently stops advancing rather than going unavailable.
+
+    /** A client whose request timeout is short enough to trip deterministically in a test. */
+    private SolarAnalyticsClient clientWithTimeout(int timeoutMs) {
+        var sa = new HouseProperties.SolarAnalytics(true, "http://localhost:" + wm.port(),
+                "user", "pass", "12345", 15000, 60, timeoutMs, 800);
+        return new SolarAnalyticsClient(new HouseProperties(null, sa, null, null),
+                consumption, stream, inverter, consumptionSource);
+    }
+
+    @Test
+    void aHangingEndpointTimesOutRatherThanBlockingThePoller() {
+        wm.stubFor(get(urlPathEqualTo(LIVE))
+                .willReturn(okJson("{\"data\":[{\"consumed\":950}]}").withFixedDelay(3000)));
+        var slow = clientWithTimeout(200);
+
+        long startedAt = System.nanoTime();
+        slow.poll();
+        long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+
+        assertThat(elapsedMs)
+                .as("the 200ms request timeout must abandon the call, not wait out the 3s delay")
+                .isLessThan(2500);
+        verify(consumptionSource, never()).publish(any());   // no reading from a timed-out call
+    }
+
+    @Test
+    void repeatedTimeoutsMarkConsumptionUnavailable() {
+        // A hung endpoint must reach the same safe state as any other outage: after three consecutive
+        // failures the port is cleared, so the surplus becomes unknown and the autopilot stops.
+        wm.stubFor(get(urlPathEqualTo(LIVE))
+                .willReturn(okJson("{\"data\":[{\"consumed\":950}]}").withFixedDelay(3000)));
+        var slow = clientWithTimeout(150);
+
+        slow.poll();
+        slow.poll();
+        slow.poll();
+
+        verify(consumptionSource, times(1)).clear();
+        verify(consumptionSource, never()).publish(any());
+    }
+
+    // ---- credentials vs transient failure ----------------------------------------------------
+
+    @Test
+    void wrongCredentialsAreReportedDistinctlyFromATransientFailure() {
+        // A 401 means retrying will never help, so it is logged differently. Every failure stub in
+        // this suite used to be a 500, so the auth branch never ran.
+        Logger logger = (Logger) LoggerFactory.getLogger(SolarAnalyticsClient.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            wm.stubFor(get(urlPathEqualTo(LIVE)).willReturn(aResponse().withStatus(401)));
+            client.poll();
+
+            assertThat(appender.list)
+                    .as("a 401 must name the credentials, not read as a generic poll failure")
+                    .anyMatch(e -> e.getLevel() == Level.WARN
+                            && e.getFormattedMessage().contains("auth failed"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void a403IsTreatedAsAnAuthFailureToo() {
+        Logger logger = (Logger) LoggerFactory.getLogger(SolarAnalyticsClient.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            wm.stubFor(get(urlPathEqualTo(LIVE)).willReturn(aResponse().withStatus(403)));
+            client.poll();
+            assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.WARN
+                    && e.getFormattedMessage().contains("auth failed"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    // ---- site auto-resolution ----------------------------------------------------------------
+    // The README advertises "blank = auto-detect the first active site", but every test configured
+    // an explicit id, so resolveSiteId() never executed.
+
+    /** A client with no configured site id, forcing the /site_list lookup. */
+    private SolarAnalyticsClient clientWithoutSiteId() {
+        var sa = new HouseProperties.SolarAnalytics(true, "http://localhost:" + wm.port(),
+                "user", "pass", "", 15000, 60, 2000, 800);
+        return new SolarAnalyticsClient(new HouseProperties(null, sa, null, null),
+                consumption, stream, inverter, consumptionSource);
+    }
+
+    @Test
+    void withNoSiteIdTheFirstActiveSiteIsSelectedAndReused() {
+        wm.stubFor(get(urlPathEqualTo("/site_list")).willReturn(okJson(
+                "{\"data\":[{\"site_id\":\"111\",\"site_inactive\":true},"
+                        + "{\"site_id\":\"222\",\"site_inactive\":false}]}")));
+        wm.stubFor(get(urlPathEqualTo(LIVE)).willReturn(okJson("{\"data\":[{\"consumed\":950}]}")));
+        var auto = clientWithoutSiteId();
+
+        auto.poll();
+        auto.poll();
+
+        // The inactive site is skipped and the active one used…
+        wm.verify(getRequestedFor(urlPathEqualTo(LIVE)).withQueryParam("site_id", equalTo("222")));
+        // …and it is resolved once, not on every poll.
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/site_list")));
+        verify(consumptionSource, times(2)).publish(any());
+    }
+
+    @Test
+    void withNoActiveSiteTheFeedIsNotFabricated() {
+        wm.stubFor(get(urlPathEqualTo("/site_list")).willReturn(okJson(
+                "{\"data\":[{\"site_id\":\"111\",\"site_inactive\":true}]}")));
+        var auto = clientWithoutSiteId();
+
+        auto.poll();
+        auto.poll();
+        auto.poll();
+
+        verify(consumptionSource, never()).publish(any());   // nothing to publish, so publish nothing
+        verify(consumptionSource, times(1)).clear();          // and after three tries, mark it unknown
     }
 
     @Test

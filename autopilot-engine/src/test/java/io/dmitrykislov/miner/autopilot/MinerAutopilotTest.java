@@ -503,6 +503,49 @@ class MinerAutopilotTest {
         assertThat(ap.status().lastChange().toPowerW()).isEqualTo(2000);
     }
 
+    // ---------------------------------------------- reading freshness vs clock skew
+    // isFresh compares |age|, and BOTH plausible-looking alternatives are wrong in opposite ways:
+    // dropping .abs() lets a wildly-future reading count as fresh, so the autopilot pilots a running
+    // miner on a clock artifact; rejecting every negative age fails the millisecond thread race
+    // between capturing `now` and the pollers stamping readings, which stopped a healthy miner in
+    // production. Neither mistake was caught by any test before these two.
+
+    @Test void aReadingSlightlyAheadOfNowStillCountsAsFresh() {
+        // maxSnapshotAge here is 4× the slower poll (15 s) = 60 s. A reading a few seconds "ahead" of
+        // the autopilot's captured `now` is the normal thread race, not a dead feed.
+        when(miner.refresh()).thenReturn(status(true, true, 2000));
+        Instant ahead = Instant.now().plusSeconds(5);
+        solarSource.publish(new PowerReading(ahead, 4000));
+        consumptionSource.publish(new PowerReading(ahead, 1000));
+        feedEnergy(3800, 2000);
+
+        var ap = autopilotWithPolls(10_000, 15_000);
+        ap.tick();
+
+        assertThat(ap.status().lastDecision())
+                .as("a reading a few seconds ahead is a thread race, not a stale feed")
+                .doesNotContain("no fresh solar/consumption data");
+        verify(miner, never()).stop();
+    }
+
+    @Test void aReadingFarInTheFutureIsTreatedAsStaleAndStopsTheMiner() {
+        // Beyond maxSnapshotAge ahead can only be a clock artifact (the Pi has no RTC). The surplus is
+        // then unknown, and an unknown surplus must stop a running miner rather than be acted on.
+        when(miner.refresh()).thenReturn(status(true, true, 2000));
+        Instant wayAhead = Instant.now().plusSeconds(3600);
+        solarSource.publish(new PowerReading(wayAhead, 4000));
+        consumptionSource.publish(new PowerReading(wayAhead, 1000));
+        feedEnergy(3800, 2000);
+
+        var ap = autopilotWithPolls(10_000, 15_000);
+        ap.tick();
+
+        assertThat(ap.status().lastDecision())
+                .as("an hour-ahead reading is a clock artifact — the surplus is unknown")
+                .contains("no fresh solar/consumption data");
+        verify(miner).stop();
+    }
+
     @Test void doesNotStartBelowStartSurplus() {
         when(miner.refresh()).thenReturn(status(true, false, null));
         liveFeed(1599, 0);

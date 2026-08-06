@@ -58,7 +58,19 @@ public class EnergySampler {
     @Scheduled(fixedDelayString = "${house.inverter.poll-interval-ms:10000}",
                initialDelayString = "${house.inverter.poll-interval-ms:10000}")
     public void sample() {
-        Instant now = Instant.now(); // passed through so a future-dated reading is ignored, not trusted
+        sample(Instant.now());
+    }
+
+    /**
+     * Take one sample, judging reading freshness against {@code now}.
+     *
+     * <p>The clock is a parameter, matching the convention the rest of the engine uses
+     * ({@code RollingWindow.add}, {@code EnergyWarmup.warm}, {@code AutopilotGovernor.decide}). It has
+     * to be: readings are dropped when they are dated after {@code now}, so a test that fixes its
+     * sample timestamps but leaves this reading the wall clock silently changes behaviour as the real
+     * date moves past — every reading becomes "future" and is discarded, with no obvious cause.
+     */
+    void sample(Instant now) {
         PowerReading solar = solarSource.latest().orElse(null);
         if (solar != null && isNew(solar.at(), lastSolarTs)) {
             energy.recordSolar(solar.at(), solar.watts(), now);
