@@ -400,7 +400,7 @@ Out of the box:
 - **TLS is on by default**
 - no passwords, keys, or addresses are baked into the code — it all lives in `.env`
 
-**The one thing to change for public use:** the built-in HTTPS uses a *self-signed* certificate, which browsers don't trust and you'd have to renew by hand. Put a small reverse proxy like **[Caddy](https://caddyserver.com)** in front (a ~5-line config) for a real, auto-renewing Let's Encrypt certificate. Never expose it over plain HTTP — the password would cross in cleartext.
+**Why a proxy is required, not optional:** the built-in HTTPS uses a *self-signed* certificate that browsers don't trust, and the app itself puts no cap on how many connections or TLS handshakes a stranger can open. A proxy solves both — see [HTTPS / TLS](#https--tls) for a Caddy setup. Never expose it over plain HTTP; the password would cross in cleartext.
 
 If you do put a proxy in front, set `AUTH_TRUST_FORWARDED_FOR=true` so the rate limiter sees each visitor's real address instead of the proxy's. The app reads the **last** hop in `X-Forwarded-For`, which is the one your proxy appended — Caddy and nginx both append rather than replace, so the earlier entries are whatever the client sent and can't be trusted. Leave this off on a directly-reachable box, where the whole header is attacker-controlled.
 
@@ -510,11 +510,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 418 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
+mvn clean install               # everything: 426 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
 mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 173)
 ```
 
-Backend tests live **with their module** — `autopilot-core` 16 · `autopilot-engine` 173 · `autopilot-adapters` 186 · `autopilot-launcher` 43 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
+Backend tests live **with their module** — `autopilot-core` 16 · `autopilot-engine` 173 · `autopilot-adapters` 191 · `autopilot-launcher` 46 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
 
 What's covered:
 
@@ -530,7 +530,7 @@ What's covered:
 ## Limitations
 
 - **The miner needs a live pool to actually hash.** With no reachable pool, BOSMiner starts but sits **Suspended** — there's no way to force hashing without a pool. On an internet-isolated network it also can't reach a mining pool.
-- **Self-signed TLS by default** — HTTPS is on out of the box, but with a self-signed cert (not browser-trusted). For public exposure put a reverse proxy in front for a real cert (see [HTTPS / TLS](#https--tls)).
+- **Self-signed TLS by default** — browsers show a one-time warning on the LAN; public exposure needs a proxy for a real cert (see [HTTPS / TLS](#https--tls)).
 - **Auto-start on boot** isn't on by default, but a ready `systemd` unit ships in [`deploy/miner-autopilot.service`](deploy/miner-autopilot.service) — install it to survive reboots and auto-restart on crash.
 
 ---

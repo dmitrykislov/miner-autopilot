@@ -170,6 +170,97 @@ class TelemetryStoreTest {
         assertThat(logsAfter).isEqualTo(1); // the 40-day-old day-file was deleted
     }
 
+    // ---- the once-a-day sweep gate -----------------------------------------------------------
+    // prune() runs every minute but a day-file can only fall out of retention when the UTC date
+    // changes, so the directory scan is gated. Only the first branch was covered; these two pin the
+    // gate itself, which is what keeps ~89k pointless syscalls a day off the SD card.
+
+    @Test void theDirectorySweepIsSkippedOnASecondPruneTheSameDay() throws IOException {
+        TelemetryStore s = store(31);
+        Instant now = Instant.now();
+        s.recordSample(sample(now.minus(Duration.ofDays(40)), 1000.0, 1200, "MINING"));
+        s.recordSample(sample(now.minusSeconds(30), 3000.0, 2400, "MINING"));
+
+        s.prune(now);                                          // sweeps, deletes the stale day-file
+        assertThat(Files.list(tmp).filter(p -> p.toString().endsWith(".log")).count()).isEqualTo(1);
+
+        // Drop a stale file back in and prune again on the SAME UTC day: the gate must skip the scan,
+        // so the file survives. (It is collected on the next date change.)
+        Path resurrected = tmp.resolve("samples-2020-01-01.log");
+        Files.writeString(resurrected, "");
+        s.prune(now.plusSeconds(60));
+
+        assertThat(resurrected)
+                .as("the second prune of the day must not re-scan the directory")
+                .exists();
+    }
+
+    @Test void theSweepResumesOnceTheUtcDateChanges() throws IOException {
+        TelemetryStore s = store(31);
+        Instant now = Instant.now();
+        s.recordSample(sample(now.minusSeconds(30), 3000.0, 2400, "MINING"));
+        s.prune(now);                                          // consumes today's sweep
+
+        Path stale = tmp.resolve("samples-2020-01-01.log");
+        Files.writeString(stale, "");
+        s.prune(now.plus(Duration.ofDays(1)));                 // next UTC day → sweep runs again
+
+        assertThat(stale)
+                .as("a new UTC date must re-enable the sweep, or day-files accumulate forever")
+                .doesNotExist();
+    }
+
+    // ---- persistence disabled at startup -----------------------------------------------------
+
+    @Test void anUnusableHistoryDirLeavesTheStoreWorkingInMemoryOnly() throws IOException {
+        // init() used to log "history disabled this run" while disabling nothing, so every later write
+        // threw and pruning silently stopped. Point the store at a path that cannot be a directory.
+        Path notADir = tmp.resolve("occupied");
+        Files.writeString(notADir, "i am a regular file");
+        TelemetryStore s = new TelemetryStore(new HistoryProperties(true, notADir.toString(), 60_000, 31));
+        s.init();                                              // must not throw
+
+        Instant now = Instant.now();
+        assertThatNoException().isThrownBy(() -> s.recordSample(sample(now, 3000.0, 2400, "MINING")));
+
+        // The chart and the autopilot's warm-up read from memory, so both keep working.
+        assertThat(s.samplesSince(now.minusSeconds(60))).hasSize(1);
+    }
+
+    @Test void retentionKeepsRunningWhenTheHistoryDirIsUnusable() throws IOException {
+        // The part that used to break: a failing store stopped pruning, so the deque grew without
+        // bound. Samples are recorded oldest-first, matching how the recorder actually appends.
+        Path notADir = tmp.resolve("occupied2");
+        Files.writeString(notADir, "i am a regular file");
+        TelemetryStore s = new TelemetryStore(new HistoryProperties(true, notADir.toString(), 60_000, 31));
+        s.init();
+
+        Instant now = Instant.now();
+        s.recordSample(sample(now.minus(Duration.ofDays(40)), 1000.0, 1200, "MINING")); // out of retention
+        s.recordSample(sample(now, 3000.0, 2400, "MINING"));
+        s.prune(now);
+
+        assertThat(s.samplesSince(now.minus(Duration.ofDays(60))))
+                .as("pruning must not depend on the disk being usable")
+                .hasSize(1);
+    }
+
+    @Test void pruneAssumesSamplesArriveInChronologicalOrder() {
+        // Documents a real constraint rather than a defect: prune() stops at the first sample still
+        // inside the window, so an out-of-order arrival behind a newer one is not collected. That
+        // holds in production — the recorder appends Instant.now() each minute and load() sorts on
+        // startup — but a future caller feeding history backwards would silently retain data.
+        TelemetryStore s = store(31);
+        Instant now = Instant.now();
+        s.recordSample(sample(now, 3000.0, 2400, "MINING"));                            // newest FIRST
+        s.recordSample(sample(now.minus(Duration.ofDays(40)), 1000.0, 1200, "MINING")); // then an old one
+        s.prune(now);
+
+        assertThat(s.samplesSince(now.minus(Duration.ofDays(60))))
+                .as("the stale sample hides behind a newer one — prune scans from the front only")
+                .hasSize(2);
+    }
+
     @Test void persistsAcrossRestart() {
         TelemetryStore s1 = store(31);
         Instant now = Instant.now();

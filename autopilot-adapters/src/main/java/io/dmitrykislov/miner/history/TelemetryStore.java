@@ -93,7 +93,15 @@ public class TelemetryStore implements TelemetryHistory {
         append("events-", e.at(), serialize(e));
     }
 
-    /** Drop in-memory data older than the retention window and delete day-files that fell out of it. */
+    /**
+     * Drop in-memory data older than the retention window and delete day-files that fell out of it.
+     *
+     * <p><b>Assumes the deques are time-ordered</b>: it stops at the first entry still inside the
+     * window rather than scanning the whole series, which is what keeps this cheap enough to call
+     * every minute. That holds because the recorder appends {@code Instant.now()} in order and
+     * {@link #load} sorts on startup. A caller that fed history backwards would silently retain the
+     * out-of-order entries — pinned by a test so the constraint is visible rather than folklore.
+     */
     public synchronized void prune(Instant now) {
         if (!cfg.enabled()) return;
         Instant cutoff = now.minus(cfg.retention());
