@@ -1,6 +1,7 @@
 package io.dmitrykislov.miner.security;
 
 import io.dmitrykislov.miner.config.AuthProperties;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -26,8 +27,7 @@ public class LoginRateLimiter {
     private final int maxPerMinute;
     private final Map<String, Attempt> byIp = new ConcurrentHashMap<>();
 
-    /** {@code attempts} counts login attempts in this window, not just failures — see tryAcquire. */
-    private record Attempt(long windowStart, int failures) {}
+    private record Attempt(long windowStart, int attempts) {}
 
     public LoginRateLimiter(AuthProperties cfg) {
         this.maxPerMinute = cfg.loginMaxPerMinute();
@@ -49,11 +49,29 @@ public class LoginRateLimiter {
      */
     public boolean tryAcquire(String ip, long nowMs) {
         if (maxPerMinute <= 0) return true; // disabled
-        if (byIp.size() > MAX_TRACKED_IPS) evictExpired(nowMs); // guard against IP-rotation growth
+        // Over the cap: sweep once, and if that didn't help, REFUSE rather than admit a new key.
+        // This runs on a Netty event loop (there are two), so it must stay O(1) in the common case.
+        // Sweeping inline on every request once the map was full turned an IP-rotation flood into an
+        // O(n) scan per request on the very threads that serve the dashboard — the limiter became a
+        // cheaper attack than the thing it defends. Refusing is also the safer answer: a caller we
+        // have no room to track is exactly one we shouldn't be handing bcrypt time to.
+        if (byIp.size() > MAX_TRACKED_IPS && !byIp.containsKey(ip)) {
+            evictExpired(nowMs);
+            if (byIp.size() > MAX_TRACKED_IPS) return false;
+        }
         Attempt updated = byIp.compute(ip, (k, a) -> (a == null || nowMs - a.windowStart() >= WINDOW_MS)
                 ? new Attempt(nowMs, 1)                            // new window
-                : new Attempt(a.windowStart(), a.failures() + 1));  // same window, one more attempt
-        return updated.failures() <= maxPerMinute;
+                : new Attempt(a.windowStart(), a.attempts() + 1));  // same window, one more attempt
+        return updated.attempts() <= maxPerMinute;
+    }
+
+    /**
+     * Periodic sweep so the map shrinks after a flood even if no further logins arrive, and so the
+     * inline path above almost never has to scan.
+     */
+    @Scheduled(fixedDelay = WINDOW_MS)
+    void sweep() {
+        if (maxPerMinute > 0 && !byIp.isEmpty()) evictExpired(System.currentTimeMillis());
     }
 
     /**
@@ -62,14 +80,13 @@ public class LoginRateLimiter {
      * <p>This used to be {@code byIp.clear()}, which wiped <b>every</b> IP's budget — so an attacker who
      * sprayed enough distinct source addresses (trivial from a single IPv6 /64) reset their own lockout
      * and everyone else's. Evicting only expired windows keeps live counters intact. If every entry is
-     * still live the map may briefly exceed the cap, which is the safe direction: bounded memory matters
-     * less than not handing out an amnesty on demand.
+     * still live, tryAcquire refuses new keys rather than letting the map grow — see there.
      */
     private void evictExpired(long nowMs) {
         byIp.entrySet().removeIf(e -> nowMs - e.getValue().windowStart() >= WINDOW_MS);
     }
 
-    /** A successful login clears the IP's failure budget. */
+    /** A successful login returns the IP's budget, so ordinary use never accumulates against it. */
     public void recordSuccess(String ip) {
         byIp.remove(ip);
     }

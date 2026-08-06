@@ -259,7 +259,7 @@ All configuration comes from environment variables, loaded from a git-ignored `.
 |---|---|---|
 | `SERVER_PORT` | `8080` | Backend + bundled UI (`.env.example` ships `8899`) |
 | `SERVER_ADDRESS` | _(all interfaces)_ | set `127.0.0.1` when a reverse proxy fronts the app, so the origin can't be reached directly |
-| `NETTY_CONNECTION_TIMEOUT` | `20s` | how long a connection may take to send a request before it's dropped |
+| `NETTY_CONNECTION_TIMEOUT` | `20s` | outbound connect timeout. It does **not** bound inbound requests — `NETTY_IDLE_TIMEOUT` is what does that |
 | `NETTY_IDLE_TIMEOUT` | `75s` | idle connections are closed. Keep it above the 20 s SSE heartbeat, or live streams die |
 | `FRONTEND_PORT` | `5173` | Vite dev-server port — used by `./start.sh --dev` only (a shell var, not an app setting) |
 | `LOG_LEVEL` | `INFO` | App log level. Timestamps in log messages use the machine's local time with an explicit offset, matching each line's own prefix — the JSON API and the history files stay on UTC, which the browser localises |
@@ -459,6 +459,7 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 
 **Safety & correctness properties:**
 
+- **Safety is judged on what the miner actually pulls, not on what it was told.** A power target is a request to the miner's own autotuner, and the two can differ a lot: measured over two days on the rig here, a commanded 1200 W draws about 1752 W, because an S19k Pro cannot physically run that low. The stop and emergency checks use the larger of the two, so the miner can't sit importing while reporting itself safe. See [When the miner won't honour its target](#when-the-miner-wont-honour-its-target).
 - **Every command targets below the available spare solar** — `headroom > 0` guarantees the new target sits under the measured surplus, and a ramp-up must be affordable on both the 3-minute and the 15-minute average, so a surplus that has already faded can't fund a step up. On a sudden collapse it steps straight down to a safe notch in one move. (Between commands a small shortfall can ride briefly — see "How strict is no grid power?" above.)
 - **Stops when it can't see** — if solar, usage, or the readings themselves go stale, the surplus is untrusted, so it stops a running miner rather than guess. (A genuinely *stale* feed → stop; a merely *sparse* window right after boot → hold, so a healthy miner isn't disrupted.)
 - **Always uses live state** — each tick reads a fresh miner status; every start/step/stop re-checks the miner immediately before acting.
@@ -471,12 +472,31 @@ The [plain-terms section](#how-the-autopilot-works-in-plain-terms) above covers 
 
 **Runtime control:** `AUTOPILOT_ENABLED` sets the *boot* state; after that the UI's Autopilot card (or `POST /api/autopilot/enable|disable`) toggles it live.
 
+### When the miner won't honour its target
+
+A power target is a **request to the miner's own autotuner**, not a setting it is guaranteed to meet. Measured here over two full days of one-minute samples:
+
+| Commanded target | Median actual draw | Difference |
+|---|---|---|
+| 1200 W (the ladder floor) | ~1752 W | **+552 W** |
+| 2000 W | ~1944 W | −56 W |
+| 2800 W | ~2810 W | +10 W |
+| 3600 W | ~3634 W | +34 W |
+
+The higher rungs track closely. The floor does not, because an S19k Pro cannot physically run at 1200 W — ask for it and you get roughly 1750 W.
+
+That matters for safety. The autopilot used to judge "can the surplus cover me?" against the *commanded* figure, so with a 1400 W surplus it believed a "1200 W" miner was comfortably covered while the rig really pulled 1752 W — importing about 350 W and reporting itself safe. Over those two days the miner imported **0.32 kWh** across 35 minutes, roughly half of it in that state.
+
+The stop and emergency-bypass checks now use whichever is larger, the commanded target or the reported draw. That is conservative in both directions: it also covers a miner still ramping up toward a newly raised target.
+
+**Two things follow for tuning.** If your rig has a minimum practical draw, set `AUTOPILOT_FLOOR_W` at or above it — a floor the hardware ignores just makes the ladder's bottom rung a fiction. And remember `AUTOPILOT_START_SURPLUS_W` must stay at or above `floor + headroom`, so raising the floor means raising that too.
+
 ### Only confirmed changes are recorded
 
 A **start** or a **power step** is written to history — and shown on the dashboard — only once the miner reports it took effect. Commands do fail, so this changes what the dashboard means:
 
 - A stopped Braiins miner reports itself unreachable, and so does one that is still booting. At the moment a start command is issued, "the miner didn't get it" and "it got it and is coming up" look identical.
-- So a start that can't be confirmed is held as **pending**, not recorded. Each following tick checks whether the miner has appeared; when it has, the change is recorded then. If it never appears, the pending start is dropped after ten ticks (~5 minutes), and turning the autopilot off drops it immediately.
+- So a start that can't be confirmed is held as **pending**, not recorded. Each following tick checks whether the miner has appeared; when it has, the change is recorded then. If it never appears, the start is retried at a paced interval (~90 s) up to four times before being given up on, and turning the autopilot off drops it immediately.
 - A power **step** is recorded unless the miner contradicts it: if the read-back is reachable and reports a *different* target, the command didn't apply, so nothing is recorded and a warning is logged. An unreachable read-back is inconclusive rather than a failure, so it still records — the miner was reachable moments earlier.
 
 **Two consequences:** the dashboard doesn't show a start or step that didn't land, and an unlanded command leaves the dampening intervals untouched, so it is retried (paced, roughly every 90 s) rather than blocked by a cooldown it never earned.
@@ -510,11 +530,11 @@ A lightweight, **file-based** log feeds the trend chart — no database.
 ## Tests
 
 ```bash
-mvn clean install               # everything: 426 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
-mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 173)
+mvn clean install               # everything: 437 backend (JUnit) + 106 UI (Vitest), UI bundled into the jar
+mvn -pl autopilot-engine test   # run a single module's tests (here, the engine's 177)
 ```
 
-Backend tests live **with their module** — `autopilot-core` 16 · `autopilot-engine` 173 · `autopilot-adapters` 191 · `autopilot-launcher` 46 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
+Backend tests live **with their module** — `autopilot-core` 21 · `autopilot-engine` 177 · `autopilot-adapters` 193 · `autopilot-launcher` 46 (full-boot `@SpringBootTest`); the **106** UI (Vitest) tests run in the launcher's test phase. (`autopilot-core` is mostly ports and value objects; its tests cover `LatestBroadcaster` (the SSE fan-out every stream sits on) and `LogTime`.)
 
 What's covered:
 

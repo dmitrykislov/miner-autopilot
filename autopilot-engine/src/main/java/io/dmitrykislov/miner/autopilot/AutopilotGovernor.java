@@ -132,8 +132,15 @@ public final class AutopilotGovernor {
      *                      feed (blind → stop) from a merely <em>sparse</em> window (an empty
      *                      surplus while fresh → hold, e.g. right after boot)
      */
+    /**
+     * @param currentPowerW the miner's commanded power target (its rung on the ladder), or null
+     * @param actualDrawW   what it is <b>really</b> pulling right now, or 0/null when not reported.
+     *                      These differ: a commanded target is a request to the miner's autotuner, and
+     *                      on an S19k Pro a 1200 W request measures ~1752 W because the rig cannot run
+     *                      that low. Safety is judged on the draw; ladder arithmetic uses the target.
+     */
     public record Input(Instant now, boolean reachable, boolean running, boolean suspended,
-                        Integer currentPowerW, Instant miningSince, Instant lastChangeAt,
+                        Integer currentPowerW, Integer actualDrawW, Instant miningSince, Instant lastChangeAt,
                         boolean dataFresh, OptionalDouble shortSurplusW, OptionalDouble longSurplusW) {}
 
     private final Config cfg;
@@ -186,18 +193,40 @@ public final class AutopilotGovernor {
 
         // ---- protection (bypasses the up dampening) ----
         if (running) {
-            boolean emergency = (cur - sShort) >= cfg.emergencyGapW();
-            // 1) can't even sustain the floor → stop now — UNLESS it only just started mining and the
-            // dip is mild (not a hard import): hold through the min run-time so a brief cloud right
-            // after a start doesn't immediately cycle the miner off. A hard import still stops at once.
-            if (sShort - cfg.headroomW() < cfg.floorW()) {
+            // Judge the load by what the miner is REALLY pulling, not by the rung we asked for. A
+            // commanded target is a request to the miner's own autotuner: on an S19k Pro a 1200 W
+            // request measures ~1752 W (two days of live data, median +552 W), because the rig cannot
+            // physically run that low. Taking the larger of the two is conservative in both
+            // directions — it also covers a miner still ramping UP toward a newly raised target.
+            int load = Math.max(cur, drawOf(in));
+            boolean emergency = (load - sShort) >= cfg.emergencyGapW();
+            // 1) can't even sustain the bottom of the ladder → stop now, since there is nothing lower
+            // to step to.
+            //
+            // This deliberately compares against the CONFIGURED floor, not the measured draw, even
+            // though the two can differ a lot. Raising the stop threshold to the real draw without
+            // raising the start threshold with it inverts the hysteresis: with the shipped defaults a
+            // 1752 W draw would stop at a 1952 W surplus while START still fires at 1600 W, so every
+            // surplus in that band starts the miner and immediately stops it — a simulated 45 power
+            // cycles in six hours of *clear* sky. Thermal cycling a hashboard is far worse than the
+            // import it would avoid. The honest fix is configuration, not a one-sided comparison:
+            // set AUTOPILOT_FLOOR_W to a target the hardware actually honours (and raise
+            // AUTOPILOT_START_SURPLUS_W with it), so target and draw agree everywhere. warnIfFloorIsFiction
+            // below tells the operator when they don't.
+            int floorLoad = cfg.floorW();
+            // UNLESS it only just started mining and the dip is mild (not a hard import): hold through
+            // the min run-time so a brief cloud right after a start doesn't immediately cycle it off.
+            if (sShort - cfg.headroomW() < floorLoad) {
                 if (!emergency && withinMinRunTime(in)) {
                     return none(String.format(
                             "surplus %dW below floor but within min run-time → holding at %dW",
                             Math.round(sShort), cur));
                 }
+                // Name the figure actually compared: the floor rung, or the real draw when the rig
+                // won't go that low. Otherwise the log says "floor 1200W" for a 1752W measurement.
                 return decision(Action.STOP, 0, String.format(
-                        "surplus %dW can't hold floor %dW → stop", Math.round(sShort), cfg.floorW()));
+                        "surplus %dW can't hold %s %dW → stop", Math.round(sShort),
+                        floorLoad > cfg.floorW() ? "actual draw at floor" : "floor", floorLoad));
             }
             // 2) over-drawing the surplus by ≥ a rung → step down toward what it can hold.
             int downTarget = rungAtOrBelow(sShort - cfg.headroomW());
@@ -292,6 +321,11 @@ public final class AutopilotGovernor {
      * clock step. That is the same stranding {@code elapsed} exists to avoid, and the surplus checks
      * still decide what the step may be.
      */
+    /** The miner's reported draw in watts, or 0 when it isn't reporting one (then the target stands). */
+    private static int drawOf(Input in) {
+        return in.actualDrawW() != null && in.actualDrawW() > 0 ? in.actualDrawW() : 0;
+    }
+
     /** True unless the value is present and non-finite (NaN/±Infinity). Absent is fine — that's "sparse". */
     private static boolean isFinite(java.util.OptionalDouble v) {
         return v.isEmpty() || Double.isFinite(v.getAsDouble());

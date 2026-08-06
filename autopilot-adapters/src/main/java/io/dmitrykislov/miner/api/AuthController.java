@@ -131,10 +131,16 @@ public class AuthController {
                 // <real client IP>". Reading element [0] would therefore trust a value the attacker
                 // chose — a fresh rate-limit budget on every request, and a way to pin a victim's
                 // address. The last element is the one our own proxy added.
-                String[] hops = xff.split(",");
+                //
+                // Use -1 so trailing empties are KEPT. Java's split() strips them by default, which
+                // made "," yield a zero-length array (indexing it threw, returning 500 on every
+                // request) and made "1.2.3.4," collapse back onto the client-supplied hop — silently
+                // reinstating the very bug the last-hop rule removes.
+                String[] hops = xff.split(",", -1);
                 String candidate = hops[hops.length - 1].trim();
-                // Ignore anything that isn't an address; an 8 KB junk header would otherwise become an
-                // attacker-sized key in the limiter's map.
+                // Ignore anything that isn't an address: a junk or empty final hop means the header
+                // did not come from a proxy we trust, and it would otherwise become an
+                // attacker-controlled key in the limiter's map.
                 if (isIpLiteral(candidate)) return candidate;
             }
         }

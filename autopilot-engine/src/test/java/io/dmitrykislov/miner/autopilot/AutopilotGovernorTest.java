@@ -38,32 +38,32 @@ class AutopilotGovernorTest {
 
     /** Running miner at {@code cur} W with available (miner-independent) surplus {@code S}. */
     private Input running(int cur, double S, Instant lastChange, Instant miningSince) {
-        return new Input(NOW, true, true, false, cur, miningSince, lastChange,
+        return new Input(NOW, true, true, false, cur, null, miningSince, lastChange,
                 true, OptionalDouble.of(S), OptionalDouble.of(S));
     }
 
     /** Off miner with available surplus {@code S}. */
     private Input off(double S, Instant lastChange) {
-        return new Input(NOW, true, false, false, null, null, lastChange,
+        return new Input(NOW, true, false, false, null, null, null, lastChange,
                 true, OptionalDouble.of(S), OptionalDouble.of(S));
     }
 
     /** Off miner with <em>divergent</em> short/long surpluses (for the restart confirmation guard). */
     private Input offSL(double sShort, double sLong, Instant lastChange) {
-        return new Input(NOW, true, false, false, null, null, lastChange,
+        return new Input(NOW, true, false, false, null, null, null, lastChange,
                 true, OptionalDouble.of(sShort), OptionalDouble.of(sLong));
     }
 
     /** Running miner with <em>divergent</em> short- and long-window available surpluses. */
     private Input runningSL(int cur, double sShort, double sLong, Instant lastChange, Instant miningSince) {
-        return new Input(NOW, true, true, false, cur, miningSince, lastChange,
+        return new Input(NOW, true, true, false, cur, null, miningSince, lastChange,
                 true, OptionalDouble.of(sShort), OptionalDouble.of(sLong));
     }
 
     // ---------------------------------------------------------------- guards
     /** An unreachable miner (e.g. a stopped Braiins miner: API "unavailable") — treated as OFF. */
     private Input unreachable(double S, Instant lastChange) {
-        return new Input(NOW, false, false, false, null, null, lastChange,
+        return new Input(NOW, false, false, false, null, null, null, lastChange,
                 true, OptionalDouble.of(S), OptionalDouble.of(S));
     }
 
@@ -91,41 +91,41 @@ class AutopilotGovernorTest {
     }
 
     @Test void unreachableMinerWithStaleFeedDoesNothing() {
-        Input in = new Input(NOW, false, false, false, null, null, LONG_AGO,
+        Input in = new Input(NOW, false, false, false, null, null, null, LONG_AGO,
                 false, OptionalDouble.empty(), OptionalDouble.empty()); // no surplus data
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
     }
 
     @Test void suspendedSkips() {
-        Input in = new Input(NOW, true, true, true, 3600, MINED_LONG, LONG_AGO,
+        Input in = new Input(NOW, true, true, true, 3600, null, MINED_LONG, LONG_AGO,
                 true, OptionalDouble.of(2000), OptionalDouble.of(2000));
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
         assertThat(gov.decide(in).reason()).contains("suspended");
     }
 
     @Test void staleFeedStopsRunningMiner() {
-        Input in = new Input(NOW, true, true, false, 3600, MINED_LONG, LONG_AGO,
+        Input in = new Input(NOW, true, true, false, 3600, null, MINED_LONG, LONG_AGO,
                 false, OptionalDouble.empty(), OptionalDouble.empty()); // dataFresh = false
         assertThat(gov.decide(in).action()).isEqualTo(Action.STOP);
         assertThat(gov.decide(in).reason()).contains("no fresh");
     }
 
     @Test void staleFeedLeavesOffMinerAlone() {
-        Input in = new Input(NOW, true, false, false, null, null, LONG_AGO,
+        Input in = new Input(NOW, true, false, false, null, null, null, LONG_AGO,
                 false, OptionalDouble.empty(), OptionalDouble.empty());
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
     }
 
     @Test void freshButSparseHoldsRunningMinerInsteadOfStopping() {
         // Just booted: feed is fresh but the short window isn't covered yet → hold, don't stop.
-        Input in = new Input(NOW, true, true, false, 3600, MINED_SHORT, LONG_AGO,
+        Input in = new Input(NOW, true, true, false, 3600, null, MINED_SHORT, LONG_AGO,
                 true, OptionalDouble.empty(), OptionalDouble.empty());
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
         assertThat(gov.decide(in).reason()).contains("insufficient recent data");
     }
 
     @Test void freshButSparseLeavesOffMinerOff() {
-        Input in = new Input(NOW, true, false, false, null, null, LONG_AGO,
+        Input in = new Input(NOW, true, false, false, null, null, null, LONG_AGO,
                 true, OptionalDouble.empty(), OptionalDouble.empty());
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
     }
@@ -205,7 +205,7 @@ class AutopilotGovernorTest {
     }
 
     @Test void doesNotRampUpWithoutLongWindowAverage() {
-        Input in = new Input(NOW, true, true, false, 1200, MINED_LONG, LONG_AGO,
+        Input in = new Input(NOW, true, true, false, 1200, null, MINED_LONG, LONG_AGO,
                 true, OptionalDouble.of(3800), OptionalDouble.empty()); // short surplus only
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
         assertThat(gov.decide(in).reason()).contains("long-window");
@@ -280,10 +280,59 @@ class AutopilotGovernorTest {
     }
 
     @Test void nullCurrentPowerWhileRunningTreatedAsFloor() {
-        Input in = new Input(NOW, true, true, false, null, MINED_LONG, LONG_AGO,
+        Input in = new Input(NOW, true, true, false, null, null, MINED_LONG, LONG_AGO,
                 true, OptionalDouble.of(1600), OptionalDouble.of(1600)); // surplus 1600, cur→floor 1200
         // Deterministic: S−headroom = 1400 → highest rung ≤ 1400 is the floor 1200 = cur → hold.
         assertThat(gov.decide(in).action()).isEqualTo(Action.NONE);
+    }
+
+    // ---------------------------------------------- commanded target vs actual draw
+    // Measured on the live rig over two full days: at a commanded 1200 W the S19k Pro actually draws
+    // ~1752 W (median +552 W, n=153). At 2800 W and 3600 W the gap is only +10..+34 W, so the floor
+    // rung is simply below what the hardware can physically do. The governor judged safety against
+    // the COMMANDED figure, so it believed a 1400 W surplus comfortably covered a "1200 W" miner that
+    // was really pulling 1752 W — importing ~350 W while reporting itself safe. That accounted for
+    // about half of the 58 kWh/year of measured grid import.
+
+    /** Running at {@code cur} but actually pulling {@code drawW}, with surplus {@code S}. */
+    private Input runningWithDraw(int cur, int drawW, double S, Instant lastChange, Instant miningSince) {
+        return new Input(NOW, true, true, false, cur, drawW, miningSince, lastChange,
+                true, OptionalDouble.of(S), OptionalDouble.of(S));
+    }
+
+    @Test void aFloorTheHardwareIgnoresDoesNotCauseAStartStopLimitCycle() {
+        // The tempting fix — raise the STOP threshold to the measured draw — inverts the hysteresis,
+        // because START is still gated on the configured floor. With a 1752 W draw the miner would
+        // stop at a 1700 W surplus and restart at 1600 W, cycling every ~8 minutes on a clear day.
+        // Thermal cycling a hashboard costs far more than the import it avoids, so a surplus that
+        // clears the START threshold must keep it running.
+        var d = gov.decide(runningWithDraw(1200, 1752, 1700, LONG_AGO, MINED_LONG));
+        assertThat(d.action())
+                .as("must not stop at a surplus that would immediately re-start it")
+                .isNotEqualTo(Action.STOP);
+    }
+
+    @Test void aSurplusThatCoversTheRealDrawKeepsMining() {
+        var d = gov.decide(runningWithDraw(1200, 1752, 2100, LONG_AGO, MINED_LONG));
+        assertThat(d.action()).isNotEqualTo(Action.STOP);
+    }
+
+    @Test void theEmergencyBypassMeasuresTheRealOverDraw() {
+        // Drawing 1752 against a 900 W surplus is an 852 W over-draw — past the 800 W emergency gap,
+        // so it must bypass the down-interval and act now. Measured against the commanded 1200 W it
+        // reads as only 300 W over and would wait out a full down-interval instead.
+        var d = gov.decide(runningWithDraw(1200, 1752, 900, RECENT, MINED_LONG));
+        assertThat(d.action())
+                .as("the emergency gap must compare against actual draw, not the commanded rung")
+                .isEqualTo(Action.STOP);
+    }
+
+    @Test void anUnknownDrawFallsBackToTheCommandedTarget() {
+        // powerDrawW is null whenever the miner is not reporting it. Behaviour must be unchanged then.
+        var d = gov.decide(runningWithDraw(1200, 0, 1500, LONG_AGO, MINED_LONG));
+        assertThat(d.action())
+                .as("with no draw reading the old target-based judgement stands")
+                .isEqualTo(Action.NONE);
     }
 
     // ---------------------------------------------- non-finite surplus (NaN / Infinity)

@@ -131,6 +131,30 @@ class AuthControllerTest {
         assertThat(status(proxied, "nope", spoofing("3.3.3.3, 9.9.9.1"))).isEqualTo(401);
     }
 
+    @Test void aMalformedForwardedForHeaderDoesNotCrashTheEndpoint() {
+        // "," splits to a ZERO-length array in Java (trailing empties are stripped), so indexing
+        // hops[length-1] threw ArrayIndexOutOfBoundsException — an unhandled 500 with a stack trace,
+        // on every request, reachable by anyone as soon as trust-forwarded-for is on.
+        AuthController proxied = controllerWith(true);
+        for (String header : new String[]{",", ",,", " , ", "   ", ","}) {
+            assertThat(status(proxied, "nope", spoofing(header)))
+                    .as("header %s must be ignored, not crash the endpoint", header)
+                    .isIn(401, 429);
+        }
+    }
+
+    @Test void aTrailingCommaDoesNotFallBackToTheClientSuppliedHop() {
+        // "1.2.3.4,".split(",") is ["1.2.3.4"], so "the last hop" collapses onto the value the CLIENT
+        // sent — silently reinstating the bug the last-hop change removed. A single-element header is
+        // only trustworthy when it came from the proxy, and a trailing comma proves it did not.
+        AuthController proxied = controllerWith(true);
+        assertThat(status(proxied, "nope", spoofing("1.1.1.1,"))).isEqualTo(401);
+        assertThat(status(proxied, "nope", spoofing("2.2.2.2,"))).isEqualTo(401);
+        assertThat(status(proxied, "nope", spoofing("3.3.3.3,")))
+                .as("a rotating client-supplied hop must not buy a fresh budget just by adding a comma")
+                .isEqualTo(429);
+    }
+
     @Test void aJunkForwardedForValueFallsBackToTheSocket() {
         // An 8 KB junk header would otherwise become an attacker-sized key in the limiter's map.
         AuthController proxied = controllerWith(true);

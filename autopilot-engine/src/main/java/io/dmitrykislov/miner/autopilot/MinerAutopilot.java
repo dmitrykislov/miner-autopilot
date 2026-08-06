@@ -82,6 +82,11 @@ public class MinerAutopilot {
     // miner's uptime) from an observed resume (mining truly just (re)started). A monotonic boolean —
     // not the last state — so a one-off null/garbled state can't be mistaken for "never observed".
     private volatile boolean minerObserved;
+    /** Ladder floor / headroom, kept for the fictional-floor warning below. */
+    private final int floorW;
+    private final int headroomW;
+    /** Latched so a persistent mismatch is said once, not every 30 s. */
+    private boolean warnedFloorIsFiction;
 
     public MinerAutopilot(EnergyAverages energy, SolarSource solarSource, ConsumptionSource consumptionSource,
                           MinerDriver minerService, HouseProperties props,
@@ -93,6 +98,8 @@ public class MinerAutopilot {
         this.minerCfg = props.miner();
         this.statusStream = statusStream;
         HouseProperties.Autopilot cfg = props.autopilot();
+        this.floorW = cfg.floorW();
+        this.headroomW = cfg.headroomW();
         this.governor = new AutopilotGovernor(new AutopilotGovernor.Config(
                 cfg.floorW(), minerCfg.maxPowerW(), cfg.stepW(), cfg.headroomW(), cfg.startSurplusW(),
                 Duration.ofMillis(cfg.upIntervalMs()), Duration.ofMillis(cfg.downIntervalMs()),
@@ -184,6 +191,7 @@ public class MinerAutopilot {
         // so it can recover the miner it previously stopped once the surplus returns.
 
         trackMiningSince(st, now);
+        warnIfFloorIsFiction(st);
 
         // The surplus is trustworthy only if the live feed is valid right now AND the rolling
         // windows are fresh. feedValid catches a stale solar/consumption source immediately (a
@@ -194,7 +202,7 @@ public class MinerAutopilot {
 
         AutopilotGovernor.Input input = new AutopilotGovernor.Input(
                 now, st.reachable(), st.running(), MinerStatus.SUSPENDED.equals(st.state()),
-                st.powerTargetW(), miningSince, lastChangeAt(), dataFresh,
+                st.powerTargetW(), st.powerDrawW(), miningSince, lastChangeAt(), dataFresh,
                 sig.shortSurplusW(), sig.longSurplusW());
 
         AutopilotDecision d = governor.decide(input);
@@ -248,6 +256,32 @@ public class MinerAutopilot {
         // feed look dead and stopped a healthy miner every time the race was lost. Only an excursion
         // bigger than the staleness window itself (a real clock step) counts as untrustworthy.
         return age.abs().compareTo(maxSnapshotAge) <= 0;
+    }
+
+    /**
+     * Warn once if the miner, sitting at the bottom rung, draws materially more than that rung.
+     *
+     * <p>A power target is a request to the miner's own autotuner, and some rigs cannot honour a low
+     * one: an S19k Pro asked for 1200 W measures around 1752 W. The ladder's bottom rung is then a
+     * fiction, and every threshold derived from it — the stop test, the start hysteresis — is quietly
+     * wrong by the difference. The controller must not paper over it: raising the stop threshold alone
+     * inverts the hysteresis and the miner cycles every few minutes. So the fix is configuration, and
+     * the operator has to be told what to change.
+     */
+    private void warnIfFloorIsFiction(MinerStatus st) {
+        if (warnedFloorIsFiction || st == null || st.powerDrawW() == null) return;
+        if (!MinerStatus.MINING.equals(st.state())) return;
+        Integer target = st.powerTargetW();
+        // Only meaningful at the bottom rung: higher up a gap is autotuning ramping, not a floor.
+        if (target == null || target > floorW) return;
+        int excess = st.powerDrawW() - floorW;
+        if (excess < floorW / 10) return;   // ignore normal autotuning wobble (<10%)
+        warnedFloorIsFiction = true;
+        log.warn("autopilot: miner draws {}W at the {}W floor ({}W over) — the bottom rung is below what "
+                        + "this hardware can do, so the stop threshold and the start hysteresis are both "
+                        + "off by that much. Consider AUTOPILOT_FLOOR_W near {}W with "
+                        + "AUTOPILOT_START_SURPLUS_W at least {}W.",
+                st.powerDrawW(), floorW, excess, st.powerDrawW(), st.powerDrawW() + headroomW);
     }
 
     private void trackMiningSince(MinerStatus st, Instant now) {
